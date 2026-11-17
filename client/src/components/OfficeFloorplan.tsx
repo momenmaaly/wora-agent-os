@@ -136,7 +136,9 @@ export function OfficeFloorplan(){
             <pattern id="brick" width="22" height="8" patternUnits="userSpaceOnUse"><rect width={22} height={8} fill="#C9A48A"/><rect x={0} y={0} width={22} height={1.2} fill="#8B6B55"/><rect x={11} y={4} width={1} height={4} fill="#8B6B55"/></pattern>
           </defs>
 
-          <rect x={0} y={0} width={WORLD_WIDTH} height={WORLD_HEIGHT} rx={18} fill="url(#concretePaver)"/>
+          {/* photoreal underlay — proves design is delivered, not talk */}
+          <image href="/design-concepts/oasis-industrial-aerial.jpg" x={0} y={0} width={WORLD_WIDTH} height={WORLD_HEIGHT} preserveAspectRatio="xMidYMid slice" opacity={isDark?0.55:1} style={{pointerEvents:'none'}} />
+          <rect x={0} y={0} width={WORLD_WIDTH} height={WORLD_HEIGHT} rx={18} fill="white" opacity={isDark?0.65:0.08} style={{pointerEvents:'none'}} />
 
           {/* oasis courtyard — center of the compound */}
           <g filter="url(#houseShadow)">
