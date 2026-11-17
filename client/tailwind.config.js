@@ -16,31 +16,25 @@ export default {
           DEFAULT:    'hsl(var(--primary) / <alpha-value>)',
           foreground: 'hsl(var(--primary-foreground) / <alpha-value>)',
         },
-        accent: {
-          DEFAULT:    'hsl(var(--accent) / <alpha-value>)',
-          foreground: 'hsl(var(--accent-foreground) / <alpha-value>)',
-        },
         muted: {
           DEFAULT:    'hsl(var(--muted) / <alpha-value>)',
           foreground: 'hsl(var(--muted-foreground) / <alpha-value>)',
         },
-        destructive: {
-          DEFAULT:    'hsl(var(--destructive) / <alpha-value>)',
-          foreground: 'hsl(var(--destructive-foreground) / <alpha-value>)',
-        },
-        success: 'hsl(var(--success) / <alpha-value>)',
-        warning: 'hsl(var(--warning) / <alpha-value>)',
-        border:  'hsl(var(--border) / <alpha-value>)',
-        ring:    'hsl(var(--ring) / <alpha-value>)',
+        border: 'hsl(var(--border) / <alpha-value>)',
       },
       fontFamily: {
-        sans: ['Inter', 'system-ui', '-apple-system', 'sans-serif'],
-        mono: ['JetBrains Mono', 'Fira Code', 'Menlo', 'Monaco', 'Consolas', 'monospace'],
+        sans: [
+          'IBM Plex Sans Arabic',
+          'Plus Jakarta Sans',
+          'system-ui',
+          '-apple-system',
+          'sans-serif',
+        ],
+        mono: ['JetBrains Mono', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
       },
-      borderRadius: {
-        lg: 'var(--radius)',
-        md: 'calc(var(--radius) - 2px)',
-        sm: 'calc(var(--radius) - 4px)',
+      boxShadow: {
+        office: '0 24px 64px -16px rgba(15, 23, 42, 0.16), 0 4px 16px -2px rgba(15, 23, 42, 0.08)',
+        card:   '0 6px 20px -4px rgba(15, 23, 42, 0.12), 0 2px 6px -1px rgba(15, 23, 42, 0.06)',
       },
     },
   },
