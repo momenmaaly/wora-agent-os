@@ -30,6 +30,7 @@ import type {
   WorkspaceZone,
 } from '../types.js';
 import { ROOM_BY_ID } from '../office/layout.js';
+import { readSessionToken } from '../lib/session.js';
 
 /* ─── CONFIG ────────────────────────────────────────────── */
 function getExplicitServerUrl(): string | undefined {
@@ -41,17 +42,6 @@ function getExplicitServerUrl(): string | undefined {
 
 function resolveSocketUrl(): string {
   return getExplicitServerUrl() ?? window.location.origin;
-}
-
-function resolveAuthToken(): string | undefined {
-  try {
-    const stored = window.localStorage.getItem('wora:authToken')?.trim();
-    if (stored) return stored;
-  } catch {
-    // ignore restricted localStorage
-  }
-  const envToken = (import.meta.env['VITE_AUTH_TOKEN'] as string | undefined)?.trim();
-  return envToken || undefined;
 }
 
 /* ─── WIRE PAYLOAD SHAPES ───────────────────────────────── */
@@ -117,7 +107,9 @@ function attachListeners(socket: Socket): void {
   });
 
   socket.on('disconnect', () => {
-    useWoraStore.getState().setConnected(false);
+    const state = useWoraStore.getState();
+    state.setConnected(false);
+    state.setDemoMode(true);
   });
 
   socket.on('connect_error', (err: Error) => {
@@ -242,7 +234,7 @@ export function getSocket(): Socket {
   if (singletonSocket) return singletonSocket;
 
   const { localUserId } = useWoraStore.getState();
-  const token = resolveAuthToken();
+  const token = readSessionToken();
   const hasExplicitApi = Boolean(getExplicitServerUrl());
 
   const socket = io(resolveSocketUrl(), {
@@ -301,7 +293,6 @@ function resolveLocalTargets(content: string, explicitTargetId?: string): AgentP
   if (matched.length === 0) {
     const pick =
       (explicitTargetId ? state.agents[explicitTargetId] : undefined) ??
-      (state.selectedAgentId ? state.agents[state.selectedAgentId] : undefined) ??
       allAgents[0];
     if (pick) matched.push(pick);
   }
@@ -364,13 +355,13 @@ function emitSafe(event: string, payload?: unknown): boolean {
   return true;
 }
 
-function sendMessage(content: string, options?: { replyToId?: string; targetAgentId?: string }): boolean {
+function sendMessage(content: string, options?: { replyToId?: string; targetAgentId?: string | null }): boolean {
   const trimmed = content.trim();
   if (!trimmed) return false;
 
   const state = useWoraStore.getState();
   const hasMention = /@[\p{L}\p{N}_-]{2,}/u.test(trimmed);
-  const targetId = options?.targetAgentId ?? state.selectedAgentId ?? undefined;
+  const targetId = options?.targetAgentId === null ? undefined : options?.targetAgentId ?? state.selectedAgentId ?? undefined;
   const targetAgent = targetId ? state.agents[targetId] : undefined;
   const isCustomOnlyTarget = Boolean(!hasMention && targetAgent?.id.startsWith('agent-custom-'));
 
@@ -462,7 +453,7 @@ function sendWorkspaceSignal(
     state.dispatchAgentToRoom(agentId, zoneId, `مهمة جديدة: ${cleanTitle.slice(0, 28)}`);
   }
 
-  if (singletonSocket?.connected && !agentId.startsWith('agent-custom-')) {
+  if (singletonSocket?.connected && !agentId.startsWith('agent-custom-') && state.zones.some((zone) => zone.id === zoneId)) {
     return emitSafe('workspace:signal', { zoneId, agentId, title: cleanTitle, data });
   }
 

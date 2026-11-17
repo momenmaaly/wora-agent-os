@@ -115,8 +115,8 @@ export interface WoraState {
   officeCommand:     OfficeCommand | null;
   ui: {
     theme:            'light' | 'dark';
-    showSidebar:      boolean;
     showWorkspaceHUD: boolean;
+    workspaceZoneId:  string | null;
     showChat:         boolean;
     autoRoam:         boolean;
     modelSwapAgentId: string | null;
@@ -151,8 +151,7 @@ export interface WoraState {
   setFollowAgent:         (id: string | null) => void;
   setLocalPosition:       (pos: { x: number; y: number; z: number }) => void;
   toggleTheme:            () => void;
-  toggleSidebar:          () => void;
-  toggleWorkspaceHUD:     () => void;
+  toggleWorkspaceHUD:     (force?: boolean, zoneId?: string | null) => void;
   toggleChat:             (force?: boolean) => void;
   toggleAutoRoam:         () => void;
   openModelSwap:          (agentId: string | null) => void;
@@ -196,12 +195,14 @@ function readInitialTheme(): 'light' | 'dark' {
   } catch {
     // ignore storage errors
   }
-  return 'light';
+  return 'dark';
 }
 
 function applyDomTheme(theme: 'light' | 'dark'): void {
   if (typeof document === 'undefined') return;
+  document.documentElement.dataset.theme = theme;
   document.documentElement.classList.toggle('dark', theme === 'dark');
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'dark' ? '#11101a' : '#f4f2f8');
   try {
     window.localStorage.setItem(THEME_STORAGE_KEY, theme);
   } catch {
@@ -270,7 +271,7 @@ export const useWoraStore = create<WoraState>()(
             senderId:  'agent-planner-01',
             type:      MessageType.Text,
             content:
-              'أهلاً بك في مقر شركة Wora HQ! جميع الوكلاء موزّعون في غرف الأقسام ويتنقلون عبر الممرات. يمكنك النقر على أي وكيل لتوجيهه لأي غرفة، أو تبديل الموديل الخاص به فوراً، أو مراسلته مباشرة هنا.',
+              'أهلاً بك في مقر Wora! اختر وكيلاً لمراسلته، أو اكتب @ متبوعة باسمه. جرّب أن تطلب من الفريق مساعدتك في تخطيط مشروعك القادم.',
             timestamp: new Date().toISOString(),
             mentions:  [],
           },
@@ -287,10 +288,10 @@ export const useWoraStore = create<WoraState>()(
         officeCommand:   null,
         ui: {
           theme:            initialTheme,
-          showSidebar:      true,
           showWorkspaceHUD: false,
+          workspaceZoneId:  null,
           showChat:         false,
-          autoRoam:         true,
+          autoRoam:         false,
           modelSwapAgentId: null,
           showHireModal:    false,
         },
@@ -572,7 +573,7 @@ export const useWoraStore = create<WoraState>()(
         upsertWorkspace: (ws) =>
           set((s) => ({ workspaces: { ...s.workspaces, [ws.zoneId]: ws } })),
 
-        selectAgent:      (id)  => set((s) => ({ selectedAgentId: id, followAgentId: id === null ? null : s.followAgentId })),
+        selectAgent:      (id)  => set((s) => ({ selectedAgentId: id, followAgentId: id === s.followAgentId ? s.followAgentId : null })),
         setFollowAgent:   (id)  => set({ followAgentId: id, selectedAgentId: id ?? get().selectedAgentId }),
         setLocalPosition: (pos) => set({ localPosition: pos }),
 
@@ -583,10 +584,14 @@ export const useWoraStore = create<WoraState>()(
             return { ui: { ...s.ui, theme: next } };
           }),
 
-        toggleSidebar:      () => set((s) => ({ ui: { ...s.ui, showSidebar: !s.ui.showSidebar } })),
-        toggleWorkspaceHUD: () => set((s) => ({ ui: { ...s.ui, showWorkspaceHUD: !s.ui.showWorkspaceHUD } })),
-        toggleChat:         (force) =>
-          set((s) => ({ ui: { ...s.ui, showChat: force !== undefined ? force : !s.ui.showChat } })),
+        toggleWorkspaceHUD: (force, zoneId) => set((s) => {
+          const show = force ?? !s.ui.showWorkspaceHUD;
+          return { ui: { ...s.ui, showWorkspaceHUD: show, workspaceZoneId: show ? zoneId ?? null : null, showChat: show ? false : s.ui.showChat } };
+        }),
+        toggleChat: (force) => set((s) => {
+          const show = force ?? !s.ui.showChat;
+          return { ui: { ...s.ui, showChat: show, showWorkspaceHUD: show ? false : s.ui.showWorkspaceHUD } };
+        }),
         toggleAutoRoam:     () => set((s) => ({ ui: { ...s.ui, autoRoam: !s.ui.autoRoam } })),
         openModelSwap:      (agentId) => set((s) => ({ ui: { ...s.ui, modelSwapAgentId: agentId } })),
         setShowHireModal:   (open) => set((s) => ({ ui: { ...s.ui, showHireModal: open } })),
@@ -617,7 +622,7 @@ export const useWoraStore = create<WoraState>()(
           set((s) => ({
             officeCommand: { seq: ++cmdSeq, kind: 'standup' },
             activityLog: [
-              makeActivityItem('دعوة اجتماع عام — جميع الوكلاء يتجهون إلى قاعة الاجتماعات التنفيذية', '#7c3aed'),
+              makeActivityItem('دعوة اجتماع عام — الوكلاء يتجهون إلى مساحة الاجتماع', '#7c3aed'),
               ...s.activityLog,
             ].slice(0, MAX_ACTIVITY),
           })),
@@ -637,7 +642,7 @@ export const useWoraStore = create<WoraState>()(
           })),
 
         focusRoomCamera:  (roomId)  => set({ followAgentId: null, officeCommand: { seq: ++cmdSeq, kind: 'focus-room', roomId } }),
-        focusAgentCamera: (agentId) => set({ selectedAgentId: agentId, officeCommand: { seq: ++cmdSeq, kind: 'focus-agent', agentId } }),
+        focusAgentCamera: (agentId) => set({ selectedAgentId: agentId, followAgentId: null, officeCommand: { seq: ++cmdSeq, kind: 'focus-agent', agentId } }),
         resetCamera:      ()        => set({ followAgentId: null, officeCommand: { seq: ++cmdSeq, kind: 'reset-camera' } }),
       };
     }),

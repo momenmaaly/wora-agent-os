@@ -12,7 +12,8 @@
     "seed:prod": "node dist/seed.mjs",
     "dev": "tsx watch src/index.ts",
     "dev:preview": "tsx src/scripts/preview-server.ts",
-    "seed": "tsx src/scripts/seed.ts"
+    "seed": "tsx src/scripts/seed.ts",
+    "test": "tsx --test src/lib/*.test.ts src/studio/*.test.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.9.0",
@@ -27,13 +28,13 @@
     "pino": "^9.6.0",
     "redis": "^5.12.3",
     "socket.io": "^4.8.1",
-    "zod": "^3.24.2"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/node": "^22.15.0",
-    "esbuild": "^0.27.3",
+    "esbuild": "^0.28.2",
     "tsx": "^4.19.4",
     "typescript": "^5.8.3"
   }

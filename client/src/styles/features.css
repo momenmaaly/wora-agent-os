@@ -1,0 +1,131 @@
+.section-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 14px; }
+.section-bar > div { min-width: 0; }
+.section-bar h2 { font-size: 18px; font-weight: 700; line-height: 1.3; }
+.section-bar p { margin-top: 2px; color: var(--subtle); font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.button.danger { background: color-mix(in srgb, var(--danger) 18%, var(--panel)); color: var(--danger); border-color: color-mix(in srgb, var(--danger) 32%, var(--line)); }
+.feature-list { display: grid; }
+.feature-list li { min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-height: 47px; padding-block: 8px; border-top: 1px solid var(--line); }
+.feature-list li > span { flex: 1; min-width: 125px; overflow-wrap: anywhere; }
+.feature-list li > svg { color: var(--accent); }
+.catalog-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 13px; }
+.catalog-toolbar { display: flex; align-items: center; gap: 9px; }
+.catalog-search { position: relative; flex: 1; min-width: min(100%, 175px); color: var(--subtle); }
+.catalog-search > svg { position: absolute; inset-inline-start: 11px; top: 12px; pointer-events: none; }
+.catalog-search > input { padding-inline-start: 37px; }
+.catalog-toolbar > select { width: auto; min-width: 140px; max-width: 235px; font-size: 13px; }
+.catalog-count { color: var(--subtle); font-size: 13px; margin-block: -4px -9px; }
+.catalog-card { display: flex; min-width: 0; flex-direction: column; gap: 12px; padding: 15px; border: 1px solid var(--line); border-radius: 13px; background: var(--panel); }
+.catalog-head { display: flex; align-items: flex-start; gap: 9px; min-width: 0; }
+.catalog-head > div { flex: 1; min-width: 0; }
+.catalog-head h2, .catalog-head h3, .idea-card h3 { color: var(--ink); font-size: 15px; font-weight: 680; line-height: 1.5; overflow-wrap: anywhere; }
+.catalog-head p, .catalog-head small, .idea-card p { display: block; margin-top: 2px; color: var(--subtle); font-size: 12px; overflow-wrap: anywhere; }
+.catalog-symbol { display: grid; flex: 0 0 auto; place-items: center; width: 37px; height: 37px; border: 1px solid color-mix(in srgb, var(--catalog-color, var(--accent)) 40%, var(--line)); border-radius: 9px; background: color-mix(in srgb, var(--catalog-color, var(--accent)) 18%, var(--panel)); color: color-mix(in srgb, var(--catalog-color, var(--accent)) 43%, var(--ink)); }
+.integration-symbol { font-family: var(--font-sans); font-weight: 750; font-size: 17px; }
+.catalog-tags { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; }
+.catalog-detail { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: auto; color: var(--subtle); font-size: 11px; }
+.catalog-detail > span { display: flex; align-items: center; gap: 4px; }
+.catalog-tail { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; justify-content: space-between; padding-top: 8px; border-top: 1px solid var(--line); color: var(--subtle); font-size: 11px; }
+.integration-toolbar { display: grid; gap: 11px; }
+.integration-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: auto; }
+.integration-actions .button { border-color: var(--accent-line); }
+.project-switcher { align-items: stretch; }
+.project-switcher .filter-chip { min-height: 42px; padding-inline: 11px; font-size: 13px; }
+.project-dot { width: 8px; height: 8px; border-radius: 50%; display: block; flex: 0 0 auto; }
+.project-banner { display: flex; align-items: center; justify-content: space-between; gap: 14px; background: radial-gradient(ellipse at 92% 0%, var(--accent-wash), transparent 82%), var(--panel); }
+.project-banner-title { display: flex; align-items: flex-start; gap: 11px; min-width: 0; }
+.project-banner h2 { font-weight: 700; font-size: clamp(19px, 2.1vw, 27px); overflow-wrap: anywhere; }
+.project-banner p { color: var(--subtle); line-height: 1.65; overflow-wrap: anywhere; }
+.project-banner .label { width: min(100%, 158px); flex: 0 0 auto; }
+.project-tabs { display: flex; gap: 6px; align-items: center; padding: 10px; overflow-x: auto; border-bottom: 1px solid var(--line); }
+.project-tabs > button { white-space: nowrap; flex: 0 0 auto; border-color: transparent; }
+.project-tabs > button[aria-pressed='true'] { border-color: var(--accent-line); }
+.project-section { display: grid; min-width: 0; gap: 16px; align-items: start; }
+.project-section > .button { justify-self: start; }
+.summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.summary-cell { display: flex; align-items: center; gap: 8px; border: 1px solid var(--line); border-radius: 12px; padding: 12px; background: var(--surface-color); text-align: start; }
+.summary-cell:hover { border-color: var(--accent-line); }
+.summary-cell > span:nth-child(2) { flex: 1; color: var(--subtle); font-size: 12px; }
+.summary-cell strong { display: block; color: var(--ink); font-size: 21px; font-weight: 700; overflow-wrap: anywhere; }
+.summary-cell > svg { color: var(--accent); }
+.project-vision { padding: 13px; border-inline-start: 2px solid var(--accent-quiet); background: var(--accent-wash); border-radius: 8px; }
+.project-vision small { color: var(--subtle); }
+.project-vision p { color: var(--ink); font-weight: 500; margin-top: 2px; overflow-wrap: anywhere; }
+.kanban-lanes { display: flex; align-items: flex-start; min-width: 0; gap: 9px; overflow-x: auto; padding: 3px 2px 10px; }
+.kanban-lane { flex: 0 0 min(225px, 80%); min-width: 0; display: grid; gap: 7px; border: 1px solid var(--line); padding: 9px; border-radius: 10px; background: var(--bg); }
+.kanban-lane h3 { display: flex; gap: 6px; align-items: center; font-size: 13px; font-weight: 650; }
+.kanban-lane h3 .badge { margin-inline-start: auto; }
+.kanban-task { display: grid; gap: 6px; padding: 9px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); font-size: 12px; }
+.kanban-title { display: flex; align-items: flex-start; justify-content: space-between; gap: 4px; }
+.kanban-title strong, .kanban-task p { min-width: 0; overflow-wrap: anywhere; }
+.kanban-task p { color: var(--subtle); }
+.kanban-meta { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; color: var(--subtle); }
+.kanban-meta .agent-avatar { width: 24px; height: 24px; border-radius: 6px; font-size: 8px; }
+.kanban-task .field { min-height: 34px; font-size: 12px; padding-block: 5px; }
+.task-delete { min-width: 29px; min-height: 29px; border-color: transparent; }
+.task-delete:hover { color: var(--danger); }
+.task-delete svg { width: 14px; height: 14px; }
+.kanban-add { border-style: dashed; }
+.product-facts { display: flex; flex-wrap: wrap; gap: 7px; align-items: center; color: var(--subtle); font-size: 12px; }
+.product-facts strong { color: var(--mint); font-size: 16px; }
+.idea-list { display: grid; gap: 8px; }
+.idea-card { flex-direction: row; align-items: center; }
+.idea-card > div { flex: 1; min-width: 0; }
+.vote-button { color: var(--accent); min-width: 51px; }
+.price-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.price-card { min-width: 0; display: grid; gap: 14px; padding: clamp(16px, 2.45vw, 32px); }
+.price-card.is-pro { border-color: var(--accent-line); background: radial-gradient(ellipse at 25% 0%, var(--accent-wash), transparent 68%), var(--panel); }
+.price-head { display: flex; align-items: flex-start; gap: 9px; }
+.price-head > div { flex: 1; min-width: 0; }
+.price-head h2 { font-size: 23px; font-weight: 700; line-height: 1.2; }
+.price-head p { color: var(--subtle); margin-top: 3px; font-size: 12px; }
+.price-value { display: flex; align-items: center; gap: 10px; min-height: 73px; border-bottom: 1px solid var(--line); }
+.price-value strong { font-size: clamp(31px, 4vw, 52px); font-weight: 695; }
+.price-value > span { color: var(--subtle); font-size: 13px; }
+.price-value small { color: var(--subtle); font-size: 11px; }
+.price-features { display: grid; gap: 9px; color: var(--subtle); margin-bottom: 6px; }
+.price-features li { display: flex; align-items: center; gap: 8px; }
+.price-features svg { color: var(--mint); }
+.price-card > .button { margin-top: auto; }
+.premium-rooms { display: grid; gap: 13px; }
+
+.swatch-field legend { margin-bottom: 7px; font-weight: 600; font-size: 13px; }
+.swatch-field > div { display: flex; flex-wrap: wrap; gap: 6px; }
+.color-swatch { width: 35px; height: 35px; display: grid; place-items: center; border-radius: 8px; border: 1px solid transparent; }
+.color-swatch::before { content: ''; display: block; width: 24px; height: 24px; border-radius: 50%; background: var(--swatch); }
+.color-swatch[aria-pressed='true'], .color-swatch:hover { border-color: var(--accent-quiet); background: var(--accent-wash); }
+.swap-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; border: 1px solid var(--line); background: var(--surface-color); padding: 11px; border-radius: 9px; }
+.swap-summary > div { flex: 1; min-width: 90px; }
+.swap-summary small { display: block; color: var(--subtle); }
+.swap-summary .badge { text-wrap: wrap; overflow-wrap: anywhere; }
+.task-composer { padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-color); }
+.task-composer-actions { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px; }
+.task-composer-actions label { flex: 1; min-width: 116px; }
+.task-entries h3 { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; font-weight: 650; }
+.task-entries ul { display: grid; gap: 7px; }
+.task-entry { display: grid; gap: 6px; border: 1px solid var(--line); border-radius: 9px; padding: 10px; }
+.task-entry > div { display: flex; align-items: center; gap: 7px; }
+.task-entry strong { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.task-entry small { color: var(--subtle); }
+.chat-drawer .dialog-body { display: flex; flex-direction: column; overflow: hidden; padding-bottom: 9px; }
+.chat-target { display: flex; align-items: center; gap: 6px; color: var(--subtle); margin-bottom: 12px; }
+.chat-target svg { color: var(--accent); }
+.chat-target select { flex: 1; }
+.chat-messages { flex: 1; min-height: 0; overflow: auto; padding: 3px; }
+.chat-messages ul { display: grid; gap: 12px; }
+.chat-message { display: flex; gap: 7px; align-items: flex-start; }
+.chat-message.is-me { justify-content: end; }
+.chat-bubble { min-width: 0; max-width: min(85%, 100% - 45px); padding: 9px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-color); }
+.chat-message.is-me .chat-bubble { max-width: 92%; background: var(--accent-wash); border-color: var(--accent-line); }
+.chat-bubble p { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; line-height: 1.65; }
+.chat-meta { display: flex; align-items: center; justify-content: space-between; gap: 7px; margin-bottom: 4px; }
+.chat-meta bdi { font-size: 12px; font-weight: 700; }
+.chat-meta time { color: var(--subtle); font-size: 10px; white-space: nowrap; }
+.chat-system { padding: 5px 10px; color: var(--gold); text-align: center; overflow-wrap: anywhere; background: var(--raised); border: 1px solid var(--line); border-radius: 8px; }
+.chat-tip { margin-top: 9px; }
+.chat-form { width: 100%; display: flex; align-items: center; gap: 7px; }
+.chat-form .button { height: 41px; min-width: 41px; padding-inline: 8px; }
+.stream-cursor { display: inline-block; margin-inline-start: 3px; width: 3px; height: .85em; background: var(--accent); vertical-align: middle; }
+
+@media (max-width: 1170px) { .catalog-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 650px) { .price-grid { grid-template-columns: 1fr; } .catalog-toolbar { flex-wrap: wrap; } .catalog-search { flex-basis: 100%; } .catalog-toolbar select { flex: 1; min-width: 110px; max-width: none; } .project-banner { flex-wrap: wrap; } .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .summary-cell { padding: 7px; } .summary-cell > svg { display: none; } }
+@media (max-width: 490px) { .catalog-grid { grid-template-columns: 1fr; } .summary-cell .icon-tile { width: 27px; height: 27px; } .summary-cell .icon-tile svg { width: 15px; } }

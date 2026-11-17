@@ -1,91 +1,134 @@
-import { useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { CircleHelp, FolderKanban, Map, MessageCircle, Search } from 'lucide-react';
 import { CompanyHeader } from './components/CompanyHeader.js';
 import { CompanySidebar } from './components/CompanySidebar.js';
-import { OfficeFloorplan } from './components/OfficeFloorplan.js';
-import { ModelSwapModal } from './components/ModelSwapModal.js';
+import { Campus, Dashboard } from './components/Dashboard.js';
 import { HireAgentModal } from './components/HireAgentModal.js';
+import { ModelSwapModal } from './components/ModelSwapModal.js';
 import { ChatDrawer } from './components/ChatDrawer.js';
 import { WorkspaceBoard } from './components/WorkspaceBoard.js';
-import { ProjectOSBoard } from './components/ProjectOSBoard.js';
-import { ModelHub } from './components/ModelHub.js';
-import { ProductStudio } from './components/ProductStudio.js';
-import { PricingPlans } from './components/PricingPlans.js';
-import { IntegrationsHub } from './components/IntegrationsHub.js';
+import { QuickSearch } from './components/QuickSearch.js';
+import { Dialog, IconTile } from './components/ui.js';
 import { useSocketLifecycle } from './hooks/useSocket.js';
+import { useOfficeSimulation } from './office/useOfficeSimulation.js';
+import { currentPage, NAV_ITEMS, type PageId } from './pages.js';
 import { useWoraStore } from './store/useWoraStore.js';
-import { Building2, Layers3, Cpu, Sparkles, BadgeDollarSign, Plug2 } from 'lucide-react';
 
-function SocketBridge(){ useSocketLifecycle(); return null; }
-type MainTab = 'campus'|'studio'|'projects'|'models'|'integrations'|'pricing';
-const TABS: {id:MainTab; label:string; icon:typeof Building2; badge?:string}[] = [
-  {id:'campus', label:'المقر الحي', icon:Building2},
-  {id:'studio', label:'استوديو المنتج', icon:Sparkles, badge:'Pro'},
-  {id:'projects', label:'المشاريع', icon:Layers3},
-  {id:'models', label:'النماذج', icon:Cpu},
-  {id:'integrations', label:'التكاملات', icon:Plug2},
-  {id:'pricing', label:'الخطط', icon:BadgeDollarSign},
-];
+const Projects = lazy(() => import('./components/ProjectOSBoard.js').then((module) => ({ default: module.ProjectOSBoard })));
+const Studio = lazy(() => import('./components/ProductStudio.js').then((module) => ({ default: module.ProductStudio })));
+const Models = lazy(() => import('./components/ModelHub.js').then((module) => ({ default: module.ModelHub })));
+const Integrations = lazy(() => import('./components/IntegrationsHub.js').then((module) => ({ default: module.IntegrationsHub })));
+const Pricing = lazy(() => import('./components/PricingPlans.js').then((module) => ({ default: module.PricingPlans })));
 
-export default function App(){
-  const [mainTab, setMainTab] = useState<MainTab>('campus');
+function Runtime() {
+  useSocketLifecycle();
+  useOfficeSimulation();
+  return null;
+}
+
+export default function App() {
+  const [page, setPage] = useState<PageId>(currentPage);
+  const [overlay, setOverlay] = useState<'menu' | 'help' | 'search' | null>(null);
+  const main = useRef<HTMLElement>(null);
+  const focusOnNavigate = useRef(false);
+  const openHire = useWoraStore((s) => s.setShowHireModal);
+
+  const navigate = useCallback((target: PageId) => {
+    setOverlay(null);
+    if (currentPage() === target) return;
+    focusOnNavigate.current = true;
+    window.history.pushState(null, '', `#${target}`);
+    setPage(target);
+  }, []);
+  const toHome = useCallback(() => navigate('overview'), [navigate]);
+  const toCampus = useCallback(() => navigate('campus'), [navigate]);
+  const toPricing = useCallback(() => navigate('pricing'), [navigate]);
+  const toProjects = useCallback(() => navigate('projects'), [navigate]);
+  const toIntegrations = useCallback(() => navigate('integrations'), [navigate]);
+  const toTeam = useCallback(() => {
+    navigate('campus');
+    window.requestAnimationFrame(() => {
+      const section = document.getElementById('campus-team');
+      section?.scrollIntoView({ block: 'nearest' });
+      section?.focus({ preventScroll: true });
+    });
+  }, [navigate]);
+  const openAgent = useCallback((agentId: string) => {
+    navigate('campus');
+    useWoraStore.getState().focusAgentCamera(agentId);
+  }, [navigate]);
+
+  useEffect(() => {
+    const routeChanged = () => {
+      setOverlay(null);
+      const office = useWoraStore.getState();
+      if (office.ui.showChat) office.toggleChat(false);
+      if (office.ui.showWorkspaceHUD) office.toggleWorkspaceHUD(false);
+      if (office.ui.showHireModal) office.setShowHireModal(false);
+      if (office.ui.modelSwapAgentId) office.openModelSwap(null);
+      setPage(currentPage());
+    };
+    const hotkey = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'k') return;
+      if (document.querySelector('dialog[open]')) return;
+      event.preventDefault();
+      setOverlay('search');
+    };
+    const desktop = window.matchMedia('(min-width: 861px)');
+    const closeOnDesktop = (event: MediaQueryListEvent) => { if (event.matches) setOverlay((value) => value === 'menu' ? null : value); };
+    window.addEventListener('hashchange', routeChanged);
+    window.addEventListener('popstate', routeChanged);
+    window.addEventListener('keydown', hotkey);
+    desktop.addEventListener('change', closeOnDesktop);
+    return () => {
+      window.removeEventListener('hashchange', routeChanged);
+      window.removeEventListener('popstate', routeChanged);
+      window.removeEventListener('keydown', hotkey);
+      desktop.removeEventListener('change', closeOnDesktop);
+    };
+  }, []);
+
+  useLayoutEffect(() => {
+    main.current?.scrollTo({ top: 0 });
+    if (focusOnNavigate.current) { main.current?.focus({ preventScroll: true }); focusOnNavigate.current = false; }
+    document.title = `${NAV_ITEMS.find((item) => item.id === page)?.label ?? 'مساحة العمل'} — Wora`;
+  }, [page]);
+
   return (
-    <div className="flex h-screen w-screen flex-col overflow-hidden bg-[hsl(var(--background))] text-foreground">
-      <SocketBridge/>
-      <CompanyHeader/>
-      <div className="flex items-center gap-1 overflow-x-auto border-b border-stone-200 bg-white px-2 py-2 hq-scroll dark:bg-[#0B0F19] dark:border-white/10">
-        {TABS.map(t=>{
-          const active = mainTab===t.id;
-          return (
-            <button key={t.id} onClick={()=>setMainTab(t.id)}
-              className={`flex shrink-0 items-center gap-1.5 rounded-full px-3.5 py-1.5 text-xs font-bold transition ${active ? 'bg-[#0B0F19] text-white dark:bg-white dark:text-slate-900 shadow' : 'text-stone-500 hover:bg-stone-100 dark:hover:bg-white/10'}`}>
-              <t.icon className="h-4 w-4"/> {t.label} {t.badge && <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-black ${active ? 'bg-[#CBA36B] text-[#0B0F19]' : 'bg-amber-100 text-amber-800'}`}>{t.badge}</span>}
-            </button>
-          );
-        })}
-        <div className="ml-auto hidden items-center gap-2 text-[11px] text-stone-500 sm:flex">
-          <span className="h-2 w-2 animate-pulse rounded-full bg-emerald-500"/> كل قسم وتكامله — GitHub, Figma, Meta, WhatsApp, Stripe
-        </div>
+    <div className="app-shell">
+      <Runtime />
+      <a href="#main-content" className="button primary skip-link" onClick={(event) => { event.preventDefault(); main.current?.focus(); }}>تخطَ إلى المحتوى</a>
+      <aside className="company-sidebar desktop-sidebar"><CompanySidebar page={page} onNavigate={navigate} onHelp={() => setOverlay('help')} /></aside>
+      <div className="app-main">
+        <CompanyHeader page={page} onHome={toHome} onMenu={() => setOverlay('menu')} onSearch={() => setOverlay('search')} onHire={() => openHire(true)} />
+        <main id="main-content" className="app-scroll hq-scroll" tabIndex={-1} ref={main}>
+          <div className="page-frame" key={page}>
+            <Suspense fallback={<div className="panel panel-pad subtle" role="status">جارٍ تحميل الصفحة…</div>}>
+              {page === 'overview' && <Dashboard onCampus={toCampus} onTeam={toTeam} onProjects={toProjects} onAgent={openAgent} onUpgrade={toPricing} />}
+              {page === 'campus' && <Campus onUpgrade={toPricing} />}
+              {page === 'projects' && <Projects onUpgrade={toPricing} onIntegrations={toIntegrations} />}
+              {page === 'studio' && <Studio onUpgrade={toPricing} onProjects={toProjects} />}
+              {page === 'models' && <Models onUpgrade={toPricing} />}
+              {page === 'integrations' && <Integrations />}
+              {page === 'pricing' && <Pricing onStudio={() => navigate('studio')} />}
+            </Suspense>
+          </div>
+        </main>
       </div>
-
-      <div className="flex min-h-0 flex-1 overflow-hidden">
-        <div className="hidden shrink-0 md:flex"><CompanySidebar/></div>
-        <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
-          {mainTab==='campus' && (
-            <>
-              <OfficeFloorplan/>
-              <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 flex flex-col items-end gap-3 p-3">
-                <div className="flex w-full flex-col items-end gap-3 sm:flex-row sm:justify-end">
-                  <WorkspaceBoard/><ChatDrawer/>
-                </div>
-              </div>
-            </>
-          )}
-          {mainTab==='studio' && <div className="flex-1 overflow-y-auto bg-[#FDFBF7] p-4 hq-scroll dark:bg-[#0B0F19]"><ProductStudio onUpgrade={()=>setMainTab('pricing')}/></div>}
-          {mainTab==='projects' && <div className="flex-1 overflow-hidden bg-stone-50 p-3 dark:bg-[#0B0F19]"><ProjectOSBoard/></div>}
-          {mainTab==='models' && <div className="flex-1 overflow-hidden bg-stone-50 p-3 dark:bg-[#0B0F19]"><ModelHub/></div>}
-          {mainTab==='integrations' && <div className="flex-1 overflow-y-auto bg-stone-50 p-3 hq-scroll dark:bg-[#0B0F19]"><IntegrationsHub/></div>}
-          {mainTab==='pricing' && <div className="flex-1 overflow-y-auto bg-[#FDFBF7] p-6 hq-scroll dark:bg-[#0B0F19]"><PricingPlans/></div>}
-        </div>
-      </div>
-      <MobileSidebarSheet/>
-      <ModelSwapModal/><HireAgentModal/>
+      {overlay === 'menu' && <Dialog key="menu" title="مساحة عمل Wora" variant="navigation" onClose={() => setOverlay(null)}><div className="company-sidebar"><CompanySidebar page={page} onNavigate={navigate} onHelp={() => setOverlay('help')} /></div></Dialog>}
+      {overlay === 'search' && <QuickSearch onClose={() => setOverlay(null)} onNavigate={navigate} onAgent={openAgent} />}
+      {overlay === 'help' && <Dialog key="help" icon={CircleHelp} title="ابدأ في مقر Wora" description="ثلاث طرق للوصول لما تحتاجه بسرعة." onClose={() => setOverlay(null)}>
+        <ul className="help-steps">
+          <li><IconTile icon={Map} /><div><strong>تجوّل في المقر</strong>اختر قسماً من الخريطة، أو اختر وكيلاً لمتابعته أو إرساله إلى غرفة.</div></li>
+          <li><IconTile icon={MessageCircle} /><div><strong>تواصل مع الفريق</strong>افتح المحادثة للتحدث مع الفريق أو اختر وكيلاً لمراسلته مباشرة.</div></li>
+          <li><IconTile icon={FolderKanban} /><div><strong>نظّم العمل</strong>أنشئ مشروعاً أو وزّع المهام على الأقسام من لوحة المقر.</div></li>
+          <li><IconTile icon={Search} /><div><strong>اختصر التنقل</strong>اضغط <kbd dir="ltr">Ctrl / ⌘ + K</kbd> للبحث عن صفحة، وكيل أو مشروع.</div></li>
+        </ul>
+      </Dialog>}
+      <ChatDrawer />
+      <WorkspaceBoard />
+      <ModelSwapModal />
+      <HireAgentModal onHired={openAgent} />
     </div>
   );
-}
-function MobileSidebarSheet(){
-  const show = useWoraStoreMobile();
-  if(!show) return null;
-  return (
-    <div className="fixed inset-0 z-40 flex md:hidden">
-      <button aria-label="إغلاق" onClick={()=>show.toggle()} className="flex-1 bg-slate-900/40 backdrop-blur-sm"/>
-      <div className="h-full w-[86vw] max-w-[340px] overflow-hidden bg-white shadow-2xl"><CompanySidebar/></div>
-    </div>
-  );
-}
-function useWoraStoreMobile(){
-  const showSidebar = useWoraStore(s=>s.ui.showSidebar);
-  const toggleSidebar = useWoraStore(s=>s.toggleSidebar);
-  if(!showSidebar) return null;
-  try{ if(typeof window!=='undefined' && window.matchMedia('(min-width: 768px)').matches) return null; }catch{}
-  return { toggle: toggleSidebar };
 }

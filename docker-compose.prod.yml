@@ -64,6 +64,8 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       GROQ_API_KEY: ${GROQ_API_KEY:-}
+      STUDIO_PROVIDER: ${STUDIO_PROVIDER:-}
+      STUDIO_MODEL: ${STUDIO_MODEL:-}
       MAX_SOCKETS: ${MAX_SOCKETS:-6000}
       AI_CONCURRENCY: ${AI_CONCURRENCY:-30}
       AI_REQUEST_TIMEOUT_MS: ${AI_REQUEST_TIMEOUT_MS:-90000}
@@ -95,7 +97,7 @@ services:
           cpus: "1.0"
           memory: 768M
 
-  # ── Frontend Static Bundle (React + Vite + R3F served by Nginx) ──
+  # ── Frontend Static Bundle (React + Vite served by Nginx) ──
   client:
     build:
       context: ./client

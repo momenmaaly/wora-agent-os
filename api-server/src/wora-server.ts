@@ -18,7 +18,7 @@
 
 import express, { type Express, type Request, type Response, type NextFunction } from 'express';
 import { createServer } from 'node:http';
-import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { Server as SocketIOServer } from 'socket.io';
 import { createAdapter } from '@socket.io/redis-adapter';
 import { createClient as createRedis, type RedisClientType } from 'redis';
@@ -38,6 +38,9 @@ import { AiQueue } from './queue/AiQueue.js';
 import { PresenceStore } from './store/PresenceStore.js';
 import { EXAMPLE_ZONES, VALID_ZONE_IDS } from './zones.js';
 import { logger } from './lib/logger.js';
+import { safeEqual, verifySessionToken } from './lib/session.js';
+import { generateStudioPack, resolveStudioBrain } from './studio/drafts.js';
+import { createStudioRouter } from './studio/router.js';
 
 import {
   AgentLifecycleState,
@@ -131,61 +134,6 @@ function buildCorsOptions(): CorsOptions {
 }
 
 /* ─── AUTH HELPERS ──────────────────────────────────────── */
-function safeEqual(a: string, b: string): boolean {
-  const bufA = Buffer.from(a, 'utf8');
-  const bufB = Buffer.from(b, 'utf8');
-  if (bufA.length !== bufB.length) return false;
-  return timingSafeEqual(bufA, bufB);
-}
-
-/**
- * Verifies an HMAC-SHA256 signed session token (`base64url(payload).base64url(sig)`)
- * when `AUTH_SECRET` is configured. Returns the verified userId or null.
- */
-function verifySessionToken(token: string, secret: string): { userId: string; displayName?: string } | null {
-  const parts = token.split('.');
-  // Support both 2-part HMAC tokens (`payload.sig`) and standard 3-part HS256 JWTs (`header.payload.sig`)
-  if (parts.length === 2) {
-    const [payloadB64, sigB64] = parts as [string, string];
-    const expected = createHmac('sha256', secret).update(payloadB64).digest('base64url');
-    if (!safeEqual(sigB64, expected)) return null;
-    try {
-      const payload = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf8')) as {
-        sub?: string; userId?: string; name?: string; exp?: number;
-      };
-      if (payload.exp && Date.now() >= payload.exp * 1_000) return null;
-      const uid = payload.sub ?? payload.userId;
-      if (!uid || !/^[a-zA-Z0-9_-]{3,64}$/.test(uid)) return null;
-      return { userId: uid, displayName: payload.name };
-    } catch {
-      return null;
-    }
-  }
-
-  if (parts.length === 3) {
-    const [headerB64, payloadB64, sigB64] = parts as [string, string, string];
-    try {
-      const header = JSON.parse(Buffer.from(headerB64, 'base64url').toString('utf8')) as { alg?: string };
-      if (header.alg !== 'HS256') return null;
-      const expected = createHmac('sha256', secret)
-        .update(`${headerB64}.${payloadB64}`)
-        .digest('base64url');
-      if (!safeEqual(sigB64, expected)) return null;
-      const payload = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf8')) as {
-        sub?: string; userId?: string; name?: string; exp?: number;
-      };
-      if (payload.exp && Date.now() >= payload.exp * 1_000) return null;
-      const uid = payload.sub ?? payload.userId;
-      if (!uid || !/^[a-zA-Z0-9_-]{3,64}$/.test(uid)) return null;
-      return { userId: uid, displayName: payload.name };
-    } catch {
-      return null;
-    }
-  }
-
-  return null;
-}
-
 function requireAdminKey(req: Request, res: Response, next: NextFunction): void {
   if (!ADMIN_API_KEY) {
     if (IS_PRODUCTION) {
@@ -234,7 +182,7 @@ const PositionSchema = z.object({
 
 const PublicBrainSchema = z
   .object({
-    provider:    z.nativeEnum(BrainProvider),
+    provider:    z.enum(BrainProvider),
     model:       z.string().trim().min(1).max(100),
     maxTokens:   z.number().int().min(64).max(16_384).optional(),
     temperature: z.number().min(0).max(2).optional(),
@@ -247,7 +195,7 @@ const PublicBrainSchema = z
 
 const RestBrainSwapSchema = z
   .object({
-    provider:    z.nativeEnum(BrainProvider),
+    provider:    z.enum(BrainProvider),
     model:       z.string().trim().min(1).max(100),
     maxTokens:   z.number().int().min(64).max(16_384).optional(),
     temperature: z.number().min(0).max(2).optional(),
@@ -317,18 +265,21 @@ return current
 class RedisRateLimiter {
   constructor(private readonly redis: RedisClientType) {}
 
-  async allow(bucket: string, subject: string, limit: number, windowMs: number): Promise<boolean> {
+  async allow(bucket: string, subject: string, limit: number, windowMs: number, quotaSignal?: AbortSignal): Promise<boolean> {
     const key = `wora:rl:${bucket}:${subject}`;
     try {
+      const client = quotaSignal ? this.redis.withCommandOptions({ abortSignal: quotaSignal, timeout: 1_500 }) : this.redis;
+      if (quotaSignal && !this.redis.isReady) throw new Error('Quota storage unavailable');
       const count = Number(
-        await this.redis.eval(RATE_LIMIT_LUA, {
+        await client.eval(RATE_LIMIT_LUA, {
           keys:      [key],
           arguments: [String(windowMs)],
         }),
       );
       return count <= limit;
-    } catch {
-      // Fail open on transient Redis hiccup to preserve availability
+    } catch (error) {
+      // Interactive actions preserve availability; metered provider calls fail closed.
+      if (quotaSignal) throw error;
       return true;
     }
   }
@@ -528,7 +479,6 @@ export async function bootWoraServer(app: Express, port = DEFAULT_PORT) {
     next();
   });
   app.use(cors(corsOptions));
-  app.use(express.json({ limit: '16kb' }));
 
   /* ── Redis clients (pub + sub + app events) ── */
   const pubClient = createRedis({ url: REDIS_URL }) as RedisClientType;
@@ -657,6 +607,26 @@ export async function bootWoraServer(app: Express, port = DEFAULT_PORT) {
   });
 
   /* ─── REST API ROUTES ──────────────────────────────────── */
+  const studioSecret = AUTH_SECRET;
+  const studioProvider = sanitizeEnv(process.env['STUDIO_PROVIDER']);
+  const studioBrain = studioSecret ? resolveStudioBrain(studioProvider, sanitizeEnv(process.env['STUDIO_MODEL'])) : null;
+  if (studioProvider && !studioBrain) {
+    logger.warn('Live Studio is disabled: check session authentication and the Studio provider/model settings');
+  }
+  app.use('/api/studio', createStudioRouter(studioSecret && studioBrain ? {
+    authenticate(authorization) {
+      const token = authorization?.match(/^Bearer\s+(\S+)$/i)?.[1];
+      return token ? verifySessionToken(token, studioSecret, true)?.userId ?? null : null;
+    },
+    async consumeQuota(userId, signal) {
+      if (!await rateLimiter.allow('studio-user', userId, 4, 60_000, signal)) return 60;
+      if (!await rateLimiter.allow('studio-global', 'workspace', 60, 3_600_000, signal)) return 3_600;
+      return null;
+    },
+    generate: (brief, signal) => generateStudioPack(studioBrain, brief, signal),
+  } : undefined));
+  app.use(express.json({ limit: '16kb' }));
+
   app.get('/health', async (_req: Request, res: Response) => {
     let redisOk = false;
     try {
@@ -780,7 +750,7 @@ export async function bootWoraServer(app: Express, port = DEFAULT_PORT) {
       res.json(broadcast);
     } catch (err) {
       if (err instanceof ZodError) {
-        res.status(400).json({ error: 'Validation failed', details: err.flatten().fieldErrors });
+        res.status(400).json({ error: 'Validation failed', details: z.flattenError(err).fieldErrors });
         return;
       }
       logger.error({ err }, 'Failed to swap global agent brain');
@@ -814,7 +784,7 @@ export async function bootWoraServer(app: Express, port = DEFAULT_PORT) {
       res.status(201).json(entry);
     } catch (err) {
       if (err instanceof ZodError) {
-        res.status(400).json({ error: 'Validation failed', details: err.flatten().fieldErrors });
+        res.status(400).json({ error: 'Validation failed', details: z.flattenError(err).fieldErrors });
         return;
       }
       logger.error({ err }, 'Failed to write workspace entry');

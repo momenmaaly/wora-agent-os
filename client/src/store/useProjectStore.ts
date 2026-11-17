@@ -4,6 +4,7 @@
  */
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import type { StudioDraft } from '../studio/drafts.js';
 
 export type ProjectStage = 'idea'|'planning'|'building'|'marketing'|'sales'|'growth';
 export type TaskColumn = 'ideas'|'backlog'|'sprint'|'design'|'qa'|'marketing'|'launched'|'analytics';
@@ -19,7 +20,18 @@ export interface Product {
   id: string; projectId: string; name: string; description: string;
   price: number; cost: number; stock: number; sold: number;
   image: string; category: string; status: ProductStatus; createdAt: string;
+  studioRef?: { sessionId: string; index: number };
 }
+
+export function studioSaveState(draft: StudioDraft, product?: Product) {
+  if (!product) return 'new';
+  if (product.status !== 'draft') return 'managed';
+  const unchanged = draft.name === product.name && draft.description === product.description && draft.category === product.category && draft.price === product.price && draft.cost === product.cost;
+  return unchanged ? 'saved' : 'changed';
+}
+
+type StudioSaveResult = { ok: true; added: number; updated: number } | { ok: false; reason: 'limit' | 'project' };
+
 export interface Idea {
   id: string; projectId: string; title: string; description: string;
   votes: number; status: 'open'|'approved'|'rejected'|'implemented'; authorId: string; createdAt: string;
@@ -60,8 +72,8 @@ const DEMO_TASKS: KanbanTask[] = [
 
 export const COLUMN_META: Record<TaskColumn,{ labelAr:string; icon:string; color:string }> = {
   ideas:     { labelAr:'أفكار',     icon:'💡', color:'#f59e0b' },
-  backlog:   { labelAr:'باكلوج',    icon:'📋', color:'#64748b' },
-  sprint:    { labelAr:'سبرنت جاري', icon:'🏗️', color:'#0284c7' },
+  backlog:   { labelAr:'بانتظار البدء',    icon:'📋', color:'#64748b' },
+  sprint:    { labelAr:'قيد التنفيذ', icon:'🏗️', color:'#0284c7' },
   design:    { labelAr:'تصميم',     icon:'🎨', color:'#ec4899' },
   qa:        { labelAr:'جودة',      icon:'🛡️', color:'#d97706' },
   marketing: { labelAr:'تسويق',     icon:'📣', color:'#0891b2' },
@@ -80,6 +92,7 @@ interface ProjectState {
   createProject: (p: Omit<Project,'id'|'createdAt'|'updatedAt'|'stats'>)=>Project;
   updateProjectStage: (id:string, stage:ProjectStage)=>void;
   addProduct: (p: Omit<Product,'id'|'createdAt'|'sold'>)=>void;
+  saveStudioDrafts: (projectId: string, sessionId: string, items: ReadonlyMap<number, StudioDraft>, limit: number) => StudioSaveResult;
   updateProduct: (id:string, patch: Partial<Product>)=>void;
   addIdea: (i: Omit<Idea,'id'|'createdAt'|'votes'|'status'>)=>void;
   voteIdea: (id:string)=>void;
@@ -106,6 +119,34 @@ export const useProjectStore = create<ProjectState>()(persist((set,get)=>({
     const prod: Product = { ...p, id: uid('prod'), sold:0, createdAt:new Date().toISOString() };
     set(s=>({ products:[...s.products, prod], projects: s.projects.map(pr=> pr.id===p.projectId ? {...pr, stats:{...pr.stats, products: pr.stats.products+1}} : pr ) }));
   },
+  saveStudioDrafts: (projectId, sessionId, items, limit) => {
+    const { projects, products } = get();
+    if (!projects.some((project) => project.id === projectId)) return { ok: false, reason: 'project' };
+    const linked = new Map<number, Product>();
+    for (const product of products) {
+      if (product.projectId === projectId && product.studioRef?.sessionId === sessionId) linked.set(product.studioRef.index, product);
+    }
+    const additions: Product[] = [];
+    const updates = new Map<string, StudioDraft>();
+    const now = new Date().toISOString();
+    for (const [index, { name, description, category, price, cost }] of items) {
+      const draft = { name, description, category, price, cost };
+      const existing = linked.get(index);
+      if (!existing) {
+        additions.push({ ...draft, id: uid('prod'), projectId, studioRef: { sessionId, index }, stock: 0, sold: 0, image: '📦', status: 'draft', createdAt: now });
+      } else if (studioSaveState(draft, existing) === 'changed') {
+        updates.set(existing.id, draft);
+      }
+    }
+    if (additions.length > Math.max(0, limit - products.length)) return { ok: false, reason: 'limit' };
+    if (additions.length || updates.size) {
+      const next = [...products.map((product) => updates.has(product.id) ? { ...product, ...updates.get(product.id) } : product), ...additions];
+      set({ products: next, projects: projects.map((project) => project.id === projectId ? {
+        ...project, updatedAt: now, stats: { ...project.stats, products: next.filter((product) => product.projectId === projectId).length },
+      } : project) });
+    }
+    return { ok: true, added: additions.length, updated: updates.size };
+  },
   updateProduct: (id, patch)=> set(s=>({ products: s.products.map(pr=> pr.id===id ? {...pr, ...patch} as Product : pr) })),
   addIdea: (i)=>{
     const idea: Idea = { ...i, id: uid('idea'), votes:0, status:'open', createdAt:new Date().toISOString() };
@@ -117,5 +158,11 @@ export const useProjectStore = create<ProjectState>()(persist((set,get)=>({
     set(s=>({ tasks:[...s.tasks, task], projects: s.projects.map(pr=> pr.id===t.projectId ? {...pr, stats:{...pr.stats, tasks: pr.stats.tasks+1}} : pr) }));
   },
   moveTask: (id, column)=> set(s=>({ tasks: s.tasks.map(t=> t.id===id ? {...t, column, updatedAt:new Date().toISOString()} : t) })),
-  deleteTask: (id)=> set(s=>({ tasks: s.tasks.filter(t=> t.id!==id) })),
+  deleteTask: (id)=> set(s=> {
+    const task = s.tasks.find(item => item.id === id);
+    if (!task) return s;
+    const tasks = s.tasks.filter(item => item.id !== id);
+    return { tasks, projects: s.projects.map(project => project.id === task.projectId
+      ? { ...project, stats: { ...project.stats, tasks: tasks.filter(item => item.projectId === project.id).length } } : project) };
+  }),
 }), { name:'wora:projectOS:v6', partialize: s=>({ projects:s.projects, activeProjectId:s.activeProjectId, products:s.products, ideas:s.ideas, tasks:s.tasks }) }));

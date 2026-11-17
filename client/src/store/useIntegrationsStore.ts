@@ -25,5 +25,5 @@ export const useIntegrationsStore = create<IntegrationsState>()(persist((set,get
   })),
   disconnect:(id)=> set(s=>{ const n={...s.connections}; delete n[id]; return { connections:n }; }),
   isConnected:(id)=> !!get().connections[id],
-  sync:(id)=> set(s=> s.connections[id] ? { connections:{ ...s.connections, [id]:{...s.connections[id]!, status:'syncing' as const } } } : s),
+  sync:(id)=> set(s=> s.connections[id] ? { connections:{ ...s.connections, [id]:{...s.connections[id]!, status:'connected', lastSyncAt:new Date().toISOString() } } } : s),
 }),{ name:'wora:integrations:v1', partialize:s=>({ connections:s.connections })}));

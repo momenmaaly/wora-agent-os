@@ -1,7 +1,7 @@
 /**
  * models.ts — Wora Full Model Catalog + Department Registry
  * ─────────────────────────────────────────────────────────
- * 32+ نماذج مصنفة حسب القسم، مع دعم BYOK.
+ * نماذج مصنّفة حسب القسم للمقارنة في مكتبة النماذج.
  */
 import { BrainProvider } from '../types.js';
 
@@ -111,21 +111,4 @@ export function modelsForProvider(provider: string): ModelDef[] {
 }
 export function getModelById(id: string): ModelDef | undefined {
   return MODEL_CATALOG.find(m => m.id === id);
-}
-
-// BYOK — مفاتيح المستخدم
-export interface BYOKEntry {
-  provider: string;
-  apiKey:   string; // encrypted in real prod, plain in localStorage for demo
-  addedAt:  string;
-}
-const BYOK_KEY = 'wora:byok';
-export function loadBYOK(): Record<string, BYOKEntry> {
-  try { return JSON.parse(localStorage.getItem(BYOK_KEY) || '{}'); } catch { return {}; }
-}
-export function saveBYOK(map: Record<string, BYOKEntry>): void {
-  try { localStorage.setItem(BYOK_KEY, JSON.stringify(map)); } catch { /* ignore */ }
-}
-export function hasBYOK(provider: string): boolean {
-  return !!loadBYOK()[provider]?.apiKey;
 }

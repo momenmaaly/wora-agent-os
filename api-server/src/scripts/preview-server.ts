@@ -25,6 +25,7 @@ import { z } from 'zod';
 
 import { SEED_AGENTS } from './seed.js';
 import { EXAMPLE_ZONES, VALID_ZONE_IDS } from '../zones.js';
+import { createStudioRouter } from '../studio/router.js';
 import {
   BrainAdapterFactory,
   isProviderConfigured,
@@ -65,7 +66,7 @@ const PositionSchema = z.object({
 
 const PublicBrainSchema = z
   .object({
-    provider:    z.nativeEnum(BrainProvider),
+    provider:    z.enum(BrainProvider),
     model:       z.string().trim().min(1).max(100),
     maxTokens:   z.number().int().min(64).max(16_384).optional(),
     temperature: z.number().min(0).max(2).optional(),
@@ -173,7 +174,7 @@ function getOrCreateRoom(roomId: string): RoomBucket {
       senderId:  'agent-planner-01',
       type:      MessageType.Text,
       content:
-        'Welcome to Wora Agent OS v4.1 (Live Preview Sandbox). Select any agent in the 3D office or mention @Aria, @Atlas, @Sentinel, or @Nova to collaborate — or click HOT-SWAP BRAIN to switch 2026 models live.',
+        'أهلاً بك في مساحة عمل Wora التجريبية! اختر وكيلاً لمراسلته، أو اكتب @ متبوعة باسمه. جرّب أن تطلب من الفريق مساعدتك في تخطيط مشروعك القادم.',
       timestamp: new Date().toISOString(),
       mentions:  [],
     };
@@ -283,6 +284,8 @@ async function sleep(ms: number): Promise<void> {
 const app = express();
 app.disable('x-powered-by');
 app.use(cors({ origin: true, credentials: true }));
+// Keep this public sandbox on local templates even if chat providers are configured.
+app.use('/api/studio', createStudioRouter());
 app.use(express.json({ limit: '16kb' }));
 
 const httpServer = createServer(app);
