@@ -123,6 +123,7 @@ export function ModelSwapModal() {
           <div className="mt-3 grid grid-cols-2 gap-2">
             {(Object.keys(BRAIN_MODELS) as BrainProvider[]).map((p) => {
               const v = PROVIDER_VISUALS[p];
+              if (!v) return null;
               const active = provider === p;
               return (
                 <button
@@ -156,7 +157,7 @@ export function ModelSwapModal() {
           <div className="mt-4">
             <div className="mb-2 flex items-center gap-1.5 text-xs font-bold text-foreground">
               <Sparkles className="h-3.5 w-3.5 text-violet-500" />
-              موديلات {nextVisual.fullLabel}
+              موديلات {nextVisual?.fullLabel ?? provider}
             </div>
             <div className="flex flex-col gap-1.5">
               {modelsForProvider.map((m) => {

@@ -23,14 +23,9 @@ export default {
         border: 'hsl(var(--border) / <alpha-value>)',
       },
       fontFamily: {
-        sans: [
-          'IBM Plex Sans Arabic',
-          'Plus Jakarta Sans',
-          'system-ui',
-          '-apple-system',
-          'sans-serif',
-        ],
-        mono: ['JetBrains Mono', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
+        sans: ['IBM Plex Sans Arabic','Inter','system-ui','-apple-system','sans-serif'],
+        display: ['Fraunces','IBM Plex Sans Arabic','serif'],
+        mono: ['JetBrains Mono','ui-monospace','monospace'],
       },
       boxShadow: {
         office: '0 24px 64px -16px rgba(15, 23, 42, 0.16), 0 4px 16px -2px rgba(15, 23, 42, 0.08)',
