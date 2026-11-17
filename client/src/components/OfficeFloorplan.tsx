@@ -46,10 +46,10 @@ interface MovableAgent {
 }
 
 // ─── CONSTANTS ──────────────────────────────────────────────
-const AGENT_SPEED      = 110; // px/sec
-const USER_SPEED       = 140;
-const AUTO_ROAM_MIN_MS = 7000;
-const AUTO_ROAM_MAX_MS = 14000;
+const AGENT_SPEED      = 135; // px/sec for larger campus
+const USER_SPEED       = 155;
+const AUTO_ROAM_MIN_MS = 5500;
+const AUTO_ROAM_MAX_MS = 11000;
 
 // ─── HELPERS ────────────────────────────────────────────────
 function clamp(v: number, a: number, b: number) { return Math.max(a, Math.min(b, v)); }
@@ -587,12 +587,15 @@ export function OfficeFloorplan() {
 
         <div className="pointer-events-auto hidden items-center gap-1.5 sm:flex">
           <span className="inline-flex items-center gap-1 rounded-full border border-border bg-card/90 px-2.5 py-1 text-[11px] font-semibold text-muted-foreground shadow-sm backdrop-blur">
+            <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse"/> 10 غرف · 5 ممرات · {Object.keys(agents).length} وكلاء أحياء
+          </span>
+          <span className="inline-flex items-center gap-1 rounded-full border border-border bg-card/90 px-2.5 py-1 text-[11px] font-semibold text-muted-foreground shadow-sm backdrop-blur">
             <Move className="h-3 w-3" />
-            Shift+سحب للتحريك
+            Shift+سحب
           </span>
           <span className="inline-flex items-center gap-1 rounded-full border border-border bg-card/90 px-2.5 py-1 text-[11px] font-semibold text-muted-foreground shadow-sm backdrop-blur">
             <Crosshair className="h-3 w-3" />
-            WASD للحركة
+            WASD
           </span>
           {followId && (
             <button
@@ -784,6 +787,8 @@ export function OfficeFloorplan() {
                   const isReception = spot.role === 'reception';
                   const isBoard = spot.role === 'board';
                   const isCollab = spot.role === 'collab';
+                  const isShowcase = (spot.role as string) === 'showcase';
+                  const isStage = (spot.role as string) === 'stage';
                   return (
                     <g key={spot.id} opacity={0.95}>
                       {isDesk && (
@@ -830,6 +835,19 @@ export function OfficeFloorplan() {
                         <>
                           <rect x={spot.x - 22} y={spot.y - 14} width={44} height={28} rx="9" fill={isDark ? '#222840' : 'white'} stroke={isDark ? '#2e334e' : '#d7deea'} />
                           <rect x={spot.x - 16} y={spot.y - 3} width={32} height={6} rx="3" fill={room.accent} opacity={0.12} />
+                        </>
+                      )}
+                      {isShowcase && (
+                        <>
+                          <rect x={spot.x - 18} y={spot.y - 10} width={36} height={20} rx="4" fill={isDark ? '#1c2033' : 'white'} stroke={room.accent} strokeWidth="1.2"/>
+                          <text x={spot.x} y={spot.y+3} textAnchor="middle" fontSize="6" fontWeight="800" fill={room.accent}>SHOW</text>
+                          <circle cx={spot.x+10} cy={spot.y-6} r="2.5" fill={room.accent} opacity={0.9}/>
+                        </>
+                      )}
+                      {isStage && (
+                        <>
+                          <rect x={spot.x - 26} y={spot.y - 8} width={52} height={16} rx="6" fill={room.accent} opacity={0.16} stroke={room.accent} strokeWidth="1"/>
+                          <text x={spot.x} y={spot.y+3} textAnchor="middle" fontSize="6" fontWeight="800" fill={room.accent}>STAGE</text>
                         </>
                       )}
                     </g>
@@ -994,7 +1012,34 @@ export function OfficeFloorplan() {
             );
           })}
 
-          {/* Invisible hit overlay for floor clicks */}
+          {/* Ambient sparkles */}
+          <g opacity={isDark ? 0.35 : 0.22}>
+            {[...Array(12)].map((_,i)=>(
+              <circle key={i} cx={120+i*160} cy={isDark? 30: 22} r={1.2} fill={isDark ? '#fde68a' : '#f59e0b'}>
+                <animate attributeName="opacity" values="0.2;0.9;0.2" dur={`${2+i%3}s`} repeatCount="indefinite"/>
+                <animateTransform attributeName="transform" type="translate" values={`0 0; 0 ${4+ i%4}`} dur={`${3+i%2}s`} repeatCount="indefinite"/>
+              </circle>
+            ))}
+          </g>
+          {/* Proximity interactions */}
+          {(() => {
+            const pairs: Array<[string,string,number,number]> = [];
+            const ids = Object.keys(movables);
+            for(let a=0;a<ids.length;a++) for(let b=a+1;b<ids.length;b++){
+              const ma=movables[ids[a]!]!, mb=movables[ids[b]!]!;
+              const d=Math.hypot(ma.x-mb.x, ma.y-mb.y);
+              if(d<90 && d>18) pairs.push([ids[a]!,ids[b]!, (ma.x+mb.x)/2, (ma.y+mb.y)/2]);
+            }
+            return pairs.slice(0,3).map(([idA,idB,cx,cy])=>(
+              <g key={`${idA}-${idB}`}>
+                <line x1={movables[idA]!.x} y1={movables[idA]!.y} x2={movables[idB]!.x} y2={movables[idB]!.y} stroke="#6366f1" strokeWidth="1.2" strokeDasharray="4 4" opacity="0.28"/>
+                <g transform={`translate(${cx},${cy-18})`}>
+                  <rect x="-28" y="-8" width="56" height="14" rx="7" fill="white" stroke="#6366f1" strokeWidth="0.8" opacity="0.95"/>
+                  <text x="0" y="-0.5" textAnchor="middle" fontSize="6.5" fontWeight="700" fill="#4f46e5">يتعاونان ✨</text>
+                </g>
+              </g>
+            ));
+          })()}
           <rect x="0" y="0" width={WORLD_WIDTH} height={WORLD_HEIGHT} fill="transparent" style={{ pointerEvents: 'none' }} />
         </svg>
       </div>

@@ -122,6 +122,7 @@ export function HireAgentModal() {
               <div className="grid grid-cols-2 gap-2">
                 {(Object.keys(BRAIN_MODELS) as BrainProvider[]).map((p) => {
                   const v = PROVIDER_VISUALS[p];
+                  if (!v) return null;
                   const active = provider === p;
                   return (
                     <button
