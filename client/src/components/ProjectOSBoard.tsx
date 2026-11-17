@@ -9,6 +9,8 @@ import type { TaskColumn, Product, Idea, KanbanTask } from '../store/useProjectS
 import { useWoraStore } from '../store/useWoraStore.js';
 import { OFFICE_ROOMS } from '../office/layout.js';
 import { getModelById } from '../office/models.js';
+import { PLANS } from '../billing/plans.js';
+import { useBillingStore } from '../store/useBillingStore.js';
 
 const STAGE_META: Record<string,{label:string; icon:string; color:string}> = {
   idea:     { label:'فكرة',     icon:'💡', color:'#f59e0b' },
@@ -37,8 +39,12 @@ export function ProjectOSBoard() {
   const projIdeas = ideas.filter(i=>i.projectId===activeProjectId);
   const projTasks = tasks.filter(t=>t.projectId===activeProjectId);
 
+  const plan = useBillingStore(s=>s.plan);
+  const limits = PLANS[plan].limits;
+  const isPro = plan==='pro';
   const handleCreateProject = () => {
     if (!newProjName.trim()) return;
+    if (projects.length >= limits.projects) { alert(`الخطة المجانية تسمح بـ ${limits.projects} مشاريع فقط — رقّ للـ Pro`); return; }
     createProject({ name: newProjName.trim(), description: newProjDesc.trim() || 'مشروع جديد', vision: 'نحو النجاح', stage: 'idea', color: '#4f46e5' });
     setNewProjName(''); setNewProjDesc(''); setShowNewProj(false);
   };
@@ -129,6 +135,7 @@ export function ProjectOSBoard() {
         </div>
       </div>
 
+      {!isPro && <div className="flex items-center justify-between bg-amber-50 px-3 py-1.5 text-[11px] font-bold text-amber-900 dark:bg-amber-950/20">Free: {limits.products} منتجات · {limits.tasksPerProject} مهمة/مشروع · 8 نماذج مفتوحة — <span className="underline">Pro يفتح كل شيء</span><span className="rounded-full bg-slate-900 px-2 py-0.5 text-white">Pro 🔒</span></div>}
       {/* Tabs */}
       <div className="flex gap-1 border-b border-border bg-card px-2 py-1.5 overflow-x-auto hq-scroll">
         {[

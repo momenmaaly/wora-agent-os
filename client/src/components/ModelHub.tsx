@@ -1,10 +1,14 @@
 import { useState, useMemo } from 'react';
 import { Cpu, KeyRound, Search, Sparkles, Zap, Eye, EyeOff, Check, Plus, Gift, TrendingUp } from 'lucide-react';
-import { MODEL_CATALOG, DEPARTMENTS, getModelById, loadBYOK, saveBYOK, hasBYOK } from '../office/models.js';
+import { MODEL_CATALOG, DEPARTMENTS, loadBYOK, saveBYOK, hasBYOK } from '../office/models.js';
 import { PROVIDER_VISUALS } from '../office/layout.js';
-import { BrainProvider } from '../types.js';
+import { FREE_MODEL_IDS } from '../billing/plans.js';
+import { useBillingStore } from '../store/useBillingStore.js';
 
 export function ModelHub() {
+  const plan = useBillingStore(s=>s.plan);
+  const setPlan = useBillingStore(s=>s.setPlan);
+  const isPro = plan==='pro';
   const [filterDept, setFilterDept] = useState<string>('all');
   const [search, setSearch] = useState('');
   const [showKeys, setShowKeys] = useState(false);
@@ -34,16 +38,20 @@ export function ModelHub() {
 
   return (
     <div className="flex h-full w-full flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-card">
-      <div className="border-b border-border bg-gradient-to-l from-violet-50 to-white px-4 py-3 dark:from-violet-950/20 dark:to-card">
-        <h3 className="flex items-center gap-2 text-sm font-bold"><Cpu className="h-4 w-4 text-violet-600"/> كتالوج النماذج — كل الأقسام</h3>
-        <p className="mt-1 text-xs text-muted-foreground">32 نموذج مصنفة حسب القسم. اختر موديل لكل وكيل، أو أضف مفتاحك الخاص (BYOK) لأي مزود.</p>
+      <div className="border-b border-stone-200 bg-gradient-to-l from-stone-50 to-white px-4 py-3">
+        <div className="flex items-center gap-2">
+          <h3 className="flex items-center gap-2 text-sm font-bold"><Cpu className="h-4 w-4"/> كتالوج النماذج</h3>
+          <span className={`rounded-full px-2.5 py-0.5 text-[11px] font-black border ${isPro ? 'bg-slate-900 text-white border-slate-900' : 'bg-white border-stone-200 text-stone-700'}`}>{isPro ? 'Pro — كل النماذج' : `Free — 8 نماذج مفتوحة`}</span>
+          {!isPro && <button onClick={()=>setPlan('pro')} className="rounded-full bg-amber-400 px-3 py-1 text-[11px] font-black text-slate-900">فتح 24 نموذج إضافي →</button>}
+        </div>
+        <p className="mt-1 text-xs text-stone-500">المجانية تستدعي فقط نماذج مفتوحة فائقة السرعة. المحترفة تفتح العمالقة + BYOK.</p>
         <div className="mt-3 flex gap-2">
           <div className="relative flex-1">
             <Search className="absolute right-2 top-2 h-4 w-4 text-muted-foreground"/>
             <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="ابحث: كود، تسويق، سريع، gemini..." className="h-8 w-full rounded-full border border-border bg-white pr-8 pl-3 text-xs dark:bg-white/5"/>
           </div>
-          <button onClick={()=>setShowKeys(!showKeys)} className={`flex items-center gap-1 rounded-full border px-3 py-1.5 text-xs font-bold ${showKeys?'bg-slate-900 text-white dark:bg-white dark:text-slate-900':'bg-card'}`}>
-            <KeyRound className="h-3.5 w-3.5"/> {showKeys?'إخفاء المفاتيح':'مفاتيح API (BYOK)'}
+          <button onClick={()=>{ if(!isPro){ setPlan('pro'); return;} setShowKeys(!showKeys); }} className={`flex items-center gap-1 rounded-full border px-3 py-1.5 text-xs font-bold ${showKeys?'bg-slate-900 text-white':'bg-white border-stone-200'} ${!isPro ? 'opacity-70' : ''}`}>
+            <KeyRound className="h-3.5 w-3.5"/> {isPro ? (showKeys?'إخفاء المفاتيح':'مفاتيح API (BYOK)') : 'BYOK — Pro فقط 🔒'}
           </button>
         </div>
         <div className="mt-2 flex gap-1.5 overflow-x-auto hq-scroll pb-1">
@@ -92,8 +100,9 @@ export function ModelHub() {
           {filtered.map(m=>{
             const vis = PROVIDER_VISUALS[m.provider] ?? { shortLabel:m.provider, fullLabel:m.provider, color:'#64748b', bgLight:'rgba(100,116,139,0.08)', bgDark:'rgba(100,116,139,0.14)', border:'rgba(100,116,139,0.2)' };
             const hasKey = hasBYOK(m.provider as string);
+            const locked = !isPro && !FREE_MODEL_IDS.has(m.id);
             return (
-              <div key={m.id} className="rounded-2xl border border-border bg-card p-3 hover:shadow-sm transition">
+              <div key={m.id} className={`rounded-2xl border bg-card p-3 transition ${locked ? 'border-amber-200 bg-amber-50/40 opacity-90' : 'border-stone-200 hover:shadow-sm'}`}>
                 <div className="flex items-start justify-between gap-2">
                   <div className="flex items-center gap-2">
                     <span className="flex h-7 w-7 items-center justify-center rounded-lg text-[9px] font-bold text-white" style={{background:vis.color}}>{vis.shortLabel.slice(0,2)}</span>
@@ -116,9 +125,9 @@ export function ModelHub() {
                 <div className="mt-2.5 flex items-center justify-between text-[11px]">
                   <span className="flex items-center gap-1 text-muted-foreground"><Zap className="h-3 w-3"/> {m.speedMs}ms · {m.contextWindow}</span>
                   <span className="font-bold">{m.cost}</span>
-                  {hasKey && <span className="flex items-center gap-1 rounded-full bg-emerald-50 px-1.5 py-0.5 text-[10px] font-bold text-emerald-700"><KeyRound className="h-3 w-3"/> BYOK</span>}
+                  {locked ? <span className="rounded-full bg-slate-900 px-2 py-0.5 text-[10px] font-bold text-white">Pro 🔒</span> : hasKey && <span className="flex items-center gap-1 rounded-full bg-emerald-50 px-1.5 py-0.5 text-[10px] font-bold text-emerald-700"><KeyRound className="h-3 w-3"/> BYOK</span>}
                 </div>
-                {m.recommended && <div className="mt-2 flex items-center gap-1 rounded-full bg-indigo-50 px-2 py-1 text-[11px] font-bold text-indigo-700"><Sparkles className="h-3 w-3"/> موصى به</div>}
+                {m.recommended && <div className="mt-2 flex items-center gap-1 rounded-full bg-stone-900 px-2 py-1 text-[11px] font-bold text-white"><Sparkles className="h-3 w-3 text-amber-400"/> موصى به</div>}
               </div>
             );
           })}

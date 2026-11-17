@@ -625,12 +625,12 @@ export function OfficeFloorplan() {
           style={{ background: isDark ? '#0f1219' : '#eef2f7' }}
         >
           <defs>
-            {/* Oak corridor planks */}
-            <pattern id="oak-planks" width="32" height="24" patternUnits="userSpaceOnUse" patternTransform="rotate(0)">
-              <rect width="32" height="24" fill={isDark ? '#1c1a14' : '#e9ddd0'} />
-              <rect x="0" y="0" width="32" height="1.5" fill={isDark ? '#2a241b' : '#d8c8b4'} opacity="0.9" />
-              <rect x="16" y="12" width="16" height="1" fill={isDark ? '#2a241b' : '#d8c8b4'} opacity="0.45" />
-              <rect x="0" y="6" width="1" height="18" fill={isDark ? '#252019' : '#cbb8a3'} opacity="0.35" />
+            {/* Stone corridor — premium limestone */}
+            <pattern id="oak-planks" width="28" height="28" patternUnits="userSpaceOnUse">
+              <rect width="28" height="28" fill={isDark ? '#171B26' : '#F5F1E8'} />
+              <rect x="0" y="0" width="28" height="1" fill={isDark ? '#222738' : '#E7E0D6'} opacity="0.9" />
+              <rect x="0" y="0" width="1" height="28" fill={isDark ? '#222738' : '#E7E0D6'} opacity="0.6" />
+              <circle cx="14" cy="14" r="0.7" fill={isDark ? '#222738' : '#E7E0D6'} opacity="0.5"/>
             </pattern>
             {/* Carpet */}
             <pattern id="carpet-dots" width="14" height="14" patternUnits="userSpaceOnUse">
@@ -647,8 +647,8 @@ export function OfficeFloorplan() {
           </defs>
 
           {/* Subtle campus base */}
-          <rect x="0" y="0" width={WORLD_WIDTH} height={WORLD_HEIGHT} rx="18" fill={isDark ? '#0f1219' : '#e6ebf2'} />
-          <rect x="16" y="16" width={WORLD_WIDTH - 32} height={WORLD_HEIGHT - 32} rx="16" fill={isDark ? '#13151d' : '#f5f7fb'} stroke={isDark ? '#1e2330' : '#d7deea'} strokeWidth="1.5" />
+          <rect x="0" y="0" width={WORLD_WIDTH} height={WORLD_HEIGHT} rx="18" fill={isDark ? '#0B0F19' : '#FDFBF7'} />
+          <rect x="16" y="16" width={WORLD_WIDTH - 32} height={WORLD_HEIGHT - 32} rx="16" fill={isDark ? '#11151F' : '#ffffff'} stroke={isDark ? '#1e2435' : '#E7E0D6'} strokeWidth="1.2" />
 
           {/* Corridors */}
           {Object.values(CORRIDORS).map((c) => (
