@@ -61,8 +61,24 @@ export function PricingPlans(){
         })}
       </div>
 
-      <div className="mt-6 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-center text-xs leading-6 text-amber-900">
-        <span className="font-bold">ملاحظة:</span> المجانية تستدعي فقط النماذج المفتوحة (Groq/DeepSeek/Qwen/Mistral) — سريعة ومجانية. Pro تفتح GPT-4.1 و Claude 4.5 و Gemini 2.5 Pro وكامل BYOK.
+      <div className="mt-6 rounded-[16px] border border-stone-200 bg-white p-4">
+        <div className="flex items-center gap-2 text-sm font-black"><Crown className="h-4 w-4 text-[#CBA36B]"/> ماذا يفتح Pro في المقر؟</div>
+        <div className="mt-3 grid gap-2 sm:grid-cols-3">
+          {[
+            {code:'R-103', name:'القيادة التنفيذية', desc:'غرفة اجتماعات زجاجية + شرفة على الواحة', accent:'#7c3aed'},
+            {code:'R-105', name:'استوديو التصميم', desc:'سكاي لايت + طاولات رسم + معرض أعمال', accent:'#ec4899'},
+            {code:'R-110', name:'مركز البيانات', desc:'جدار شاشات + غرفة خوادم زجاجية', accent:'#059669'},
+          ].map(r=>(
+            <div key={r.code} className="rounded-xl border bg-[#FDFBF7] p-3" style={{borderColor:r.accent+'30'}}>
+              <div className="flex items-center gap-2"><span className="rounded-full px-2 py-0.5 text-[10px] font-black text-white" style={{background:r.accent}}>{r.code}</span><span className="text-xs font-bold">{r.name}</span><span className="ml-auto rounded-full bg-[#CBA36B] px-1.5 py-0.5 text-[10px] font-black text-white">Pro</span></div>
+              <div className="mt-1 text-[11px] text-stone-600">{r.desc}</div>
+            </div>
+          ))}
+        </div>
+        <div className="mt-3 rounded-xl bg-[#0B0F19] px-3 py-2 text-center text-xs text-white">Free يرى الأجنحة الثلاثة مقفلة بهالة ذهبية — Pro يفتحها فوراً مع كل التكاملات (GitHub→Vercel, Figma, Stripe...)</div>
+      </div>
+      <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-center text-xs leading-6 text-amber-900">
+        المجانية = 8 نماذج مفتوحة + 7 أجنحة + 3 تكاملات. Pro = 32 نموذج + 10 أجنحة + نشر حقيقي بلا حدود.
       </div>
     </div>
   );

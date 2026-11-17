@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { ZoomIn, ZoomOut, Maximize2, Footprints, Eye, Move, Crosshair, Sparkles, Coffee, UsersRound } from 'lucide-react';
 import { useWoraStore } from '../store/useWoraStore.js';
+import { useBillingStore } from '../store/useBillingStore.js';
 import { WORLD_WIDTH, WORLD_HEIGHT, OFFICE_ROOMS, CORRIDORS, ROOM_SPOTS, getAgentHomeSpot, computeOfficePath, locatePoint, PROVIDER_VISUALS, formatShortModel } from '../office/layout.js';
+import { isRoomLockedForPlan } from '../billing/plans.js';
 import { BrainProvider } from '../types.js';
 
 // ── soul palette ──
@@ -35,6 +37,7 @@ export function OfficeFloorplan(){
   const setFollowAgent = useWoraStore(s=>s.setFollowAgent);
   const theme = useWoraStore(s=>s.ui.theme);
   const isDark = theme==='dark';
+  const plan = useBillingStore(s=>s.plan);
 
   // camera
   const [scale,setScale]=useState(0.72);
@@ -214,24 +217,46 @@ export function OfficeFloorplan(){
             );
           })}
 
-          {/* rooms — pavilions with soul */}
+          {/* rooms — each is NOT a stamp: unique footprint */}
           {OFFICE_ROOMS.map(room=>{
             const soul = ROOM_SOUL[room.id] ?? ROOM_SOUL['zone-planning']!;
             const isSel = selectedId ? (agents[selectedId]?.zoneId===room.id) : false;
+            const locked = isRoomLockedForPlan(room.id, plan);
+            // per-room visual quirks to break the template
+            const quirks: Record<string,{rx:number; roofH:number; notch?:string}> = {
+              'zone-product':   {rx:18, roofH:26},
+              'zone-planning':  {rx:10, roofH:20},
+              'zone-boardroom': {rx:22, roofH:28, notch:'octa'},
+              'zone-engineering':{rx:8, roofH:22},
+              'zone-design':    {rx:16, roofH:24, notch:'skylight'},
+              'zone-review':    {rx:12, roofH:22},
+              'zone-lounge':    {rx:20, roofH:18},
+              'zone-marketing': {rx:14, roofH:24},
+              'zone-sales':     {rx:10, roofH:20},
+              'zone-analytics': {rx:16, roofH:26, notch:'glass'},
+            };
+            const q = quirks[room.id] ?? {rx:16, roofH:22};
             return (
-              <g key={room.id} filter="url(#softShadow)">
+              <g key={room.id} filter="url(#softShadow)" opacity={locked?0.92:1}>
                 {/* shadow */}
-                <rect x={room.x+3} y={room.y+4} width={room.width} height={room.height} rx={16} fill="black" opacity={isDark?0.35:0.08}/>
-                {/* walls */}
-                <rect x={room.x} y={room.y} width={room.width} height={room.height} rx={16} fill={isDark ? '#1A1F2E' : soul.wall} stroke={isSel ? soul.accent : (isDark?'#2A3042':'#E8DDC8')} strokeWidth={isSel?2.4:1.1}/>
-                {/* roof band */}
-                <rect x={room.x} y={room.y} width={room.width} height={22} rx={12} fill={soul.roof} opacity={0.95}/>
+                <rect x={room.x+3} y={room.y+4} width={room.width} height={room.height} rx={q.rx} fill="black" opacity={isDark?0.35:0.08}/>
+                {/* walls — unique */}
+                <rect x={room.x} y={room.y} width={room.width} height={room.height} rx={q.rx} fill={isDark ? '#1A1F2E' : soul.wall} stroke={isSel ? soul.accent : locked ? '#CBA36B' : (isDark?'#2A3042':'#E8DDC8')} strokeWidth={isSel?2.4: locked?1.6:1.1} strokeDasharray={locked?'6 4':undefined}/>
+                {locked && <rect x={room.x} y={room.y} width={room.width} height={room.height} rx={q.rx} fill="transparent" style={{cursor:'pointer'}} />}
+                {/* roof band — varied height */}
+                <rect x={room.x} y={room.y} width={room.width} height={q.roofH} rx={q.roofH/2} fill={soul.roof} opacity={locked?0.55:0.95}/>
+                {/* pro crown for premium rooms */}
+                {locked && <g transform={`translate(${room.x+room.width-10},${room.y+8})`}><circle r={7} fill="#CBA36B" stroke="white" strokeWidth={1}/><text textAnchor="middle" dy={2.5} fontSize={6} fontWeight={900} fill="white">♛</text></g>}
+                {q.notch==='octa' && <path d={`M ${room.x+16} ${room.y+room.height} L ${room.x+32} ${room.y+room.height-12} L ${room.x+room.width-32} ${room.y+room.height-12} L ${room.x+room.width-16} ${room.y+room.height}`} fill={soul.patio} opacity={0.6}/>}
+                {q.notch==='skylight' && <rect x={room.x+room.width/2-20} y={room.y+4} width={40} height={6} rx={3} fill="white" opacity={0.45}/>}
+                {q.notch==='glass' && <rect x={room.x+room.width-14} y={room.y+30} width={8} height={room.height-50} rx={4} fill={soul.accent} opacity={0.12}/>}
                 <text x={room.x+12} y={room.y+14} fontSize={7} fontWeight={800} fill="white" letterSpacing={0.6}>{room.code}</text>
                 <text x={room.x+42} y={room.y+14} fontSize={9} fontWeight={800} fill="white">{room.nameAr}</text>
-                {/* patio rug */}
-                <rect x={room.x+10} y={room.y+28} width={room.width-20} height={room.height-38} rx={12} fill={soul.patio} opacity={isDark?0.5:0.85}/>
-                {/* pattern hint */}
-                <text x={room.x+room.width-14} y={room.y+40} textAnchor="end" fontSize={16} opacity={isDark?0.18:0.12}>{soul.pattern==='mashrabiya'?'◈':soul.pattern==='palm'?'🌴':soul.pattern==='code'?'⬢':'·'}</text>
+                {locked && <text x={room.x+room.width/2} y={room.y+ q.roofH + 14} textAnchor="middle" fontSize={7} fontWeight={800} fill="#92400E">Pro — مقفل</text>}
+                {/* patio rug — varied */}
+                <rect x={room.x+10} y={room.y+ q.roofH + 6} width={room.width-20} height={room.height - q.roofH - 16} rx={10} fill={soul.patio} opacity={isDark?0.5: locked?0.35:0.85}/>
+                <text x={room.x+room.width-14} y={room.y+40} textAnchor="end" fontSize={16} opacity={isDark?0.18: locked?0.06:0.12}>{soul.pattern==='mashrabiya'?'◈':soul.pattern==='palm'?'🌴':soul.pattern==='code'?'⬢':'·'}</text>
+                {locked && <g opacity={0.92}><rect x={room.x+10} y={room.y+ q.roofH + 22} width={room.width-20} height={room.height - q.roofH - 32} rx={10} fill="white" opacity={0.72}/><text x={room.x+room.width/2} y={room.y+ room.height/2 + 6} textAnchor="middle" fontSize={8} fontWeight={800} fill="#78350F">🔒 اضغط للترقية</text></g>}
 
                 {/* doors as arches */}
                 {room.doors.map(d=>{
