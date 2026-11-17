@@ -40,8 +40,8 @@ export function OfficeFloorplan(){
   const theme=useWoraStore(s=>s.ui.theme); const isDark=theme==='dark';
   const plan=useBillingStore(s=>s.plan);
 
-  const [scale,setScale]=useState(0.7);
-  const [pan,setPan]=useState({x:0,y:0});
+  const [scale,setScale]=useState(1.08);
+  const [pan,setPan]=useState({x:0,y:-18});
   const containerRef=useRef<HTMLDivElement>(null), svgRef=useRef<SVGSVGElement>(null);
   const isPanning=useRef(false), panStart=useRef<{x:number;y:number;panX:number;panY:number}|null>(null);
 
@@ -99,7 +99,7 @@ export function OfficeFloorplan(){
     return `${cx - vbW/2} ${cy - vbH/2} ${vbW} ${vbH}`;
   },[scale,pan]);
 
-  const zoomIn=()=>setScale(s=>Math.min(1.6,s*1.2)), zoomOut=()=>setScale(s=>Math.max(0.45,s/1.2)), resetView=()=>{setScale(0.7); setPan({x:0,y:0});};
+  const zoomIn=()=>setScale(s=>Math.min(1.8,s*1.2)), zoomOut=()=>setScale(s=>Math.max(0.6,s/1.2)), resetView=()=>{setScale(1.08); setPan({x:0,y:-18});};
   const onPointerDown=(e:React.PointerEvent)=>{ if(e.shiftKey||e.button===1){ isPanning.current=true; panStart.current={x:e.clientX,y:e.clientY,panX:pan.x,panY:pan.y}; }};
   const onPointerMove=(e:React.PointerEvent)=>{ if(!isPanning.current||!panStart.current) return; const dx=(e.clientX-panStart.current.x)/scale, dy=(e.clientY-panStart.current.y)/scale; setPan({x:panStart.current.panX+dx,y:panStart.current.panY+dy}); };
   const onPointerUp=()=>{ isPanning.current=false; panStart.current=null; };
