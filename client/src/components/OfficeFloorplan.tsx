@@ -28,6 +28,8 @@ import {
   PROVIDER_VISUALS,
   formatShortModel,
 } from '../office/layout.js';
+import { useIntegrationsStore } from '../store/useIntegrationsStore.js';
+import { integrationsForRoom } from '../integrations/catalog.js';
 import type { Point2D } from '../office/layout.js';
 import type { AgentParticipant } from '../types.js';
 import { BrainProvider } from '../types.js';
@@ -778,7 +780,24 @@ export function OfficeFloorplan() {
                   <text x={room.x + 52} y={room.y + 21} fontSize="10.5" fontWeight="700" fill={isDark ? '#e2e8f0' : '#0f172a'}>{room.nameAr}</text>
                 </g>
 
-                {/* Furniture per spot */}
+                {/* Integrations badges per room */}
+                {(()=>{
+                  const ints = integrationsForRoom(room.id);
+                  const activeInts = ints.filter(i=> useIntegrationsStore.getState().connections[i.id]);
+                  if(activeInts.length===0) return null;
+                  return (
+                    <g>
+                      {activeInts.slice(0,3).map((it,idx)=>(
+                        <g key={it.id} transform={`translate(${room.x + room.width - 18 - idx*14}, ${room.y + room.height - 10})`}>
+                          <circle r="6" fill={it.color} stroke="white" strokeWidth="1"/>
+                          <text textAnchor="middle" dy="2.5" fontSize="5" fontWeight="900" fill="white">{it.icon.slice(0,1)}</text>
+                        </g>
+                      ))}
+                    </g>
+                  );
+                })()}
+
+                {/* Furniture — interactive with chairs */}
                 {ROOM_SPOTS.filter((s) => s.roomId === room.id).map((spot) => {
                   const isDesk = spot.role === 'desk' || spot.role === 'desk-alt';
                   const isMeeting = spot.role === 'meeting';
@@ -789,20 +808,41 @@ export function OfficeFloorplan() {
                   const isCollab = spot.role === 'collab';
                   const isShowcase = (spot.role as string) === 'showcase';
                   const isStage = (spot.role as string) === 'stage';
+                  const occupant = Object.values(agents).find(a=> a.zoneId===room.id && !useWoraStore.getState().agentLocations[a.id]?.isWalking);
+                  const chairColor = occupant ? occupant.profile.avatarColor : (isDark ? '#2a2f42' : '#e7e0d6');
+                  const chairOccupied = !!occupant && !useWoraStore.getState().agentLocations[occupant.id]?.isWalking;
                   return (
-                    <g key={spot.id} opacity={0.95}>
+                    <g key={spot.id} opacity={0.98} onClick={(e)=>{ e.stopPropagation(); if(occupant) useWoraStore.getState().selectAgent(occupant.id); }} style={{cursor: occupant ? 'pointer' : 'default'}}>
                       {isDesk && (
                         <>
-                          <rect x={spot.x - 28} y={spot.y - 16} width={56} height={32} rx="7" fill={isDark ? '#24283b' : 'white'} stroke={isDark ? '#2e334e' : '#d7deea'} strokeWidth="1" />
-                          <rect x={spot.x - 22} y={spot.y - 10} width={44} height={10} rx="3" fill={room.accent} opacity={0.12} />
-                          <rect x={spot.x - 10} y={spot.y - 20} width={20} height={14} rx="3" fill={isDark ? '#1c2033' : '#eef2f7'} stroke={isDark ? '#2e334e' : '#d7deea'} />
-                          <circle cx={spot.x + 14} cy={spot.y - 4} r="3.5" fill={room.accent} opacity={0.9} />
+                          {/* desk */}
+                          <rect x={spot.x - 28} y={spot.y - 16} width={56} height={32} rx="7" fill={isDark ? '#1E2330' : 'white'} stroke={isDark ? '#2e334e' : '#E7E0D6'} strokeWidth="1" />
+                          {/* wood edge */}
+                          <rect x={spot.x - 28} y={spot.y - 16} width={56} height={4} rx="3" fill={room.accent} opacity="0.9"/>
+                          {/* laptop glow */}
+                          <rect x={spot.x - 10} y={spot.y - 8} width={20} height={12} rx="2.5" fill={isDark ? '#0f1219' : '#f8fafc'} stroke={chairOccupied? room.accent : (isDark ? '#2e334e':'#d7deea')} strokeWidth={chairOccupied?1.2:0.8} />
+                          {chairOccupied && <rect x={spot.x -8} y={spot.y -6} width={16} height={7} rx="1.5" fill={room.accent} opacity="0.18"/>}
+                          {/* chair */}
+                          <g transform={`translate(${spot.x}, ${spot.y + 18})`}>
+                            <ellipse cx="0" cy="2" rx="11" ry="3.5" fill="black" opacity={isDark?0.28:0.1}/>
+                            <rect x="-10" y="-6" width="20" height="9" rx="4.5" fill={chairColor} stroke={chairOccupied? 'white':'none'} strokeWidth={chairOccupied?1.2:0}/>
+                            <rect x="-7" y="-10" width="14" height="6" rx="3" fill={chairColor} opacity={0.9}/>
+                            {chairOccupied && <circle cx="0" cy="-2.5" r="1.8" fill="white" opacity={0.9}/>}
+                          </g>
+                          {/* cup */}
+                          <circle cx={spot.x + 14} cy={spot.y - 2} r="3.2" fill={isDark?'#3a352d':'#fff'} stroke={room.accent} strokeWidth="0.7"/>
+                          {chairOccupied && <path d="M 14.5 -4 Q 16 -6 14.5 -8" stroke={room.accent} strokeWidth="0.6" fill="none" opacity={0.6} transform={`translate(${spot.x} ${spot.y})`}/>}
                         </>
                       )}
                       {isMeeting && (
                         <>
-                          <rect x={spot.x - 18} y={spot.y - 12} width={36} height={24} rx="8" fill={isDark ? '#2a2d40' : 'white'} stroke={isDark ? '#353a55' : '#d7deea'} />
-                          <circle cx={spot.x} cy={spot.y - 2} r="5" fill={room.accent} opacity={0.18} />
+                          <rect x={spot.x - 18} y={spot.y - 12} width={36} height={24} rx="8" fill={isDark ? '#1E2330' : 'white'} stroke={isDark ? '#353a55' : '#E7E0D6'} />
+                          <circle cx={spot.x} cy={spot.y - 2} r="5" fill={room.accent} opacity={0.14} />
+                          {/* 6 chairs around */}
+                          {[0,1,2,3,4,5].map(k=>{
+                            const ang = (k*60-30)*Math.PI/180, r=16;
+                            return <circle key={k} cx={spot.x + Math.cos(ang)*r} cy={spot.y + Math.sin(ang)*r*0.65} r="3.8" fill={isDark?'#2a2f42':'#f1ede8'} stroke={room.accent} strokeWidth="0.6" opacity={0.9}/>;
+                          })}
                         </>
                       )}
                       {isCoffee && (
