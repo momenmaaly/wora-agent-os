@@ -1,0 +1,40 @@
+{
+  "name": "wora-api-server",
+  "version": "4.1.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "build": "esbuild src/index.ts --bundle --platform=node --target=node22 --format=esm --packages=external --outfile=dist/index.mjs && esbuild src/scripts/seed.ts --bundle --platform=node --target=node22 --format=esm --packages=external --outfile=dist/seed.mjs",
+    "typecheck": "tsc --noEmit",
+    "start": "node dist/index.mjs",
+    "seed:prod": "node dist/seed.mjs",
+    "dev": "tsx watch src/index.ts",
+    "dev:preview": "tsx src/scripts/preview-server.ts",
+    "seed": "tsx src/scripts/seed.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.9.0",
+    "@google/genai": "^3.4.0",
+    "@socket.io/redis-adapter": "^8.3.0",
+    "bullmq": "^5.81.5",
+    "cors": "^2.8.5",
+    "express": "^5.1.0",
+    "groq-sdk": "^1.6.0",
+    "mongoose": "^8.15.0",
+    "openai": "^7.57.0",
+    "pino": "^9.6.0",
+    "redis": "^5.12.3",
+    "socket.io": "^4.8.1",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/node": "^22.15.0",
+    "esbuild": "^0.27.3",
+    "tsx": "^4.19.4",
+    "typescript": "^5.8.3"
+  }
+}
