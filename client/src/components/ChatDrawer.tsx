@@ -62,7 +62,7 @@ function ChatPanel({ onClose }: { onClose: () => void }) {
   }
 
   return <Dialog icon={MessageCircle} variant="drawer" className="chat-drawer" title="محادثة الفريق" onClose={onClose}
-    description={connected ? 'محادثة داخل مساحة العمل الحالية.' : 'تجربة محلية: الردود في هذا الوضع محاكاة.'}
+    description={connected && !targetId.startsWith('agent-custom-') ? 'محادثة داخل مساحة العمل الحالية.' : 'تجربة محلية: الردود في هذا الوضع محاكاة.'}
     footer={<form className="chat-form" onSubmit={send}>
       <input className="field" aria-label="رسالتك" maxLength={4_000} value={draft} dir="auto" onChange={(event) => setDraft(event.target.value)} placeholder="اكتب رسالة…" />
       <button type="submit" aria-label="إرسال الرسالة" className="button primary" disabled={!draft.trim()}><Send size={17} aria-hidden="true" /></button>

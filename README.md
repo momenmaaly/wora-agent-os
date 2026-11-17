@@ -1,6 +1,6 @@
 # Wora Agent OS
 
-Wora is an Arabic-first workspace for operating an AI team. The overview brings together the office map, roster, department tasks, and projects. The interactive office supports selecting and following agents, assigning rooms, and joining team chat without leaving the workspace.
+Wora is an Arabic-first workspace for operating an AI team. Visitors arrive in reception and can walk through an interactive axonometric model of all ten departments. Each room has its own furnishings, team and task panel; the original floor plan is still available. A guided tour, department links and quick search let visitors explore the same office without depending on visual map controls.
 
 ## Run the workspace
 
@@ -21,7 +21,7 @@ npm ci
 npm run dev:preview
 ```
 
-The client proxies `/api`, `/health`, and `/socket.io` to port 4000. The preview API seeds four agents and four server-backed departments; the map still includes all ten departments. Assignments outside the server-backed departments are local to the browser session. Without configured AI providers, replies from the preview server are also simulated.
+The client proxies `/api`, `/health`, and `/socket.io` to port 4000. The preview API seeds four agents and four server-backed departments; the map still includes all ten departments. Connected snapshots replace the starter roster and example tasks. Assignments outside the server-backed departments are labeled session-local. Without configured AI providers, replies from the preview server are also simulated.
 
 ## Architecture
 
@@ -30,7 +30,7 @@ wora-agent-os/
 ├── client/                 # React 18, Vite 6, Zustand and CSS design tokens
 │   └── src/
 │       ├── components/     # Dashboard, interactive office, projects and workspace tools
-│       ├── office/         # SVG map geometry, routing and local movement simulation
+│       ├── office/         # Spatial SVG geometry, room guide and local movement simulation
 │       ├── hooks/          # Socket.IO connection and offline fallback
 │       └── styles/         # Responsive RTL layout, light/dark themes and shared UI
 ├── api-server/             # Express 5, Socket.IO, Redis, BullMQ and MongoDB
@@ -54,8 +54,9 @@ npm --prefix api-server run build
 
 With the preview API running, verify the production client locally with `npm --prefix client run preview`:
 
-- Open the overview, switch themes, and reload. Check the mobile menu, keyboard focus, and navigation at 320px and wider.
-- Use <kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>K</kbd> to find an agent or project. Select an agent, send it to an unlocked room, and follow its route.
+- Open reception and enter the model. Visit a department from the map and from the room selector, then use the plan toggle. All ten rooms are visitable, even when a plan restricts task assignment. Try a direct link such as `/#campus/zone-engineering`. Check the mobile menu, keyboard focus, and both themes at 320px and wider.
+- Start the guided tour, move forward and back, and return to reception. With reduced motion enabled, the visitor should arrive immediately without a camera animation.
+- Use <kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>K</kbd> to find a department, agent or project. Select an agent, send it to an unlocked room, and follow its route.
 - Exchange a message; create a department task; add a session-local agent; change an agent’s model.
 - Create a project and move a task with the stage dropdown. In the Studio, activate the local Pro preview, try an example brief, and edit a draft. Save one draft (or the pack) to a project, reload, and confirm the edit and the project link persist without duplicates. Download the pack and reopen an earlier pack from its history.
 - Filter the model and integration catalogues. Connect, sync, and disconnect a demo integration; no external account should be opened.

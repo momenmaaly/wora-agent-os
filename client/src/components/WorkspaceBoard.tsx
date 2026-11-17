@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { Check, ClipboardList, Clock3, LockKeyhole, MapPin, Plus } from 'lucide-react';
 import { isRoomLockedForPlan } from '../billing/plans.js';
 import { useBillingStore } from '../store/useBillingStore.js';
-import { useWoraStore } from '../store/useWoraStore.js';
+import { useWoraStore, workspaceEntryLabel } from '../store/useWoraStore.js';
 import { useSocket } from '../hooks/useSocket.js';
 import { OFFICE_ROOMS, ROOM_BY_ID } from '../office/layout.js';
 import { orderedAgents } from '../office/presentation.js';
@@ -53,10 +53,11 @@ function WorkspacePanel({ onClose }: { onClose: () => void }) {
       <section className="task-entries" aria-label="المهام المسجلة">
         <h3>المهام المسجلة <span className="badge">{entries.length}</span></h3>
         {sorted.length ? <ul>{sorted.map((entry) => {
+          const source = workspaceEntryLabel(entry.id);
           const done = entry.status === 'approved' || entry.status === 'done';
           return <li key={entry.id} className="task-entry">
             <div><strong dir="auto">{entry.title}</strong><span className="badge">{typeText[entry.type] ?? entry.type}</span></div>
-            <div><span className={`badge tint ${done ? 'tone-mint' : 'tone-gold'}`}>{done ? <Check size={13} /> : <Clock3 size={13} />}{statusText[entry.status] ?? entry.status}</span><small>{agents[entry.authorAgentId]?.displayName ?? 'وكيل القسم'}</small></div>
+            <div><span className={`badge tint ${done ? 'tone-mint' : 'tone-gold'}`}>{done ? <Check size={13} /> : <Clock3 size={13} />}{statusText[entry.status] ?? entry.status}</span><small>{[agents[entry.authorAgentId]?.displayName, source].filter(Boolean).join(' · ') || 'وكيل القسم'}</small></div>
           </li>;
         })}</ul> : <EmptyState icon={ClipboardList} title="لا توجد مهام هنا بعد">أضف أول مهمة في {zone?.nameAr ?? 'هذا القسم'}.</EmptyState>}
       </section>

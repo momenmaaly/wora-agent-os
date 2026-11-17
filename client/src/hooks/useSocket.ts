@@ -10,7 +10,9 @@
 
 import { useEffect } from 'react';
 import { io, type Socket } from 'socket.io-client';
-import { useWoraStore, type PresenceEntry } from '../store/useWoraStore.js';
+import { LOCAL_TASK_PREFIX, useWoraStore, type PresenceEntry } from '../store/useWoraStore.js';
+import { useBillingStore } from '../store/useBillingStore.js';
+import { isRoomLockedForPlan } from '../billing/plans.js';
 import {
   AgentLifecycleState,
   AvatarAnimState,
@@ -98,11 +100,9 @@ function attachListeners(socket: Socket): void {
   socket.on('connect', () => {
     connectFailures = 0;
     const state = useWoraStore.getState();
-    state.setConnected(true);
-    state.setDemoMode(false);
     socket.emit('room:join', {
       roomId:   state.roomId,
-      position: state.localPosition,
+      position: networkPosition(state.localPosition),
     });
   });
 
@@ -365,7 +365,7 @@ function sendMessage(content: string, options?: { replyToId?: string; targetAgen
   const targetAgent = targetId ? state.agents[targetId] : undefined;
   const isCustomOnlyTarget = Boolean(!hasMention && targetAgent?.id.startsWith('agent-custom-'));
 
-  if (singletonSocket?.connected && !isCustomOnlyTarget) {
+  if (state.connected && singletonSocket?.connected && !isCustomOnlyTarget) {
     return emitSafe('message:send', {
       roomId:  state.roomId,
       content: trimmed,
@@ -394,22 +394,18 @@ function sendMessage(content: string, options?: { replyToId?: string; targetAgen
   return true;
 }
 
+function networkPosition(position: { x: number; y: number; z: number }) {
+  const clamp = (value: number) => Math.max(-500, Math.min(500, Number(value.toFixed(2))));
+  return { x: clamp((position.x - 800) / 20), y: 0, z: clamp((position.z - 480) / 20) };
+}
+
 function movePlayer(position: { x: number; y: number; z: number }): boolean {
+  const state = useWoraStore.getState();
+  state.setLocalPosition(position);
   const now = Date.now();
   if (now - lastMoveSentAt < MOVE_THROTTLE_MS) return false;
   lastMoveSentAt = now;
-
-  const state = useWoraStore.getState();
-  state.setLocalPosition(position);
-  if (singletonSocket?.connected) {
-    // Clamp into backend's [-500, 500] schema coordinates
-    const normalized = {
-      x: Math.max(-500, Math.min(500, Number(((position.x - 800) / 20).toFixed(2)))),
-      y: 0,
-      z: Math.max(-500, Math.min(500, Number(((position.z - 480) / 20).toFixed(2)))),
-    };
-    return emitSafe('room:move', { roomId: state.roomId, position: normalized });
-  }
+  if (singletonSocket?.connected) return emitSafe('room:move', { roomId: state.roomId, position: networkPosition(position) });
   return true;
 }
 
@@ -445,22 +441,20 @@ function sendWorkspaceSignal(
   data: Record<string, unknown> = {},
 ): boolean {
   const cleanTitle = title.trim();
-  if (!cleanTitle) return false;
   const state = useWoraStore.getState();
+  if (!cleanTitle || !Object.hasOwn(ROOM_BY_ID, zoneId) || !state.agents[agentId] || isRoomLockedForPlan(zoneId, useBillingStore.getState().plan)) return false;
 
   // Dispatch assigned agent toward that department room visually
-  if (state.agents[agentId] && ROOM_BY_ID[zoneId]) {
-    state.dispatchAgentToRoom(agentId, zoneId, `مهمة جديدة: ${cleanTitle.slice(0, 28)}`);
-  }
+  state.dispatchAgentToRoom(agentId, zoneId, `مهمة جديدة: ${cleanTitle.slice(0, 28)}`);
 
-  if (singletonSocket?.connected && !agentId.startsWith('agent-custom-') && state.zones.some((zone) => zone.id === zoneId)) {
+  if (state.connected && singletonSocket?.connected && !agentId.startsWith('agent-custom-') && state.zones.some((zone) => zone.id === zoneId)) {
     return emitSafe('workspace:signal', { zoneId, agentId, title: cleanTitle, data });
   }
 
   // Local update for standalone preview mode
   const now = new Date().toISOString();
   const entry: SharedWorkspaceEntry = {
-    id:            `ws-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    id:            `${LOCAL_TASK_PREFIX}${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
     zoneId,
     roomId:        state.roomId,
     type:          'task',

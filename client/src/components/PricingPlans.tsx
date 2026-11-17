@@ -5,8 +5,8 @@ import { ROOM_BY_ID } from '../office/layout.js';
 import { IconTile, Notice, PageHeader } from './ui.js';
 
 const FEATURES = {
-  free: ['الأقسام الأساسية وخريطة المقر التفاعلية', 'إدارة مشروعين ومهام الفريق', 'لوحة المنتجات وبنك الأفكار', 'محادثة الفريق وتجربة التكاملات'],
-  pro: ['كل مميزات الخطة المجانية', 'مساحة أكبر للمشاريع والمهام والمنتجات', 'استوديو المنتج لإنشاء مسودات محلية', 'فتح أقسام القيادة والتصميم والبيانات'],
+  free: ['زيارة الأقسام العشرة والمقر التفاعلي', 'إدارة مشروعين ومهام الفريق', 'لوحة المنتجات وبنك الأفكار', 'محادثة الفريق وتجربة التكاملات'],
+  pro: ['كل مميزات الخطة المجانية', 'مساحة أكبر للمشاريع والمهام والمنتجات', 'استوديو المنتج لإنشاء مسودات محلية', 'إسناد المهام في القيادة والتصميم والبيانات'],
 };
 
 export function PricingPlans({ onStudio }: { onStudio: () => void }) {
@@ -30,7 +30,7 @@ export function PricingPlans({ onStudio }: { onStudio: () => void }) {
         })}
       </div>
       <section className="panel panel-pad premium-rooms">
-        <div className="section-bar"><div><h2>مساحات إضافية مع <bdi>Pro</bdi></h2><p>ثلاث غرف إضافية على الخريطة، لكل واحدة مساحة عمل مخصّصة.</p></div></div>
+        <div className="section-bar"><div><h2>مهام إضافية مع <bdi>Pro</bdi></h2><p>زيارة الغرف متاحة للجميع. مع Pro يمكنك أيضاً إسناد المهام في هذه الأقسام.</p></div></div>
         <div className="catalog-grid">{PRO_ROOM_IDS.map((id) => <article className="catalog-card" key={id}><div className="catalog-head"><IconTile icon={Building2} /><div><h3>{ROOM_BY_ID[id]?.nameAr}</h3><p>{ROOM_BY_ID[id]?.subtitleAr}</p></div></div></article>)}</div>
       </section>
     </>

@@ -6,6 +6,7 @@ import { isRoomLockedForPlan, type PlanId } from '../billing/plans.js';
 import { CORRIDORS, OFFICE_ROOMS, ROOM_BY_ID, ROOM_SPOTS, WORLD_HEIGHT, WORLD_WIDTH, type Point2D } from '../office/layout.js';
 import { useOfficeMotion } from '../office/useOfficeSimulation.js';
 import { agentInitials, FALLBACK_ROOM_DISPLAY, ROOM_DISPLAY } from '../office/presentation.js';
+import { points } from '../office/spatial.js';
 import { IconButton } from './ui.js';
 
 const CENTER = { x: WORLD_WIDTH / 2, y: WORLD_HEIGHT / 2 };
@@ -31,7 +32,7 @@ const MapTerrain = memo(function MapTerrain({ plan, selectedRoomId, onRoom, zoom
         const locked = isRoomLockedForPlan(room.id, plan);
         const chosen = room.id === selectedRoomId;
         return (
-          <g key={room.id} role="button" tabIndex={zoomed ? -1 : 0} aria-pressed={chosen} aria-label={`${room.nameAr}${locked ? ' — Pro' : ''}`} data-map-target
+          <g key={room.id} role="button" tabIndex={zoomed ? -1 : 0} aria-pressed={chosen} aria-label={`دخول ${room.nameAr}${locked ? ' — إسناد المهام مع Pro' : ''}`} data-map-target
             className={`map-room tone-${display.tone}${chosen ? ' is-chosen' : ''}${locked ? ' is-locked' : ''}`}
             onClick={(event) => { event.stopPropagation(); onRoom(room.id); }} onKeyDown={(event) => activate(event, () => onRoom(room.id))}>
             <rect className="room-shadow" x={room.x + 4} y={room.y + 6} width={room.width - 8} height={room.height - 8} rx={22} />
@@ -70,7 +71,7 @@ const MapTerrain = memo(function MapTerrain({ plan, selectedRoomId, onRoom, zoom
   );
 });
 
-export function OfficeFloorplan({ expanded, selectedRoomId, onRoom, onAgent }: { expanded?: boolean; selectedRoomId: string | null; onRoom: (id: string) => void; onAgent: (id: string) => void }) {
+export function OfficeFloorplan({ selectedRoomId, onRoom, onAgent }: { selectedRoomId: string | null; onRoom: (id: string) => void; onAgent: (id: string) => void }) {
   const id = useId();
   const agents = useWoraStore((s) => s.agents);
   const selectedAgentId = useWoraStore((s) => s.selectedAgentId);
@@ -98,7 +99,6 @@ export function OfficeFloorplan({ expanded, selectedRoomId, onRoom, onAgent }: {
   useEffect(() => {
     if (!command) return;
     if (command.kind === 'reset-camera') { setZoom(1); setCenter(CENTER); }
-    if (!expanded) return;
     if (command.kind === 'focus-room') {
       const room = ROOM_BY_ID[command.roomId];
       if (room) { setCenter({ x: room.x + room.width / 2, y: room.y + room.height / 2 }); setZoom(1.8); }
@@ -106,7 +106,7 @@ export function OfficeFloorplan({ expanded, selectedRoomId, onRoom, onAgent }: {
       const marker = useOfficeMotion.getState().markers[command.agentId];
       if (marker) { setCenter({ x: marker.x, y: marker.y }); setZoom(1.55); }
     }
-  }, [command, expanded]);
+  }, [command]);
 
   function beginPan(event: PointerEvent<SVGSVGElement>) {
     suppressClick.current = false;
@@ -129,17 +129,17 @@ export function OfficeFloorplan({ expanded, selectedRoomId, onRoom, onAgent }: {
   }
 
   return (
-    <div className={`map-canvas${expanded ? ' map-canvas-expanded' : ''}`}>
+    <div className="map-canvas">
       <div className="map-coordinate" dir="ltr"><span>WORA HQ</span><i /> FLOOR 01</div>
       <div className="map-controls" aria-label="تحكم الخريطة">
         <IconButton icon={Plus} label="تكبير الخريطة" disabled={zoom >= 2.65} onClick={() => setZoom((value) => Math.min(2.65, value * 1.22))} />
         <IconButton icon={Minus} label="تصغير الخريطة" disabled={zoom <= 1} onClick={() => { const next = Math.max(1, zoom / 1.22); setZoom(next); if (next === 1) { setFollow(null); setCenter(CENTER); } }} />
         <IconButton icon={Crosshair} label="توسيط الخريطة" onClick={reset} />
       </div>
-      <svg className="map-diagram" viewBox={viewBox} preserveAspectRatio={expanded ? 'xMidYMid meet' : 'none'} aria-labelledby={`${id}-title`} style={{ direction: 'ltr', touchAction: zoom > 1 ? 'none' : 'pan-y' }}
+      <svg className="map-diagram" viewBox={viewBox} role="group" aria-labelledby={`${id}-title`} style={{ direction: 'ltr', touchAction: zoom > 1 ? 'none' : 'pan-y' }}
         onPointerDown={beginPan} onPointerMove={pan} onPointerUp={() => { drag.current = null; }} onPointerCancel={() => { drag.current = null; }}
         onClick={(event) => {
-          if (!expanded || suppressClick.current) return;
+          if (suppressClick.current) return;
           const frame = event.currentTarget.getScreenCTM()?.inverse();
           if (!frame) return;
           const point = new DOMPoint(event.clientX, event.clientY).matrixTransform(frame);
@@ -150,7 +150,8 @@ export function OfficeFloorplan({ expanded, selectedRoomId, onRoom, onAgent }: {
         {Object.entries(markers).filter(([agentId, marker]) => !!agents[agentId] && marker.path.length).map(([agentId, marker]) => (
           <polyline key={agentId} className="map-route" points={[marker, ...marker.path].map((point) => `${point.x},${point.y}`).join(' ')} aria-hidden="true" />
         ))}
-        {expanded && <g className="player-marker" transform={`translate(${player.x} ${player.y})`} aria-hidden="true"><circle r={22} /><circle r={8} /><text x={0} y={-32} textAnchor="middle">أنت</text></g>}
+        {player.path.length > 0 && <polyline className="map-route player-route" points={points([player, ...player.path])} aria-hidden="true" />}
+        <g className="player-marker" transform={`translate(${player.x} ${player.y})`} aria-hidden="true"><circle r={22} /><circle r={8} /><text x={0} y={-32} textAnchor="middle">أنت</text></g>
         {Object.values(agents).map((agent) => {
           const marker = markers[agent.id];
           if (!marker) return null;
@@ -158,7 +159,7 @@ export function OfficeFloorplan({ expanded, selectedRoomId, onRoom, onAgent }: {
           const label = agent.displayName.length > 14 ? `${agent.displayName.slice(0, 13)}…` : agent.displayName;
           const labelWidth = Math.max(99, 20 + label.length * 16);
           return (
-            <g className={`agent-marker${isSelected ? ' marker-selected' : ''}`} key={agent.id} transform={`translate(${marker.x} ${marker.y + 24})${expanded ? '' : ' scale(1 1.17)'}`}
+            <g className={`agent-marker${isSelected ? ' marker-selected' : ''}`} key={agent.id} transform={`translate(${marker.x} ${marker.y + 24})`}
               role="button" tabIndex={zoomed ? -1 : 0} aria-pressed={isSelected} aria-label={`تحديد ${agent.displayName}`} data-map-target
               style={{ '--agent-color': agent.profile.avatarColor } as React.CSSProperties}
               onClick={(event) => { event.stopPropagation(); onAgent(agent.id); }} onKeyDown={(event) => activate(event, () => onAgent(agent.id))}>

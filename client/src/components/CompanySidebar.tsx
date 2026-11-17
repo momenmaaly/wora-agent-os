@@ -20,7 +20,7 @@ export function CompanySidebar({ page, onNavigate, onHelp }: { page: PageId; onN
 
   return (
     <>
-      <a className="sidebar-brand" aria-label="Wora — نظرة عامة" {...link('overview')}><WoraMark /></a>
+      <a className="sidebar-brand" aria-label="Wora — الاستقبال" {...link('overview')}><WoraMark /></a>
       <div className="sidebar-scroll hq-scroll">
         <div className="workspace-identity">
           <span className="workspace-symbol"><Building2 size={17} strokeWidth={1.7} aria-hidden="true" /></span>

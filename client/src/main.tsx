@@ -9,6 +9,7 @@ import './index.css';
 import './styles/shell.css';
 import './styles/dashboard.css';
 import './styles/features.css';
+import './styles/campus.css';
 
 const root = document.getElementById('root');
 if (!root) throw new Error('Root element #root not found');

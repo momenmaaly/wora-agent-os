@@ -2,6 +2,8 @@ import { useState } from 'react';
 import { ArrowDown, ArrowUp, CornerDownLeft, Folder, Search, UsersRound, type LucideIcon } from 'lucide-react';
 import { useProjectStore } from '../store/useProjectStore.js';
 import { useWoraStore } from '../store/useWoraStore.js';
+import { OFFICE_ROOMS } from '../office/layout.js';
+import { ROOM_DISPLAY } from '../office/presentation.js';
 import { NAV_ITEMS, type PageId } from '../pages.js';
 import { Dialog, EmptyState } from './ui.js';
 
@@ -11,7 +13,7 @@ function normalize(text: string) {
   return text.trim().toLocaleLowerCase().replace(/[أإآٱ]/g, 'ا').replace(/[\u064B-\u065F\u0670]/g, '');
 }
 
-export function QuickSearch({ onClose, onNavigate, onAgent }: { onClose: () => void; onNavigate: (page: PageId) => void; onAgent: (agentId: string) => void }) {
+export function QuickSearch({ onClose, onNavigate, onAgent, onRoom }: { onClose: () => void; onNavigate: (page: PageId) => void; onAgent: (agentId: string) => void; onRoom: (roomId: string) => void }) {
   const [query, setQuery] = useState('');
   const [cursor, setCursor] = useState(0);
   const agents = useWoraStore((s) => s.agents);
@@ -19,6 +21,7 @@ export function QuickSearch({ onClose, onNavigate, onAgent }: { onClose: () => v
   const setProject = useProjectStore((s) => s.setActiveProject);
   const all: Result[] = [
     ...NAV_ITEMS.map((item) => ({ key: item.id, title: item.label, context: 'صفحة', icon: item.icon, activate: () => onNavigate(item.id) })),
+    ...OFFICE_ROOMS.map((room) => ({ key: room.id, title: room.nameAr, context: `قسم · ${ROOM_DISPLAY[room.id]!.label}`, icon: ROOM_DISPLAY[room.id]!.icon, activate: () => onRoom(room.id) })),
     ...Object.values(agents).map((agent) => ({ key: agent.id, title: agent.displayName, context: agent.profile.customRole, icon: UsersRound, activate: () => onAgent(agent.id) })),
     ...projects.map((project) => ({ key: project.id, title: project.name, context: 'مشروع', icon: Folder, activate: () => { setProject(project.id); onNavigate('projects'); } })),
   ];
@@ -32,7 +35,7 @@ export function QuickSearch({ onClose, onNavigate, onAgent }: { onClose: () => v
       footer={<div className="search-hints" aria-hidden="true"><span><kbd><ArrowUp size={13} /></kbd> <kbd><ArrowDown size={13} /></kbd> للتنقل</span><span><kbd>Enter</kbd> للفتح</span><span><kbd>Esc</kbd> للإغلاق</span></div>}>
       <div className="search-field">
         <Search size={19} aria-hidden="true" />
-        <input data-initial-focus aria-label="ابحث عن صفحة، وكيل أو مشروع" placeholder="ابحث عن صفحة، وكيل أو مشروع..." value={query}
+        <input data-initial-focus aria-label="ابحث عن قسم، وكيل أو مشروع" placeholder="ابحث عن قسم، وكيل أو مشروع..." value={query}
           onChange={(event) => { setQuery(event.target.value); setCursor(0); }}
           onKeyDown={(event) => {
             if (event.nativeEvent.isComposing || !results.length) return;

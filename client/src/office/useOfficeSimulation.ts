@@ -4,7 +4,8 @@ import { useSocket } from '../hooks/useSocket.js';
 import { useWoraStore, type AgentActivityKind, type OfficeCommand } from '../store/useWoraStore.js';
 import { useBillingStore } from '../store/useBillingStore.js';
 import { isRoomLockedForPlan } from '../billing/plans.js';
-import { computeOfficePath, getAgentHomeSpot, locatePoint, OFFICE_ROOMS, ROOM_BY_ID, ROOM_SPOTS, type Point2D } from './layout.js';
+import { CORRIDORS, computeOfficePath, getAgentHomeSpot, locatePoint, OFFICE_ROOMS, ROOM_BY_ID, ROOM_SPOTS, type Point2D } from './layout.js';
+import { RECEPTION_POINT, roomEntrance, visitorRoute } from './visits.js';
 import type { AgentParticipant } from '../types.js';
 
 interface Marker extends Point2D {
@@ -21,7 +22,8 @@ export const useOfficeMotion = create<{
   markers: Record<string, Marker>;
   player: Marker;
   movePlayer: (target: Point2D) => void;
-}>()(() => ({ markers: {}, player: at({ x: 995, y: 442 }), movePlayer: () => {} }));
+  visitRoom: (roomId: string | null) => void;
+}>()(() => ({ markers: {}, player: at(RECEPTION_POINT), movePlayer: () => {}, visitRoom: () => {} }));
 
 function step(marker: Marker, distance: number): Marker {
   const target = marker.path[0];
@@ -41,7 +43,7 @@ const ACTIVITY_LABELS: Partial<Record<AgentActivityKind, string>> = {
 };
 
 /** Keep the office active across page changes; only schedule frames while something is moving. */
-export function useOfficeSimulation() {
+export function useOfficeSimulation(initialRoomId: string | null) {
   const { movePlayer } = useSocket();
 
   useEffect(() => {
@@ -50,6 +52,13 @@ export function useOfficeSimulation() {
     const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
     let frame = 0;
     let last = 0;
+    const initialRoom = initialRoomId ? ROOM_BY_ID[initialRoomId] : undefined;
+    if (initialRoom) {
+      // A shared link opens inside the department; in-app visits walk from the current location.
+      const point = roomEntrance(initialRoom, CORRIDORS.main.centerY);
+      motion.setState({ player: at(point) });
+      office.getState().setLocalPosition({ x: point.x, y: 0, z: point.y });
+    }
 
     function publishLocation(agentId: string, marker: Marker) {
       const area = locatePoint(marker);
@@ -86,7 +95,7 @@ export function useOfficeSimulation() {
         publishLocation(id, updated);
         moving ||= updated.path.length > 0;
       }
-      const nextPlayer = step(player, 340 * dt);
+      const nextPlayer = step(player, (player.targetRoomId ? 1_350 : 340) * dt);
       if (nextPlayer !== player && !nextPlayer.path.length) movePlayer({ x: nextPlayer.x, y: 0, z: nextPlayer.y });
       motion.setState({ markers: next, player: nextPlayer });
       if (moving || nextPlayer.path.length) frame = window.requestAnimationFrame(tick);
@@ -150,18 +159,33 @@ export function useOfficeSimulation() {
     syncRoster(office.getState().agents);
     const unsubscribeAgents = office.subscribe((s) => s.agents, syncRoster);
     const unsubscribeCommands = office.subscribe((s) => s.officeCommand, run);
-    motion.setState({ movePlayer: (target) => {
-      const area = locatePoint(target);
-      if (area.isRoom || area.areaId === 'campus') return;
+    function moveVisitor(target: Point2D, path: Point2D[], roomId: string | null) {
       const player = motion.getState().player;
       if (reducedMotion.matches) {
         motion.setState({ player: at(target) });
         movePlayer({ x: target.x, y: 0, z: target.y });
       } else {
-        motion.setState({ player: { ...player, path: computeOfficePath(player, target) } });
-        start();
+        motion.setState({ player: { ...player, path, targetRoomId: path.length ? roomId : null } });
+        if (path.length) start();
       }
-    } });
+    }
+
+    motion.setState({
+      movePlayer: (target) => {
+        const area = locatePoint(target);
+        if (area.isRoom || area.areaId === 'campus') return;
+        const player = motion.getState().player;
+        if (player.path.length && player.targetRoomId) return;
+        moveVisitor(target, computeOfficePath(player, target), null);
+      },
+      visitRoom: (roomId) => {
+        const player = motion.getState().player;
+        const path = visitorRoute(player, roomId, OFFICE_ROOMS, CORRIDORS.main.centerY);
+        const target = path.at(-1);
+        if (target) moveVisitor(target, path, roomId ?? 'zone-lounge');
+        else if (player.path.length) motion.setState({ player: at(player) });
+      },
+    });
 
     const roaming = window.setInterval(() => {
       if (!office.getState().ui.autoRoam || reducedMotion.matches || document.hidden) return;
@@ -179,7 +203,7 @@ export function useOfficeSimulation() {
       unsubscribeCommands();
       window.clearInterval(roaming);
       window.cancelAnimationFrame(frame);
-      motion.setState({ movePlayer: () => {} });
+      motion.setState({ movePlayer: () => {}, visitRoom: () => {} });
     };
-  }, [movePlayer]);
+  }, [initialRoomId, movePlayer]);
 }

@@ -1,20 +1,19 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import {
-  Activity, ArrowLeft, ArrowUpLeft, Bot, Building2, Check, ClipboardList, Cpu, Eye, Footprints,
-  FolderKanban, Layers3, LockKeyhole, Map, MapPin, Maximize2, MessageCircle, Radio, Route, UsersRound,
+  Activity, ArrowLeft, ArrowUpLeft, Bot, Building2, Check, ClipboardList, Compass, Cpu, DoorOpen, Eye,
+  FolderKanban, Map, MapPin, MessageCircle, UsersRound,
 } from 'lucide-react';
-import hqArt from '../assets/wora-hq-art.webp';
-import { isRoomLockedForPlan } from '../billing/plans.js';
-import { ROOM_BY_ID, OFFICE_ROOMS } from '../office/layout.js';
+import receptionArt from '../assets/hq-reception.webp';
+import { OFFICE_ROOMS } from '../office/layout.js';
+import { officeHash } from '../pages.js';
+import { DEPARTMENT_GUIDE } from '../office/visits.js';
 import { agentInitials, orderedAgents, ROOM_DISPLAY } from '../office/presentation.js';
-import { useBillingStore } from '../store/useBillingStore.js';
 import { useProjectStore } from '../store/useProjectStore.js';
 import { useWoraStore } from '../store/useWoraStore.js';
 import { ParticipantStatus, type AgentParticipant } from '../types.js';
-import { OfficeFloorplan } from './OfficeFloorplan.js';
-import { EmptyState, IconTile, PageHeader } from './ui.js';
+import { EmptyState, IconTile } from './ui.js';
 
-function ConnectionBadge() {
+export function ConnectionBadge() {
   const connected = useWoraStore((s) => s.connected);
   const demo = useWoraStore((s) => s.demoMode);
   const label = connected ? 'متصل بالمقر' : demo ? 'وضع المعاينة' : 'جارٍ الاتصال';
@@ -36,14 +35,14 @@ function CardHead({ icon, title, text, action }: { icon: typeof Map; title: stri
   return <div className="card-heading"><IconTile icon={icon} /><div className="card-heading-copy"><h2>{title}</h2>{text && <p>{text}</p>}</div>{action}</div>;
 }
 
-function TeamCard({ expanded, onOpenAll, onOpenAgent }: { expanded?: boolean; onOpenAll?: () => void; onOpenAgent: (id: string) => void }) {
+export function TeamCard({ expanded, onOpenAll, onOpenAgent }: { expanded?: boolean; onOpenAll?: () => void; onOpenAgent: (id: string) => void }) {
   const agents = useWoraStore((s) => s.agents);
   const selectedId = useWoraStore((s) => s.selectedAgentId);
   const list = useMemo(() => orderedAgents(agents), [agents]);
   return (
     <section className={`panel team-card${expanded ? ' team-expanded' : ''}`} id={expanded ? 'campus-team' : undefined} tabIndex={expanded ? -1 : undefined}>
       <CardHead icon={UsersRound} title="فريق الوكلاء" text={`${list.length} وكلاء في مساحة العمل`}
-        action={onOpenAll && <button type="button" className="text-link team-header-link" onClick={onOpenAll}>عرض الفريق <ArrowLeft size={13} /></button>} />
+        action={onOpenAll && <button type="button" className="text-link team-header-link" onClick={onOpenAll}>عرض الفريق <ArrowLeft size={13} aria-hidden="true" /></button>} />
       {list.length ? <ul className="team-list hq-scroll">
         {(expanded ? list : list.slice(0, 4)).map((agent) => (
           <li key={agent.id}>
@@ -79,45 +78,6 @@ function AgentDetails({ agent }: { agent?: AgentParticipant }) {
   </div>;
 }
 
-function MapCard({ expanded, onExpand, onUpgrade, onAgent }: { expanded?: boolean; onExpand?: () => void; onUpgrade?: () => void; onAgent: (id: string) => void }) {
-  const [roomId, setRoom] = useState<string | null>(null);
-  const plan = useBillingStore((s) => s.plan);
-  const agent = useWoraStore((s) => s.selectedAgentId ? s.agents[s.selectedAgentId] : undefined);
-  const focusRoom = useWoraStore((s) => s.focusRoomCamera);
-  const dispatch = useWoraStore((s) => s.dispatchAgentToRoom);
-  const openTasks = useWoraStore((s) => s.toggleWorkspaceHUD);
-  const room = roomId ? ROOM_BY_ID[roomId] : undefined;
-  const locked = room && isRoomLockedForPlan(room.id, plan);
-  const selectRoom = useCallback((id: string) => setRoom((value) => value === id ? null : id), []);
-
-  return (
-    <section className="panel map-card">
-      <CardHead icon={Map} title={expanded ? 'خريطة المقر' : 'المقر التفاعلي'} text="مخطط حيّ لمساحات عمل الفريق" action={
-        expanded ? <span className="badge tint"><Radio size={13} />عرض حيّ</span> : <button type="button" className="button ghost small map-expand" onClick={onExpand}><Maximize2 size={14} /><span>عرض كامل</span></button>
-      } />
-      <div className="map-inset">
-        <OfficeFloorplan expanded={expanded} selectedRoomId={roomId} onRoom={selectRoom} onAgent={onAgent} />
-        <div className="map-caption" aria-label="مفتاح الخريطة">
-          <div><span className="map-key tone-violet"><i />وكيل</span><span className="map-key tone-cyan"><i />قسم عمل</span><span className="map-key"><LockKeyhole size={12} />قسم <bdi>Pro</bdi></span></div>
-          <button type="button" onClick={() => openTasks(true, roomId)} className="text-link"><ClipboardList size={14} />مهام الأقسام</button>
-        </div>
-      </div>
-      <div className={`room-inspector${expanded || room ? '' : ' hidden'}`}>
-        {expanded && <label className="room-picker"><MapPin size={15} /><select aria-label="اختيار قسم على الخريطة" className="field" value={roomId ?? ''} onChange={(event) => setRoom(event.target.value || null)}>
-          <option value="">انتقل إلى قسم...</option>{OFFICE_ROOMS.map((item) => <option key={item.id} value={item.id}>{item.nameAr}</option>)}
-        </select></label>}
-        {room ? <div className="room-info">
-          <div><strong>{room.nameAr}</strong><p>{room.subtitleAr}</p></div>
-          <div className="room-actions">
-            {expanded && <button type="button" className="button small" onClick={() => focusRoom(room.id)}><Maximize2 size={14} />تركيز</button>}
-            {locked ? <button type="button" className="button small" onClick={onUpgrade}><LockKeyhole size={14} />عرض الخطة</button> : agent ? <button type="button" className="button primary small" onClick={() => dispatch(agent.id, room.id)}><Route size={14} />إرسال <bdi>{agent.displayName}</bdi></button> : expanded ? <small className="subtle">اختَر وكيلاً لإرساله إلى هذا القسم.</small> : null}
-          </div>
-        </div> : expanded ? <p>اختَر قسماً، أو اضغط على الممر لتتحرك داخله.</p> : null}
-      </div>
-    </section>
-  );
-}
-
 function Metrics({ onTeam, onRooms, onTasks, onProjects }: { onTeam: () => void; onRooms: () => void; onTasks: () => void; onProjects: () => void }) {
   const agentCount = useWoraStore((s) => Object.keys(s.agents).length);
   const workspaces = useWoraStore((s) => s.workspaces);
@@ -138,7 +98,7 @@ function Metrics({ onTeam, onRooms, onTasks, onProjects }: { onTeam: () => void;
   </section>;
 }
 
-function RecentActivity() {
+export function RecentActivity() {
   const events = useWoraStore((s) => s.activityLog);
   return <section className="panel activity-card">
     <CardHead icon={Activity} title="آخر النشاط" text="التغييرات التي حصلت في المقر خلال هذه الجلسة" />
@@ -146,53 +106,56 @@ function RecentActivity() {
   </section>;
 }
 
-export function Dashboard({ onCampus, onTeam, onProjects, onAgent, onUpgrade }: { onCampus: () => void; onTeam: () => void; onProjects: () => void; onAgent: (id: string) => void; onUpgrade: () => void }) {
-  const openChat = useWoraStore((s) => s.toggleChat);
-  const openTasks = useWoraStore((s) => s.toggleWorkspaceHUD);
-  const selectAgent = useWoraStore((s) => s.selectAgent);
-  return (
-    <>
-      <section className="hq-hero" aria-labelledby="overview-title">
-        <div className="hero-grid" aria-hidden="true" />
-        <div className="hero-visual" aria-hidden="true">
-          <img src={hqArt} width="1080" height="703" alt="" />
-          <div className="hero-visual-caption" dir="ltr"><span /><span>WORA HQ</span><i /> OPERATIONS</div>
-        </div>
-        <ConnectionBadge />
-        <div className="hero-copy">
-          <div className="hero-eyebrow"><Layers3 size={15} strokeWidth={1.75} /> مركز عمليات <bdi>Wora</bdi></div>
-          <h1 id="overview-title">فريقك الذكي،{' '}<br /><span>في مكان واحد.</span></h1>
-          <p>تابع وكلاءك، وزّع المهام، وأدر مشاريعك من مقرّ واحد.</p>
-          <div className="hero-actions">
-            <button type="button" className="button primary" onClick={onCampus}>استكشف المقر <ArrowLeft size={17} /></button>
-            <button type="button" className="button hero-secondary" onClick={() => { selectAgent(null); openChat(true); }}><MessageCircle size={16} />محادثة الفريق</button>
-          </div>
-        </div>
-      </section>
-      <Metrics onTeam={onTeam} onRooms={onCampus} onTasks={() => openTasks(true)} onProjects={onProjects} />
-      <div className="dashboard-layout">
-        <MapCard onExpand={onCampus} onUpgrade={onUpgrade} onAgent={onAgent} />
-        <TeamCard onOpenAll={onTeam} onOpenAgent={onAgent} />
-      </div>
-      <RecentActivity />
-    </>
-  );
+function DepartmentDirectory({ onVisit }: { onVisit: (id: string) => void }) {
+  return <section className="reception-directory" aria-labelledby="reception-directory-title">
+    <div className="section-bar reception-directory-title"><div>
+      <div className="hq-kicker"><span aria-hidden="true" /> دليلك داخل الشركة</div>
+      <h2 id="reception-directory-title">أي قسم تحب تزوره؟</h2>
+      <p>اختَر غرفة وادخل مباشرة، أو ابدأ الجولة من الاستقبال.</p>
+    </div><bdi className="floor-count mono" dir="ltr">01 FLOOR <i /> {OFFICE_ROOMS.length.toString().padStart(2, '0')} ROOMS</bdi></div>
+    <div className="reception-departments">
+      {OFFICE_ROOMS.map((room) => {
+        const { icon: Icon, label, tone } = ROOM_DISPLAY[room.id]!;
+        return <a key={room.id} href={officeHash(room.id)} className={`panel directory-door space-${tone}`} onClick={(event) => {
+          if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+          event.preventDefault(); onVisit(room.id);
+        }} aria-label={`دخول ${room.nameAr}`}>
+          <div className="directory-door-top"><span className="department-icon"><Icon size={20} aria-hidden="true" /></span><bdi className="mono">{room.code.slice(2)}</bdi></div>
+          <div className="directory-door-name"><strong>{label}</strong><ArrowUpLeft size={15} aria-hidden="true" /></div>
+          <p>{DEPARTMENT_GUIDE[room.id]?.outputs}</p>
+        </a>;
+      })}
+    </div>
+  </section>;
 }
 
-export function Campus({ onUpgrade }: { onUpgrade: () => void }) {
-  const select = useWoraStore((s) => s.selectAgent);
-  const toggleRoam = useWoraStore((s) => s.toggleAutoRoam);
-  const openChat = useWoraStore((s) => s.toggleChat);
-  const roaming = useWoraStore((s) => s.ui.autoRoam);
-  const standup = useWoraStore((s) => s.callTeamStandup);
-  const returnDesks = useWoraStore((s) => s.returnAllToDesks);
-  return (
-    <>
-      <PageHeader icon={Building2} eyebrow="مقرّ Wora" title="المقر التفاعلي" description="تنقّل بين الأقسام وتابع وكلاءك وهم ينتقلون من مكتب لمكتب."
-        action={<><button type="button" className="button" onClick={returnDesks}><Footprints size={16} />عودة للمكاتب</button><button type="button" className="button primary" onClick={standup}><UsersRound size={16} />اجتماع الفريق</button></>} />
-      <div className="campus-tools"><ConnectionBadge /><button type="button" className="filter-chip" aria-pressed={roaming} onClick={toggleRoam}><Route size={15} />الجولات التلقائية <span className="status-dot" /></button><button type="button" className="filter-chip campus-chat" onClick={() => { select(null); openChat(true); }}><MessageCircle size={16} />محادثة الفريق</button></div>
-      <div className="dashboard-layout campus-layout"><MapCard expanded onAgent={select} onUpgrade={onUpgrade} /><TeamCard expanded onOpenAgent={select} /></div>
-      <RecentActivity />
-    </>
-  );
+export function Dashboard({ onCampus, onTour, onVisit, onTeam, onProjects, onAgent }: {
+  onCampus: () => void; onTour: () => void; onVisit: (id: string) => void; onTeam: () => void; onProjects: () => void; onAgent: (id: string) => void;
+}) {
+  const openTasks = useWoraStore((s) => s.toggleWorkspaceHUD);
+  const openChat = () => {
+    useWoraStore.getState().selectAgent(null);
+    useWoraStore.getState().toggleChat(true);
+  };
+  return <>
+    <section className="reception-hero" aria-labelledby="overview-title">
+      <img className="reception-photo" src={receptionArt} width={1376} height={768} alt="" />
+      <div className="reception-shade" aria-hidden="true" />
+      <div className="reception-meta"><span className="reception-position"><MapPin size={15} aria-hidden="true" /> أنت الآن في الاستقبال</span><ConnectionBadge /></div>
+      <div className="reception-copy">
+        <bdi className="reception-edition mono" dir="ltr">WORA HQ <i /> VISITOR ACCESS</bdi>
+        <h1 id="overview-title">أهلاً بك في <span>مقرّ <bdi>Wora.</bdi></span></h1>
+        <p>ادخل مقرّ شركتك. اتعرّف على الفريق وتجوّل بين الأقسام، من أول فكرة لحد ما المنتج يوصل للعملاء.</p>
+        <div className="reception-actions">
+          <button type="button" className="button primary" onClick={onCampus}><DoorOpen size={18} aria-hidden="true" />ادخل المقر <ArrowLeft size={17} aria-hidden="true" /></button>
+          <button type="button" className="button reception-tour" onClick={onTour}><Compass size={17} aria-hidden="true" />ابدأ جولة مع الدليل</button>
+        </div>
+      </div>
+      <div className="reception-plaque" aria-hidden="true"><span className="reception-plaque-num mono">01</span><span><strong>الاستقبال</strong><bdi className="mono" dir="ltr">MAIN LOBBY</bdi></span></div>
+    </section>
+    <DepartmentDirectory onVisit={onVisit} />
+    <Metrics onTeam={onTeam} onRooms={onCampus} onTasks={() => openTasks(true)} onProjects={onProjects} />
+    <div className="reception-quick-tools"><button type="button" className="text-link" onClick={openChat}><MessageCircle size={16} aria-hidden="true" />محادثة الفريق</button></div>
+    <div className="dashboard-layout reception-operations"><TeamCard onOpenAll={onTeam} onOpenAgent={onAgent} /><RecentActivity /></div>
+  </>;
 }

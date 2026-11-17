@@ -1,5 +1,8 @@
 import { create } from 'zustand';
 import { devtools, subscribeWithSelector } from 'zustand/middleware';
+import { isRoomLockedForPlan } from '../billing/plans.js';
+import { RECEPTION_POINT } from '../office/visits.js';
+import { useBillingStore } from './useBillingStore.js';
 import {
   AgentLifecycleState,
   AgentOrigin,
@@ -23,6 +26,12 @@ import {
   OFFICE_ROOMS,
   ROOM_BY_ID,
 } from '../office/layout.js';
+
+export const LOCAL_TASK_PREFIX = 'local-ws-';
+
+export function workspaceEntryLabel(id: string) {
+  return id.startsWith('init-') ? 'مثال للمعاينة' : id.startsWith(LOCAL_TASK_PREFIX) ? 'مهمة محلية' : null;
+}
 
 export interface PresenceEntry {
   participantId: string;
@@ -284,7 +293,7 @@ export const useWoraStore = create<WoraState>()(
         selectedAgentId: null,
         followAgentId:   null,
         localUserId,
-        localPosition:   { x: 800, y: 0, z: 774 },
+        localPosition:   { x: RECEPTION_POINT.x, y: 0, z: RECEPTION_POINT.y },
         officeCommand:   null,
         ui: {
           theme:            initialTheme,
@@ -305,32 +314,24 @@ export const useWoraStore = create<WoraState>()(
           const state = get();
           const serverAgents = participants.filter((p) => p.isAgent);
 
-          // Preserve custom locally-hired agents and fall back to default roster if backend DB is empty
+          // A connected snapshot is authoritative, including empty lists. Keep only
+          // explicit session-local additions from the standalone preview.
           const nextAgents: Record<string, AgentParticipant> = {};
-          if (serverAgents.length > 0) {
-            for (const p of serverAgents) {
-              const roleAr = AGENT_ROLE_AR[p.id];
-              nextAgents[p.id] = roleAr
-                ? { ...p, profile: { ...p.profile, customRole: roleAr } }
-                : p;
-            }
-            for (const existing of Object.values(state.agents)) {
-              if (existing.id.startsWith('agent-custom-') && !(existing.id in nextAgents)) {
-                nextAgents[existing.id] = existing;
-              }
-            }
-          } else {
-            Object.assign(nextAgents, state.agents);
+          for (const p of serverAgents) {
+            const roleAr = AGENT_ROLE_AR[p.id];
+            nextAgents[p.id] = roleAr ? { ...p, profile: { ...p.profile, customRole: roleAr } } : p;
+          }
+          for (const agent of Object.values(state.agents)) {
+            if (agent.id.startsWith('agent-custom-') && !(agent.id in nextAgents)) nextAgents[agent.id] = agent;
           }
 
           const presenceMap: Record<string, PresenceEntry> = {};
           for (const p of presence) presenceMap[p.participantId] = p;
 
-          const wsMap: Record<string, SharedWorkspaceState> = { ...state.workspaces };
-          for (const ws of workspaces) {
-            if (ws.entries.length > 0 || !(ws.zoneId in wsMap)) {
-              wsMap[ws.zoneId] = ws;
-            }
+          const wsMap: Record<string, SharedWorkspaceState> = Object.fromEntries(workspaces.map((ws) => [ws.zoneId, ws]));
+          for (const local of Object.values(state.workspaces)) {
+            const additions = local.entries.filter((entry) => entry.id.startsWith(LOCAL_TASK_PREFIX));
+            if (additions.length) wsMap[local.zoneId] = { ...local, ...wsMap[local.zoneId], entries: [...(wsMap[local.zoneId]?.entries ?? []), ...additions] };
           }
 
           const nextLocations = { ...state.agentLocations };
@@ -351,12 +352,17 @@ export const useWoraStore = create<WoraState>()(
 
           set({
             roomId:         nextRoomId ?? state.roomId,
+            connected:      true,
+            demoMode:       false,
+            connectionError: null,
             agents:         nextAgents,
             agentLocations: nextLocations,
-            zones:          zones.length > 0 ? zones : state.zones,
+            zones,
             presence:       presenceMap,
             messages:       recentMessages.length > 0 ? recentMessages.slice(-MAX_MESSAGES) : state.messages,
             workspaces:     wsMap,
+            selectedAgentId: state.selectedAgentId && nextAgents[state.selectedAgentId] ? state.selectedAgentId : null,
+            followAgentId:   state.followAgentId && nextAgents[state.followAgentId] ? state.followAgentId : null,
             activeStreams:  {},
           });
         },
@@ -598,8 +604,8 @@ export const useWoraStore = create<WoraState>()(
 
         dispatchAgentToRoom: (agentId, roomId, reasonAr) => {
           const ag = get().agents[agentId];
-          const room = ROOM_BY_ID[roomId];
-          if (!ag || !room) return;
+          const room = Object.hasOwn(ROOM_BY_ID, roomId) ? ROOM_BY_ID[roomId] : undefined;
+          if (!ag || !room || isRoomLockedForPlan(roomId, useBillingStore.getState().plan)) return;
           set((s) => ({
             officeCommand: {
               seq:      ++cmdSeq,
