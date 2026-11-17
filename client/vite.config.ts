@@ -10,13 +10,12 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     sourcemap: false,
-    chunkSizeWarningLimit: 1200,
     rollupOptions: {
       output: {
         manualChunks: {
-          react:  ['react', 'react-dom', 'zustand'],
+          vendor: ['react', 'react-dom', 'zustand'],
           socket: ['socket.io-client'],
-          three:  ['three', '@react-three/fiber', '@react-three/drei'],
+          icons:  ['lucide-react'],
         },
       },
     },
@@ -25,18 +24,18 @@ export default defineConfig({
     host: '0.0.0.0',
     allowedHosts: true,
     proxy: {
-      '/api':       { target: 'http://localhost:4000', changeOrigin: true },
-      '/health':    { target: 'http://localhost:4000', changeOrigin: true },
-      '/socket.io': { target: 'http://localhost:4000', ws: true },
+      '/api':       { target: 'http://127.0.0.1:4000', changeOrigin: true },
+      '/health':    { target: 'http://127.0.0.1:4000', changeOrigin: true },
+      '/socket.io': { target: 'http://127.0.0.1:4000', ws: true },
     },
   },
   preview: {
     host: '0.0.0.0',
     allowedHosts: true,
     proxy: {
-      '/api':       { target: 'http://localhost:4000', changeOrigin: true },
-      '/health':    { target: 'http://localhost:4000', changeOrigin: true },
-      '/socket.io': { target: 'http://localhost:4000', ws: true },
+      '/api':       { target: 'http://127.0.0.1:4000', changeOrigin: true },
+      '/health':    { target: 'http://127.0.0.1:4000', changeOrigin: true },
+      '/socket.io': { target: 'http://127.0.0.1:4000', ws: true },
     },
   },
 });
