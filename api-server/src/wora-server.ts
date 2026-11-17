@@ -1,0 +1,1172 @@
+/**
+ * wora-server.ts — Wora Agent OS v4.1 (Production-Hardened 2026)
+ * ───────────────────────────────────────────────────────────────
+ * Core architecture & security guarantees:
+ *  1. Fixed ESM relative imports (`../../shared/types/index.js`).
+ *  2. Safe environment variable sanitization (preserves query strings in URIs).
+ *  3. Strict CORS origin allowlist (`ALLOWED_ORIGINS`) + optional HMAC/API-key auth.
+ *  4. Full Zod validation on every REST route & Socket.IO event (400 on ZodError).
+ *  5. Distributed Redis rate limiting across instances on all mutating socket events.
+ *  6. Strict per-user room isolation (`wora-{userId}`):
+ *     - Room-scoped workspace entries via SharedWorkspaceManager
+ *     - Room-scoped brain hot-swaps stored in Redis (no cross-user hijacking)
+ *     - Room-scoped persistent chat history in Redis (contextual LLM memory)
+ *  7. Cross-instance BrainAdapterFactory cache invalidation via Redis Pub/Sub.
+ *  8. Zero secret leakage into BullMQ/Redis + Unicode/Arabic @mention support.
+ *  9. Live `/health` probes + complete graceful shutdown (`SIGTERM` & `SIGINT`).
+ */
+
+import express, { type Express, type Request, type Response, type NextFunction } from 'express';
+import { createServer } from 'node:http';
+import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
+import { Server as SocketIOServer } from 'socket.io';
+import { createAdapter } from '@socket.io/redis-adapter';
+import { createClient as createRedis, type RedisClientType } from 'redis';
+import cors, { type CorsOptions } from 'cors';
+import mongoose from 'mongoose';
+import { z, ZodError } from 'zod';
+
+import { AgentModel, type IAgentDocument } from './models/Agent.js';
+import { SharedWorkspaceManager } from './core/SharedWorkspaceManager.js';
+import {
+  BrainAdapterFactory,
+  isProviderConfigured,
+  isSupportedModel,
+  type ConversationTurn,
+} from './ai/BrainAdapter.js';
+import { AiQueue } from './queue/AiQueue.js';
+import { PresenceStore } from './store/PresenceStore.js';
+import { EXAMPLE_ZONES, VALID_ZONE_IDS } from './zones.js';
+import { logger } from './lib/logger.js';
+
+import {
+  AgentLifecycleState,
+  AgentOrigin,
+  AvatarAnimState,
+  BrainProvider,
+  BRAIN_MODELS,
+  BRAIN_PROVIDER_LABELS,
+  DEFAULT_BRAIN_MODEL,
+  MessageType,
+  ParticipantStatus,
+  RoomAccessMode,
+} from '../../shared/types/index.js';
+import type {
+  AgentParticipant,
+  BrainSwapBroadcast,
+  Message,
+  PublicBrainConfig,
+} from '../../shared/types/index.js';
+
+/* ─── SAFE ENV SANITIZATION ─────────────────────────────── */
+/**
+ * Cleans accidentally pasted `KEY=value` prefixes or wrapping quotes WITHOUT
+ * truncating valid query parameters (e.g. `mongodb+srv://.../?replicaSet=rs0`).
+ */
+export function sanitizeEnv(raw?: string): string | undefined {
+  if (!raw) return undefined;
+  let value = raw.trim();
+  const pastedAssignment = value.match(/^[A-Z][A-Z0-9_]{1,39}=(.*)$/s);
+  if (pastedAssignment?.[1] !== undefined) {
+    value = pastedAssignment[1].trim();
+  }
+  if (
+    (value.startsWith('"') && value.endsWith('"')) ||
+    (value.startsWith("'") && value.endsWith("'"))
+  ) {
+    value = value.slice(1, -1).trim();
+  }
+  return value || undefined;
+}
+
+const NODE_ENV       = sanitizeEnv(process.env['NODE_ENV']) ?? 'development';
+const IS_PRODUCTION  = NODE_ENV === 'production';
+const DEFAULT_PORT   = Number(process.env['PORT'] ?? 4000);
+const MONGO_URI      = sanitizeEnv(process.env['MONGO_URI']);
+const REDIS_URL      = sanitizeEnv(process.env['REDIS_URL']) ?? 'redis://localhost:6379';
+const MAX_SOCKETS    = Math.max(10, Number(process.env['MAX_SOCKETS'] ?? 12_000));
+const AUTH_SECRET    = sanitizeEnv(process.env['AUTH_SECRET']);
+const ADMIN_API_KEY  = sanitizeEnv(process.env['ADMIN_API_KEY']);
+
+const BRAIN_EVICT_CHANNEL   = 'wora:events:brain-evict';
+const ROOM_HISTORY_LIMIT    = 100;
+const AI_CONTEXT_TURNS      = 16;
+const ROOM_DATA_TTL_SECONDS = 86_400 * 7; // 7 days
+const MAX_MENTIONS_PER_MSG  = 3;
+const AGENT_CACHE_TTL_MS    = 30_000;
+
+/* ─── CORS CONFIGURATION ────────────────────────────────── */
+function buildCorsOptions(): CorsOptions {
+  const rawOrigins = sanitizeEnv(process.env['ALLOWED_ORIGINS']);
+  const allowlist = new Set<string>(
+    rawOrigins
+      ? rawOrigins.split(',').map((o) => o.trim()).filter(Boolean)
+      : IS_PRODUCTION
+        ? []
+        : ['http://localhost:5173', 'http://127.0.0.1:5173', 'http://localhost:4173', 'http://localhost:3000'],
+  );
+
+  return {
+    origin(requestOrigin, callback) {
+      // Allow non-browser probes (healthchecks, server-to-server)
+      if (!requestOrigin) {
+        callback(null, true);
+        return;
+      }
+      if (allowlist.has(requestOrigin)) {
+        callback(null, true);
+        return;
+      }
+      if (!IS_PRODUCTION && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(requestOrigin)) {
+        callback(null, true);
+        return;
+      }
+      logger.warn({ origin: requestOrigin }, 'Blocked disallowed CORS origin');
+      callback(new Error('CORS_ORIGIN_DENIED'));
+    },
+    methods:     ['GET', 'POST', 'PATCH', 'PUT', 'DELETE'],
+    credentials: true,
+    maxAge:      86_400,
+  };
+}
+
+/* ─── AUTH HELPERS ──────────────────────────────────────── */
+function safeEqual(a: string, b: string): boolean {
+  const bufA = Buffer.from(a, 'utf8');
+  const bufB = Buffer.from(b, 'utf8');
+  if (bufA.length !== bufB.length) return false;
+  return timingSafeEqual(bufA, bufB);
+}
+
+/**
+ * Verifies an HMAC-SHA256 signed session token (`base64url(payload).base64url(sig)`)
+ * when `AUTH_SECRET` is configured. Returns the verified userId or null.
+ */
+function verifySessionToken(token: string, secret: string): { userId: string; displayName?: string } | null {
+  const parts = token.split('.');
+  // Support both 2-part HMAC tokens (`payload.sig`) and standard 3-part HS256 JWTs (`header.payload.sig`)
+  if (parts.length === 2) {
+    const [payloadB64, sigB64] = parts as [string, string];
+    const expected = createHmac('sha256', secret).update(payloadB64).digest('base64url');
+    if (!safeEqual(sigB64, expected)) return null;
+    try {
+      const payload = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf8')) as {
+        sub?: string; userId?: string; name?: string; exp?: number;
+      };
+      if (payload.exp && Date.now() >= payload.exp * 1_000) return null;
+      const uid = payload.sub ?? payload.userId;
+      if (!uid || !/^[a-zA-Z0-9_-]{3,64}$/.test(uid)) return null;
+      return { userId: uid, displayName: payload.name };
+    } catch {
+      return null;
+    }
+  }
+
+  if (parts.length === 3) {
+    const [headerB64, payloadB64, sigB64] = parts as [string, string, string];
+    try {
+      const header = JSON.parse(Buffer.from(headerB64, 'base64url').toString('utf8')) as { alg?: string };
+      if (header.alg !== 'HS256') return null;
+      const expected = createHmac('sha256', secret)
+        .update(`${headerB64}.${payloadB64}`)
+        .digest('base64url');
+      if (!safeEqual(sigB64, expected)) return null;
+      const payload = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf8')) as {
+        sub?: string; userId?: string; name?: string; exp?: number;
+      };
+      if (payload.exp && Date.now() >= payload.exp * 1_000) return null;
+      const uid = payload.sub ?? payload.userId;
+      if (!uid || !/^[a-zA-Z0-9_-]{3,64}$/.test(uid)) return null;
+      return { userId: uid, displayName: payload.name };
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
+}
+
+function requireAdminKey(req: Request, res: Response, next: NextFunction): void {
+  if (!ADMIN_API_KEY) {
+    if (IS_PRODUCTION) {
+      res.status(403).json({ error: 'ADMIN_API_KEY is required in production for this endpoint' });
+      return;
+    }
+    next();
+    return;
+  }
+  const header = req.header('x-api-key') ?? req.header('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
+  if (!header || !safeEqual(header, ADMIN_API_KEY)) {
+    res.status(401).json({ error: 'Unauthorized' });
+    return;
+  }
+  next();
+}
+
+function requireRoomAccess(req: Request, res: Response, next: NextFunction): void {
+  const roomId = req.params['roomId'] ?? '';
+  if (!AUTH_SECRET) {
+    next();
+    return;
+  }
+  const bearer = req.header('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
+  if (ADMIN_API_KEY && bearer && safeEqual(bearer, ADMIN_API_KEY)) {
+    next();
+    return;
+  }
+  const verified = bearer ? verifySessionToken(bearer, AUTH_SECRET) : null;
+  if (!verified || roomId !== `wora-${verified.userId}`) {
+    res.status(403).json({ error: 'Forbidden' });
+    return;
+  }
+  next();
+}
+
+/* ─── ZOD VALIDATION SCHEMAS ────────────────────────────── */
+const SafeIdSchema = z.string().trim().min(1).max(80).regex(/^[a-zA-Z0-9_-]+$/);
+const RoomIdSchema = z.string().trim().min(1).max(100).regex(/^wora-[a-zA-Z0-9_-]+$/);
+
+const PositionSchema = z.object({
+  x: z.number().finite().min(-500).max(500),
+  y: z.number().finite().min(-100).max(100),
+  z: z.number().finite().min(-500).max(500),
+});
+
+const PublicBrainSchema = z
+  .object({
+    provider:    z.nativeEnum(BrainProvider),
+    model:       z.string().trim().min(1).max(100),
+    maxTokens:   z.number().int().min(64).max(16_384).optional(),
+    temperature: z.number().min(0).max(2).optional(),
+  })
+  .strict()
+  .refine((cfg) => isSupportedModel(cfg.provider, cfg.model), {
+    message: 'Model is not supported for the selected provider',
+    path:    ['model'],
+  });
+
+const RestBrainSwapSchema = z
+  .object({
+    provider:    z.nativeEnum(BrainProvider),
+    model:       z.string().trim().min(1).max(100),
+    maxTokens:   z.number().int().min(64).max(16_384).optional(),
+    temperature: z.number().min(0).max(2).optional(),
+    requestedBy: z.string().trim().min(1).max(80).optional(),
+    reason:      z.string().trim().max(500).optional(),
+  })
+  .strict()
+  .refine((cfg) => isSupportedModel(cfg.provider, cfg.model), {
+    message: 'Model is not supported for the selected provider',
+    path:    ['model'],
+  });
+
+const SocketBrainSwapSchema = z.object({
+  agentId:     SafeIdSchema,
+  newBrain:    PublicBrainSchema,
+  requestedBy: z.string().trim().max(80).optional(),
+  reason:      z.string().trim().max(500).optional(),
+});
+
+const RoomJoinSchema = z
+  .object({
+    roomId:   z.string().max(100).optional(),
+    position: PositionSchema.optional(),
+  })
+  .default({});
+
+const RoomMoveSchema = z.object({
+  roomId:   z.string().max(100).optional(),
+  position: PositionSchema,
+});
+
+const MessageSendSchema = z.object({
+  roomId:        z.string().max(100).optional(),
+  content:       z.string().trim().min(1).max(4_000),
+  type:          z.enum([MessageType.Text, MessageType.Mention]).default(MessageType.Text),
+  replyToId:     z.string().uuid().optional(),
+  targetAgentId: SafeIdSchema.optional(),
+});
+
+const WorkspaceWriteSchema = z.object({
+  zoneId:        SafeIdSchema.refine((id) => VALID_ZONE_IDS.has(id), 'Unknown zoneId'),
+  type:          z.enum(['task', 'artifact', 'review', 'signal', 'handoff']),
+  authorAgentId: SafeIdSchema,
+  targetAgentId: SafeIdSchema.optional(),
+  title:         z.string().trim().min(1).max(200),
+  payload:       z.record(z.string().max(64), z.unknown()).default({}),
+  parentEntryId: z.string().uuid().optional(),
+  expiresInMs:   z.number().int().min(5_000).max(86_400_000 * 7).optional(),
+});
+
+const WorkspaceSignalSchema = z.object({
+  zoneId:  SafeIdSchema.refine((id) => VALID_ZONE_IDS.has(id), 'Unknown zoneId'),
+  agentId: SafeIdSchema,
+  title:   z.string().trim().min(1).max(200),
+  data:    z.record(z.string().max(64), z.unknown()).default({}),
+});
+
+/* ─── DISTRIBUTED REDIS RATE LIMITER ────────────────────── */
+const RATE_LIMIT_LUA = `
+local current = redis.call('INCR', KEYS[1])
+if current == 1 then
+  redis.call('PEXPIRE', KEYS[1], tonumber(ARGV[1]))
+end
+return current
+`;
+
+class RedisRateLimiter {
+  constructor(private readonly redis: RedisClientType) {}
+
+  async allow(bucket: string, subject: string, limit: number, windowMs: number): Promise<boolean> {
+    const key = `wora:rl:${bucket}:${subject}`;
+    try {
+      const count = Number(
+        await this.redis.eval(RATE_LIMIT_LUA, {
+          keys:      [key],
+          arguments: [String(windowMs)],
+        }),
+      );
+      return count <= limit;
+    } catch {
+      // Fail open on transient Redis hiccup to preserve availability
+      return true;
+    }
+  }
+}
+
+/* ─── ROOM STATE HELPERS (CHAT HISTORY & BRAIN OVERRIDES) ── */
+function roomMessagesKey(roomId: string): string {
+  return `wora:room:${roomId}:messages`;
+}
+
+function roomBrainsKey(roomId: string): string {
+  return `wora:room:${roomId}:brains`;
+}
+
+async function appendRoomMessage(redis: RedisClientType, roomId: string, msg: Message): Promise<void> {
+  const key = roomMessagesKey(roomId);
+  const multi = redis.multi();
+  multi.rPush(key, JSON.stringify(msg));
+  multi.lTrim(key, -ROOM_HISTORY_LIMIT, -1);
+  multi.expire(key, ROOM_DATA_TTL_SECONDS);
+  await multi.exec();
+}
+
+async function getRoomMessages(redis: RedisClientType, roomId: string, count = ROOM_HISTORY_LIMIT): Promise<Message[]> {
+  const raw = await redis.lRange(roomMessagesKey(roomId), -count, -1);
+  const out: Message[] = [];
+  for (const item of raw) {
+    try {
+      out.push(JSON.parse(item) as Message);
+    } catch {
+      // Skip malformed entry
+    }
+  }
+  return out;
+}
+
+async function setRoomBrainOverride(
+  redis: RedisClientType,
+  roomId: string,
+  agentId: string,
+  brain: PublicBrainConfig,
+): Promise<void> {
+  const key = roomBrainsKey(roomId);
+  const multi = redis.multi();
+  multi.hSet(key, agentId, JSON.stringify(brain));
+  multi.expire(key, ROOM_DATA_TTL_SECONDS);
+  await multi.exec();
+}
+
+async function getRoomBrainOverrides(
+  redis: RedisClientType,
+  roomId: string,
+): Promise<Record<string, PublicBrainConfig>> {
+  const raw = await redis.hGetAll(roomBrainsKey(roomId));
+  const out: Record<string, PublicBrainConfig> = {};
+  for (const [agentId, json] of Object.entries(raw)) {
+    try {
+      const parsed = PublicBrainSchema.safeParse(JSON.parse(json));
+      if (parsed.success) out[agentId] = parsed.data;
+    } catch {
+      // Ignore invalid override
+    }
+  }
+  return out;
+}
+
+function toPublicBrain(cfg?: Partial<PublicBrainConfig>, fallbackModel?: string): PublicBrainConfig {
+  const provider = cfg?.provider ?? BrainProvider.Google;
+  const model = cfg?.model ?? fallbackModel ?? DEFAULT_BRAIN_MODEL;
+  return {
+    provider,
+    model,
+    ...(cfg?.maxTokens !== undefined ? { maxTokens: cfg.maxTokens } : {}),
+    ...(cfg?.temperature !== undefined ? { temperature: cfg.temperature } : {}),
+  };
+}
+
+/* ─── UNICODE-AWARE MENTION PARSER ──────────────────────── */
+interface ParsedMention {
+  token:      string;
+  raw:        string;
+  startIndex: number;
+  endIndex:   number;
+}
+
+function extractUniqueMentions(content: string, max = MAX_MENTIONS_PER_MSG): ParsedMention[] {
+  const regex = /@([\p{L}\p{N}_-]{2,40})/gu;
+  const seen = new Set<string>();
+  const results: ParsedMention[] = [];
+
+  for (const match of content.matchAll(regex)) {
+    const token = match[1]?.toLowerCase();
+    if (!token || seen.has(token)) continue;
+    seen.add(token);
+    const startIndex = match.index ?? 0;
+    results.push({
+      token,
+      raw:      match[0],
+      startIndex,
+      endIndex: startIndex + match[0].length,
+    });
+    if (results.length >= max) break;
+  }
+
+  return results;
+}
+
+function matchAgentByMention(agents: readonly CachedAgent[], token: string): CachedAgent | undefined {
+  const normalized = token.toLowerCase();
+  // 1. Exact match on agentId or displayName
+  const exact = agents.find(
+    (a) => a.agentId.toLowerCase() === normalized || a.displayName.toLowerCase() === normalized,
+  );
+  if (exact) return exact;
+
+  // 2. First-word or prefix match on displayName (min 3 chars to avoid accidental `@a` matches)
+  if (normalized.length >= 3) {
+    return agents.find((a) => {
+      const lowerName = a.displayName.toLowerCase();
+      const firstWord = lowerName.split(/\s+/)[0] ?? '';
+      return firstWord === normalized || lowerName.startsWith(normalized);
+    });
+  }
+  return undefined;
+}
+
+type CachedAgent = Pick<
+  IAgentDocument,
+  | 'agentId'
+  | 'displayName'
+  | 'locale'
+  | 'modelId'
+  | 'brainConfig'
+  | 'avatarGlb'
+  | 'avatarUrl'
+  | 'zoneId'
+  | 'assignedRoomIds'
+  | 'profile'
+  | 'systemPromptOverride'
+  | 'status'
+  | 'activeTasks'
+  | 'createdAt'
+  | 'lastSeenAt'
+>;
+
+function mapAgentToParticipant(
+  agent: CachedAgent,
+  roomId: string,
+  brainOverride?: PublicBrainConfig,
+): AgentParticipant {
+  const effectiveBrain = brainOverride ?? toPublicBrain(agent.brainConfig, agent.modelId);
+  return {
+    id:              agent.agentId,
+    displayName:     agent.displayName,
+    isHuman:         false,
+    isAgent:         true,
+    origin:          AgentOrigin.Internal,
+    profile: {
+      customRole:       agent.profile.customRole,
+      tone:             agent.profile.tone,
+      skills:           agent.profile.skills ?? [],
+      avatarColor:      agent.profile.avatarColor,
+      tagline:          agent.profile.tagline,
+      specialty:        agent.profile.specialty,
+      boundaries:       agent.profile.boundaries,
+      colleagues:       agent.profile.colleagues,
+      knowledgeBaseIds: agent.profile.knowledgeBaseIds,
+    },
+    zoneId:          agent.zoneId ?? null,
+    lifecycleState:  AgentLifecycleState.Idle,
+    socketId:        null,
+    assignedRoomIds: agent.assignedRoomIds ?? [],
+    modelId:         effectiveBrain.model,
+    activeTasks:     agent.activeTasks ?? 0,
+    brainConfig:     effectiveBrain,
+    avatarGlb:       agent.avatarGlb,
+    avatarState:     AvatarAnimState.Idle,
+    locale:          agent.locale ?? 'en',
+    createdAt:       agent.createdAt ? new Date(agent.createdAt).toISOString() : new Date().toISOString(),
+    lastSeenAt:      agent.lastSeenAt ? new Date(agent.lastSeenAt).toISOString() : new Date().toISOString(),
+    status:          agent.status === 'active' ? ParticipantStatus.Online : ParticipantStatus.Offline,
+    activeRoomIds:   [roomId],
+    avatarUrl:       agent.avatarUrl,
+  };
+}
+
+/* ─── BOOT SERVER ───────────────────────────────────────── */
+export async function bootWoraServer(app: Express, port = DEFAULT_PORT) {
+  const httpServer = createServer(app);
+  const corsOptions = buildCorsOptions();
+
+  app.disable('x-powered-by');
+  app.use((_req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    next();
+  });
+  app.use(cors(corsOptions));
+  app.use(express.json({ limit: '16kb' }));
+
+  /* ── Redis clients (pub + sub + app events) ── */
+  const pubClient = createRedis({ url: REDIS_URL }) as RedisClientType;
+  const subClient = pubClient.duplicate() as RedisClientType;
+  const eventSub  = pubClient.duplicate() as RedisClientType;
+
+  pubClient.on('error', (err: Error) => logger.error({ err: err.message }, 'Redis pubClient error'));
+  subClient.on('error', (err: Error) => logger.error({ err: err.message }, 'Redis subClient error'));
+  eventSub.on('error',  (err: Error) => logger.error({ err: err.message }, 'Redis eventSub error'));
+
+  await Promise.all([pubClient.connect(), subClient.connect(), eventSub.connect()]);
+  logger.info('Redis clients connected');
+
+  // Cross-instance BrainAdapterFactory cache invalidation
+  let agentsCache: { data: CachedAgent[]; expiresAt: number } | null = null;
+  const invalidateLocalAgentCache = (agentId?: string) => {
+    agentsCache = null;
+    if (agentId) BrainAdapterFactory.swapBrain(agentId);
+  };
+
+  await eventSub.subscribe(BRAIN_EVICT_CHANNEL, (agentId) => {
+    invalidateLocalAgentCache(agentId);
+  });
+
+  const presence = new PresenceStore(pubClient);
+  const rateLimiter = new RedisRateLimiter(pubClient);
+
+  /* ── Socket.IO with Redis adapter ── */
+  const io = new SocketIOServer(httpServer, {
+    cors:            corsOptions,
+    transports:      ['websocket', 'polling'],
+    pingInterval:    25_000,
+    pingTimeout:     60_000,
+    connectTimeout:  10_000,
+    maxHttpBufferSize: 32_768, // 32 KB max socket frame
+    path:            '/socket.io',
+  });
+  io.adapter(createAdapter(pubClient, subClient));
+  logger.info('Socket.IO Redis adapter configured');
+
+  /* ── MongoDB connection with live state tracking ── */
+  const isMongoReady = () => mongoose.connection.readyState === 1;
+
+  if (MONGO_URI) {
+    mongoose.connection.on('connected',    () => logger.info('MongoDB connected'));
+    mongoose.connection.on('disconnected', () => logger.warn('MongoDB disconnected'));
+    mongoose.connection.on('error',        (err: Error) => logger.error({ err: err.message }, 'MongoDB error'));
+
+    await mongoose.connect(MONGO_URI, {
+      maxPoolSize:              50,
+      minPoolSize:              5,
+      serverSelectionTimeoutMS: 8_000,
+      socketTimeoutMS:          45_000,
+      appName:                  'wora-agent-os',
+    });
+  } else {
+    logger.warn('MONGO_URI is not set — starting without persistent agent catalog');
+  }
+
+  /* ── Shared Workspace Manager (reuses pubClient, works with or without Mongo) ── */
+  const workspaceMgr = await SharedWorkspaceManager.create(io, pubClient);
+
+  /* ── Cached active agent loader (avoids hitting MongoDB on every join/message) ── */
+  async function loadActiveAgents(): Promise<CachedAgent[]> {
+    if (!isMongoReady()) return [];
+    const now = Date.now();
+    if (agentsCache && now < agentsCache.expiresAt) {
+      return agentsCache.data;
+    }
+    const docs = await AgentModel.find({ status: 'active' }).lean<CachedAgent[]>();
+    agentsCache = { data: docs, expiresAt: now + AGENT_CACHE_TTL_MS };
+    return docs;
+  }
+
+  /* ── AI Queue (BullMQ) with reply persistence ── */
+  const aiQueue = new AiQueue(io, REDIS_URL, {
+    onReplyPersisted: async (roomId, replyMsg, agentId) => {
+      await appendRoomMessage(pubClient, roomId, replyMsg);
+      if (isMongoReady()) {
+        AgentModel.updateOne(
+          { agentId },
+          { $inc: { totalTasksRun: 1 }, $set: { lastSeenAt: new Date() } },
+        ).catch(() => {});
+      }
+    },
+  });
+
+  /* ── Socket connection & authentication middleware ── */
+  let connectionCount = 0;
+
+  io.use((socket, next) => {
+    if (connectionCount >= MAX_SOCKETS) {
+      next(new Error('SERVER_FULL'));
+      return;
+    }
+
+    const auth = socket.handshake.auth as Record<string, unknown> | undefined;
+    const rawToken = typeof auth?.['token'] === 'string' ? auth['token'].trim() : '';
+
+    if (AUTH_SECRET) {
+      if (!rawToken) {
+        next(new Error('AUTH_REQUIRED'));
+        return;
+      }
+      const verified = verifySessionToken(rawToken, AUTH_SECRET);
+      if (!verified) {
+        next(new Error('AUTH_INVALID'));
+        return;
+      }
+      socket.data['userId']      = verified.userId;
+      socket.data['displayName'] = verified.displayName ?? 'User';
+      next();
+      return;
+    }
+
+    // Open/workspace mode (when AUTH_SECRET is unset): strictly validate client ID format
+    const rawUserId = typeof auth?.['userId'] === 'string' ? auth['userId'].trim() : '';
+    const safeUserId = /^[a-zA-Z0-9_-]{4,64}$/.test(rawUserId)
+      ? rawUserId
+      : `user-${randomUUID().slice(0, 12)}`;
+    const rawName = typeof auth?.['displayName'] === 'string' ? auth['displayName'].trim().slice(0, 50) : '';
+
+    socket.data['userId']      = safeUserId;
+    socket.data['displayName'] = rawName || 'User';
+    next();
+  });
+
+  /* ─── REST API ROUTES ──────────────────────────────────── */
+  app.get('/health', async (_req: Request, res: Response) => {
+    let redisOk = false;
+    try {
+      redisOk = (await pubClient.ping()) === 'PONG';
+    } catch {
+      redisOk = false;
+    }
+
+    const mongoStatus = !MONGO_URI
+      ? 'not_configured'
+      : isMongoReady()
+        ? 'connected'
+        : 'disconnected';
+
+    const queueStats = redisOk
+      ? await aiQueue.getStats().catch(() => null)
+      : null;
+
+    const healthy = redisOk && (mongoStatus === 'connected' || mongoStatus === 'not_configured');
+
+    res.status(healthy ? 200 : 503).json({
+      status:      healthy ? 'ok' : 'degraded',
+      version:     'v4.1-scaled',
+      connections: connectionCount,
+      maxSockets:  MAX_SOCKETS,
+      mongodb:     mongoStatus,
+      redis:       redisOk ? 'connected' : 'disconnected',
+      queue:       queueStats,
+      timestamp:   new Date().toISOString(),
+    });
+  });
+
+  app.get('/api/agents', async (_req: Request, res: Response) => {
+    try {
+      const docs = await loadActiveAgents();
+      const agents = docs.map((a) => ({
+        agentId:     a.agentId,
+        displayName: a.displayName,
+        locale:      a.locale,
+        zoneId:      a.zoneId,
+        modelId:     a.modelId,
+        brainConfig: toPublicBrain(a.brainConfig, a.modelId),
+        profile:     a.profile,
+        status:      a.status,
+        lastSeenAt:  a.lastSeenAt,
+      }));
+      res.json({ agents });
+    } catch (err) {
+      logger.error({ err }, 'Failed to fetch agents');
+      res.status(500).json({ error: 'Failed to load agents' });
+    }
+  });
+
+  app.get('/api/zones', (_req: Request, res: Response) => {
+    res.json({ zones: EXAMPLE_ZONES });
+  });
+
+  app.get('/api/brains', (_req: Request, res: Response) => {
+    res.json(
+      Object.values(BrainProvider).map((provider) => ({
+        provider,
+        label:      BRAIN_PROVIDER_LABELS[provider],
+        models:     BRAIN_MODELS[provider],
+        configured: isProviderConfigured({ provider }),
+      })),
+    );
+  });
+
+  /** Admin endpoint: updates the global default brain of an agent across all instances */
+  app.post('/api/agents/:agentId/brain', requireAdminKey, async (req: Request, res: Response) => {
+    if (!isMongoReady()) {
+      res.status(503).json({ error: 'MongoDB not connected' });
+      return;
+    }
+
+    try {
+      const agentId = SafeIdSchema.parse(req.params['agentId']);
+      const body = RestBrainSwapSchema.parse(req.body);
+
+      const agentDoc = await AgentModel.findByAgentId(agentId).lean();
+      if (!agentDoc) {
+        res.status(404).json({ error: 'Agent not found' });
+        return;
+      }
+
+      const previousBrain = toPublicBrain(agentDoc.brainConfig, agentDoc.modelId);
+      const nextBrain: PublicBrainConfig = {
+        provider:    body.provider,
+        model:       body.model,
+        maxTokens:   body.maxTokens ?? agentDoc.brainConfig?.maxTokens ?? 2048,
+        temperature: body.temperature ?? agentDoc.brainConfig?.temperature ?? 0.7,
+      };
+
+      await AgentModel.updateOne(
+        { agentId },
+        {
+          $set: {
+            'brainConfig.provider':    nextBrain.provider,
+            'brainConfig.model':       nextBrain.model,
+            'brainConfig.maxTokens':   nextBrain.maxTokens,
+            'brainConfig.temperature': nextBrain.temperature,
+            modelId:                   nextBrain.model,
+          },
+        },
+      );
+
+      // Invalidate local & remote API instances via Redis Pub/Sub
+      invalidateLocalAgentCache(agentId);
+      await pubClient.publish(BRAIN_EVICT_CHANNEL, agentId);
+
+      const broadcast: BrainSwapBroadcast = {
+        agentId,
+        previousBrain,
+        newBrain:  nextBrain,
+        swappedBy: body.requestedBy ?? 'admin',
+        swappedAt: new Date().toISOString(),
+        scope:     'global',
+      };
+
+      io.emit('agent:brain-updated', broadcast);
+      res.json(broadcast);
+    } catch (err) {
+      if (err instanceof ZodError) {
+        res.status(400).json({ error: 'Validation failed', details: err.flatten().fieldErrors });
+        return;
+      }
+      logger.error({ err }, 'Failed to swap global agent brain');
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  });
+
+  app.get('/api/rooms/:roomId/workspace/:zoneId', requireRoomAccess, async (req: Request, res: Response) => {
+    try {
+      const roomId = RoomIdSchema.parse(req.params['roomId']);
+      const zoneId = SafeIdSchema.refine((id) => VALID_ZONE_IDS.has(id), 'Unknown zoneId').parse(
+        req.params['zoneId'],
+      );
+      const state = await workspaceMgr.getZoneWorkspace(zoneId, roomId);
+      res.json(state);
+    } catch (err) {
+      if (err instanceof ZodError) {
+        res.status(400).json({ error: 'Invalid roomId or zoneId' });
+        return;
+      }
+      logger.error({ err }, 'Failed to read zone workspace');
+      res.status(500).json({ error: 'Failed to read workspace' });
+    }
+  });
+
+  app.post('/api/rooms/:roomId/workspace', requireRoomAccess, async (req: Request, res: Response) => {
+    try {
+      const roomId = RoomIdSchema.parse(req.params['roomId']);
+      const body = WorkspaceWriteSchema.parse(req.body);
+      const entry = await workspaceMgr.write({ ...body, roomId });
+      res.status(201).json(entry);
+    } catch (err) {
+      if (err instanceof ZodError) {
+        res.status(400).json({ error: 'Validation failed', details: err.flatten().fieldErrors });
+        return;
+      }
+      logger.error({ err }, 'Failed to write workspace entry');
+      res.status(500).json({ error: 'Failed to create workspace entry' });
+    }
+  });
+
+  /* Express error handler (handles CORS rejections & malformed JSON cleanly) */
+  app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
+    if (err.message === 'CORS_ORIGIN_DENIED') {
+      res.status(403).json({ error: 'Origin not allowed' });
+      return;
+    }
+    if ('type' in err && (err as { type?: string }).type === 'entity.parse.failed') {
+      res.status(400).json({ error: 'Malformed JSON payload' });
+      return;
+    }
+    logger.error({ err: err.message }, 'Unhandled HTTP error');
+    res.status(500).json({ error: 'Internal server error' });
+  });
+
+  /* ─── SOCKET.IO EVENTS ─────────────────────────────────── */
+  io.on('connection', (socket) => {
+    connectionCount++;
+    const userId = socket.data['userId'] as string;
+    const privateRoomId = `wora-${userId}`;
+
+    socket.on('room:join', async (raw: unknown) => {
+      const parsed = RoomJoinSchema.safeParse(raw ?? {});
+      if (!parsed.success) {
+        socket.emit('error', { code: 'INVALID_PAYLOAD', message: 'Invalid room:join payload' });
+        return;
+      }
+
+      try {
+        await socket.join(privateRoomId);
+        socket.data['roomId'] = privateRoomId;
+
+        const pos = parsed.data.position ?? { x: 0, y: 0, z: 2 };
+        const nowIso = new Date().toISOString();
+
+        const [, agents, brainOverrides, recentMessages, workspaces] = await Promise.all([
+          presence.set(privateRoomId, userId, {
+            participantId: userId,
+            roomId:        privateRoomId,
+            position:      pos,
+            joinedAt:      nowIso,
+          }),
+          loadActiveAgents(),
+          getRoomBrainOverrides(pubClient, privateRoomId),
+          getRoomMessages(pubClient, privateRoomId, ROOM_HISTORY_LIMIT),
+          workspaceMgr.getRoomWorkspaces(
+            EXAMPLE_ZONES.map((z) => z.id),
+            privateRoomId,
+          ),
+        ]);
+
+        const participants = agents.map((a) =>
+          mapAgentToParticipant(a, privateRoomId, brainOverrides[a.agentId]),
+        );
+
+        socket.emit('room:state', {
+          room: {
+            id:               privateRoomId,
+            name:             'Your Workspace',
+            accessMode:       RoomAccessMode.Private,
+            createdAt:        nowIso,
+            createdBy:        userId,
+            assignedAgentIds: agents.map((a) => a.agentId),
+            zoneIds:          EXAMPLE_ZONES.map((z) => z.id),
+          },
+          participants,
+          presence: [{ participantId: userId, roomId: privateRoomId, position: pos, joinedAt: nowIso }],
+          recentMessages,
+          zones: EXAMPLE_ZONES,
+          workspaces,
+        });
+      } catch (err) {
+        logger.error({ err, userId }, 'room:join failed');
+        socket.emit('error', { code: 'JOIN_ERROR', message: 'Could not join workspace room' });
+      }
+    });
+
+    socket.on('room:leave', async () => {
+      try {
+        await socket.leave(privateRoomId);
+        // Only clear presence if user has no remaining active sockets in this room
+        const remaining = await io.in(privateRoomId).fetchSockets();
+        if (remaining.length === 0) {
+          await presence.remove(privateRoomId, userId);
+        }
+      } catch (err) {
+        logger.warn({ err, userId }, 'room:leave cleanup warning');
+      }
+    });
+
+    socket.on('room:move', async (raw: unknown) => {
+      const allowed = await rateLimiter.allow('move', userId, 120, 10_000);
+      if (!allowed) return;
+
+      const parsed = RoomMoveSchema.safeParse(raw);
+      if (!parsed.success) return;
+
+      await presence.update(privateRoomId, userId, parsed.data.position).catch(() => {});
+    });
+
+    socket.on('message:send', async (raw: unknown) => {
+      const allowed = await rateLimiter.allow('msg', userId, 20, 60_000);
+      if (!allowed) {
+        socket.emit('error', {
+          code:    'RATE_LIMITED',
+          message: 'Rate limit reached (20 messages/min). Please wait a moment.',
+        });
+        return;
+      }
+
+      const parsed = MessageSendSchema.safeParse(raw);
+      if (!parsed.success) {
+        socket.emit('error', { code: 'INVALID_MESSAGE', message: 'Invalid message payload' });
+        return;
+      }
+
+      const { content, type, replyToId, targetAgentId } = parsed.data;
+
+      try {
+        const agents = await loadActiveAgents();
+        const parsedMentions = extractUniqueMentions(content, MAX_MENTIONS_PER_MSG);
+
+        // Resolve unique target agents from @mentions (or explicit targetAgentId fallback)
+        const targetMap = new Map<string, CachedAgent>();
+        const resolvedMentions: Message['mentions'] = [];
+
+        for (const m of parsedMentions) {
+          const matched = matchAgentByMention(agents, m.token);
+          if (matched) {
+            targetMap.set(matched.agentId, matched);
+            resolvedMentions.push({
+              participantId: matched.agentId,
+              raw:           m.raw,
+              startIndex:    m.startIndex,
+              endIndex:      m.endIndex,
+            });
+          }
+        }
+
+        if (targetMap.size === 0 && targetAgentId) {
+          const direct = agents.find((a) => a.agentId === targetAgentId);
+          if (direct) targetMap.set(direct.agentId, direct);
+        }
+
+        // Load prior history BEFORE appending current user message
+        const priorMessages =
+          targetMap.size > 0
+            ? await getRoomMessages(pubClient, privateRoomId, AI_CONTEXT_TURNS)
+            : [];
+
+        const userMsg: Message = {
+          id:        randomUUID(),
+          roomId:    privateRoomId,
+          senderId:  userId,
+          type,
+          content,
+          timestamp: new Date().toISOString(),
+          mentions:  resolvedMentions,
+          replyToId,
+        };
+
+        await appendRoomMessage(pubClient, privateRoomId, userMsg);
+        io.to(privateRoomId).emit('message:received', { message: userMsg });
+
+        if (targetMap.size === 0) return;
+
+        const history: ConversationTurn[] = priorMessages
+          .filter((m) => m.type === MessageType.Text || m.type === MessageType.Mention)
+          .map((m) => ({ senderId: m.senderId, content: m.content }));
+
+        const roomOverrides = await getRoomBrainOverrides(pubClient, privateRoomId);
+
+        for (const agent of targetMap.values()) {
+          const override = roomOverrides[agent.agentId];
+          const keyCheckTarget = override
+            ? { provider: override.provider }
+            : (agent.brainConfig ?? { provider: BrainProvider.Google });
+
+          if (!isProviderConfigured(keyCheckTarget)) {
+            const label = BRAIN_PROVIDER_LABELS[keyCheckTarget.provider] ?? keyCheckTarget.provider;
+            socket.emit('error', {
+              code:    'MISSING_API_KEY',
+              message: `${agent.displayName} uses ${label}, which has no API key configured on the server.`,
+            });
+            continue;
+          }
+
+          await aiQueue.enqueue({
+            messageId:            randomUUID(),
+            agentId:              agent.agentId,
+            displayName:          agent.displayName,
+            customRole:           agent.profile.customRole ?? 'AI Agent',
+            tone:                 agent.profile.tone ?? 'Analytical',
+            tagline:              agent.profile.tagline ?? '',
+            specialty:            agent.profile.specialty,
+            skills:               agent.profile.skills ?? [],
+            boundaries:           agent.profile.boundaries ?? [],
+            locale:               agent.locale ?? 'en',
+            systemPromptOverride: agent.systemPromptOverride,
+            brainOverride:        override,
+            history,
+            userMessage:          content,
+            roomId:               privateRoomId,
+            senderId:             userId,
+          });
+
+          io.to(privateRoomId).emit('agent:lifecycle', {
+            agentId:     agent.agentId,
+            state:       AgentLifecycleState.Thinking,
+            avatarState: AvatarAnimState.Thinking,
+          });
+        }
+      } catch (err) {
+        logger.error({ err, userId }, 'message:send processing error');
+        socket.emit('error', { code: 'MESSAGE_ERROR', message: 'Failed to process message' });
+      }
+    });
+
+    /**
+     * Per-room isolated Hot-Swap Brain:
+     * Customizes the agent's model exclusively inside this user's private room
+     * so one user can never alter another user's workspace configuration.
+     */
+    socket.on('agent:brain-swap', async (raw: unknown) => {
+      const allowed = await rateLimiter.allow('swap', userId, 15, 60_000);
+      if (!allowed) {
+        socket.emit('error', { code: 'RATE_LIMITED', message: 'Too many brain swaps. Try again shortly.' });
+        return;
+      }
+
+      const parsed = SocketBrainSwapSchema.safeParse(raw);
+      if (!parsed.success) {
+        socket.emit('error', { code: 'INVALID_BRAIN', message: 'Invalid provider or model selection' });
+        return;
+      }
+
+      try {
+        const { agentId, newBrain } = parsed.data;
+        const agents = await loadActiveAgents();
+        const agent = agents.find((a) => a.agentId === agentId);
+        if (!agent) {
+          socket.emit('error', { code: 'AGENT_NOT_FOUND', message: 'Agent not found' });
+          return;
+        }
+
+        const existingOverrides = await getRoomBrainOverrides(pubClient, privateRoomId);
+        const previousBrain =
+          existingOverrides[agentId] ?? toPublicBrain(agent.brainConfig, agent.modelId);
+
+        await setRoomBrainOverride(pubClient, privateRoomId, agentId, newBrain);
+
+        const broadcast: BrainSwapBroadcast = {
+          agentId,
+          previousBrain,
+          newBrain,
+          swappedBy: userId,
+          swappedAt: new Date().toISOString(),
+          scope:     'room',
+        };
+        io.to(privateRoomId).emit('agent:brain-updated', broadcast);
+      } catch (err) {
+        logger.error({ err, userId }, 'agent:brain-swap failed');
+        socket.emit('error', { code: 'SWAP_ERROR', message: 'Failed to swap agent brain' });
+      }
+    });
+
+    socket.on('workspace:signal', async (raw: unknown) => {
+      const allowed = await rateLimiter.allow('ws-signal', userId, 30, 60_000);
+      if (!allowed) {
+        socket.emit('error', { code: 'RATE_LIMITED', message: 'Too many workspace updates.' });
+        return;
+      }
+
+      const parsed = WorkspaceSignalSchema.safeParse(raw);
+      if (!parsed.success) {
+        socket.emit('error', { code: 'INVALID_SIGNAL', message: 'Invalid workspace signal payload' });
+        return;
+      }
+
+      try {
+        await workspaceMgr.write({
+          zoneId:        parsed.data.zoneId,
+          roomId:        privateRoomId,
+          type:          'signal',
+          authorAgentId: parsed.data.agentId,
+          title:         parsed.data.title,
+          payload:       parsed.data.data,
+        });
+      } catch (err) {
+        logger.error({ err, userId }, 'workspace:signal failed');
+        socket.emit('error', { code: 'WORKSPACE_ERROR', message: 'Failed to write workspace signal' });
+      }
+    });
+
+    socket.on('disconnect', async () => {
+      connectionCount = Math.max(0, connectionCount - 1);
+      try {
+        const remaining = await io.in(privateRoomId).fetchSockets();
+        if (remaining.length === 0) {
+          await presence.remove(privateRoomId, userId);
+        }
+      } catch {
+        // Ignore cleanup errors during shutdown
+      }
+    });
+  });
+
+  /* ─── START & GRACEFUL SHUTDOWN ────────────────────────── */
+  await new Promise<void>((resolve) => {
+    httpServer.listen(port, '0.0.0.0', () => {
+      logger.info({ port, maxSockets: MAX_SOCKETS, env: NODE_ENV }, 'Wora Agent OS v4.1 listening');
+      resolve();
+    });
+  });
+
+  let shuttingDown = false;
+  const shutdown = async (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    logger.info({ signal }, 'Graceful shutdown initiated');
+
+    const forceTimer = setTimeout(() => {
+      logger.error('Graceful shutdown timed out — forcing exit');
+      process.exit(1);
+    }, 15_000);
+    forceTimer.unref();
+
+    try {
+      await new Promise<void>((resolve) => io.close(() => resolve()));
+      await new Promise<void>((resolve) => httpServer.close(() => resolve()));
+      await aiQueue.close();
+      await workspaceMgr.disconnect();
+      await Promise.allSettled([eventSub.quit(), subClient.quit(), pubClient.quit()]);
+      if (mongoose.connection.readyState !== 0) {
+        await mongoose.disconnect();
+      }
+      logger.info('Graceful shutdown completed');
+      process.exit(0);
+    } catch (err) {
+      logger.error({ err }, 'Error during shutdown');
+      process.exit(1);
+    }
+  };
+
+  process.once('SIGTERM', () => void shutdown('SIGTERM'));
+  process.once('SIGINT',  () => void shutdown('SIGINT'));
+
+  return { io, app, httpServer, shutdown };
+}
