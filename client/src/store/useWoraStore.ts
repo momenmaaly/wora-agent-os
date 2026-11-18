@@ -20,18 +20,13 @@ import type {
 } from '../types.js';
 import {
   AGENT_ROLE_AR,
-  buildDefaultWorkspaces,
   DEFAULT_COMPANY_AGENTS,
   DEFAULT_COMPANY_ZONES,
   OFFICE_ROOMS,
   ROOM_BY_ID,
 } from '../office/layout.js';
 
-export const LOCAL_TASK_PREFIX = 'local-ws-';
-
-export function workspaceEntryLabel(id: string) {
-  return id.startsWith('init-') ? 'مثال للمعاينة' : id.startsWith(LOCAL_TASK_PREFIX) ? 'مهمة محلية' : null;
-}
+import { isLocalTask, type ServerMode, type TaskScope } from '../office/work.js';
 
 export interface PresenceEntry {
   participantId: string;
@@ -80,7 +75,7 @@ export interface AgentLocationSnapshot {
 export interface ActivityFeedItem {
   id:        string;
   text:      string;
-  color:     string;
+  scope:     TaskScope | 'session';
   timestamp: string;
 }
 
@@ -106,6 +101,7 @@ export interface HireAgentInput {
 export interface WoraState {
   roomId:            string;
   connected:         boolean;
+  serverMode:        ServerMode | null;
   demoMode:          boolean;
   connectionError:   string | null;
   agents:            Record<string, AgentParticipant>;
@@ -126,6 +122,7 @@ export interface WoraState {
     theme:            'light' | 'dark';
     showWorkspaceHUD: boolean;
     workspaceZoneId:  string | null;
+    workspaceEntryId: string | null;
     showChat:         boolean;
     autoRoam:         boolean;
     modelSwapAgentId: string | null;
@@ -138,6 +135,7 @@ export interface WoraState {
   setConnectionError:     (e: string | null) => void;
   setRoomState:           (state: {
     roomId?:        string;
+    mode:           ServerMode;
     participants:   AgentParticipant[];
     presence:       PresenceEntry[];
     zones:          WorkspaceZone[];
@@ -150,7 +148,7 @@ export interface WoraState {
   updateAgentLifecycle:   (agentId: string, state: AgentLifecycleState, avatarState: AvatarAnimState) => void;
   updateAgentBrain:       (agentId: string, brain: PublicBrainConfig) => void;
   setAgentLocation:       (agentId: string, loc: AgentLocationSnapshot) => void;
-  pushActivity:           (text: string, color?: string) => void;
+  pushActivity:           (text: string, scope: TaskScope) => void;
   upsertPresence:         (entry: PresenceEntry) => void;
   removePresence:         (participantId: string) => void;
   addMessage:             (msg: Message) => void;
@@ -160,7 +158,7 @@ export interface WoraState {
   setFollowAgent:         (id: string | null) => void;
   setLocalPosition:       (pos: { x: number; y: number; z: number }) => void;
   toggleTheme:            () => void;
-  toggleWorkspaceHUD:     (force?: boolean, zoneId?: string | null) => void;
+  toggleWorkspaceHUD:     (force?: boolean, zoneId?: string | null, entryId?: string) => void;
   toggleChat:             (force?: boolean) => void;
   toggleAutoRoam:         () => void;
   openModelSwap:          (agentId: string | null) => void;
@@ -204,14 +202,14 @@ function readInitialTheme(): 'light' | 'dark' {
   } catch {
     // ignore storage errors
   }
-  return 'dark';
+  return 'light';
 }
 
 function applyDomTheme(theme: 'light' | 'dark'): void {
   if (typeof document === 'undefined') return;
   document.documentElement.dataset.theme = theme;
   document.documentElement.classList.toggle('dark', theme === 'dark');
-  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'dark' ? '#11101a' : '#f4f2f8');
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'dark' ? '#17202a' : '#f2f4f5');
   try {
     window.localStorage.setItem(THEME_STORAGE_KEY, theme);
   } catch {
@@ -244,12 +242,12 @@ function buildInitialLocations(agents: Record<string, AgentParticipant>): Record
   return out;
 }
 
-function makeActivityItem(text: string, color = '#3b82f6'): ActivityFeedItem {
+function makeActivityItem(text: string, scope: ActivityFeedItem['scope'] = 'session'): ActivityFeedItem {
   return {
     id:        `act-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
     text,
-    color,
-    timestamp: new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }),
+    scope,
+    timestamp: new Date().toISOString(),
   };
 }
 
@@ -266,6 +264,7 @@ export const useWoraStore = create<WoraState>()(
       return {
         roomId,
         connected:        false,
+        serverMode:       null,
         demoMode:         false,
         connectionError:  null,
         agents:           initialAgents,
@@ -273,23 +272,10 @@ export const useWoraStore = create<WoraState>()(
         lastSwappedAgent: null,
         zones:            DEFAULT_COMPANY_ZONES,
         presence:         {},
-        messages: [
-          {
-            id:        'welcome-hq-1',
-            roomId,
-            senderId:  'agent-planner-01',
-            type:      MessageType.Text,
-            content:
-              'أهلاً بك في مقر Wora! اختر وكيلاً لمراسلته، أو اكتب @ متبوعة باسمه. جرّب أن تطلب من الفريق مساعدتك في تخطيط مشروعك القادم.',
-            timestamp: new Date().toISOString(),
-            mentions:  [],
-          },
-        ],
-        workspaces:      buildDefaultWorkspaces(roomId),
-        activeStreams:   {},
-        activityLog: [
-          makeActivityItem('تم افتتاح مقر الشركة وتوزيع الوكلاء على غرف الأقسام', '#4f46e5'),
-        ],
+        messages:         [],
+        workspaces:       {},
+        activeStreams:    {},
+        activityLog:      [],
         selectedAgentId: null,
         followAgentId:   null,
         localUserId,
@@ -299,6 +285,7 @@ export const useWoraStore = create<WoraState>()(
           theme:            initialTheme,
           showWorkspaceHUD: false,
           workspaceZoneId:  null,
+          workspaceEntryId: null,
           showChat:         false,
           autoRoam:         false,
           modelSwapAgentId: null,
@@ -310,8 +297,10 @@ export const useWoraStore = create<WoraState>()(
         setDemoMode:        (v)  => set({ demoMode: v }),
         setConnectionError: (e)  => set({ connectionError: e }),
 
-        setRoomState: ({ roomId: nextRoomId, participants, presence, zones, recentMessages, workspaces }) => {
+        setRoomState: ({ roomId: nextRoomId, mode, participants, presence, zones, recentMessages, workspaces }) => {
           const state = get();
+          const roomId = nextRoomId ?? state.roomId;
+          const sameRoom = roomId === state.roomId;
           const serverAgents = participants.filter((p) => p.isAgent);
 
           // A connected snapshot is authoritative, including empty lists. Keep only
@@ -322,19 +311,19 @@ export const useWoraStore = create<WoraState>()(
             nextAgents[p.id] = roleAr ? { ...p, profile: { ...p.profile, customRole: roleAr } } : p;
           }
           for (const agent of Object.values(state.agents)) {
-            if (agent.id.startsWith('agent-custom-') && !(agent.id in nextAgents)) nextAgents[agent.id] = agent;
+            if (sameRoom && agent.id.startsWith('agent-custom-') && !(agent.id in nextAgents)) nextAgents[agent.id] = agent;
           }
 
           const presenceMap: Record<string, PresenceEntry> = {};
           for (const p of presence) presenceMap[p.participantId] = p;
 
-          const wsMap: Record<string, SharedWorkspaceState> = Object.fromEntries(workspaces.map((ws) => [ws.zoneId, ws]));
-          for (const local of Object.values(state.workspaces)) {
-            const additions = local.entries.filter((entry) => entry.id.startsWith(LOCAL_TASK_PREFIX));
+          const wsMap: Record<string, SharedWorkspaceState> = Object.fromEntries(workspaces.filter((ws) => ws.roomId === roomId && Object.hasOwn(ROOM_BY_ID, ws.zoneId)).map((ws) => [ws.zoneId, ws]));
+          for (const local of sameRoom ? Object.values(state.workspaces) : []) {
+            const additions = local.entries.filter(isLocalTask);
             if (additions.length) wsMap[local.zoneId] = { ...local, ...wsMap[local.zoneId], entries: [...(wsMap[local.zoneId]?.entries ?? []), ...additions] };
           }
 
-          const nextLocations = { ...state.agentLocations };
+          const nextLocations = Object.fromEntries(Object.entries(state.agentLocations).filter(([id]) => sameRoom && Object.hasOwn(nextAgents, id)));
           for (const ag of Object.values(nextAgents)) {
             if (!nextLocations[ag.id]) {
               const room = (ag.zoneId ? ROOM_BY_ID[ag.zoneId] : undefined) ?? OFFICE_ROOMS[0]!;
@@ -351,15 +340,17 @@ export const useWoraStore = create<WoraState>()(
           }
 
           set({
-            roomId:         nextRoomId ?? state.roomId,
+            roomId,
             connected:      true,
+            serverMode:     mode,
             demoMode:       false,
             connectionError: null,
             agents:         nextAgents,
             agentLocations: nextLocations,
             zones,
             presence:       presenceMap,
-            messages:       recentMessages.length > 0 ? recentMessages.slice(-MAX_MESSAGES) : state.messages,
+            messages:       recentMessages.filter((message) => message.roomId === roomId).slice(-MAX_MESSAGES),
+            activityLog:    sameRoom ? state.activityLog : [],
             workspaces:     wsMap,
             selectedAgentId: state.selectedAgentId && nextAgents[state.selectedAgentId] ? state.selectedAgentId : null,
             followAgentId:   state.followAgentId && nextAgents[state.followAgentId] ? state.followAgentId : null,
@@ -432,7 +423,6 @@ export const useWoraStore = create<WoraState>()(
             activityLog: [
               makeActivityItem(
                 `انضم ${newAgent.displayName} (${input.model}) ويتجه من الاستقبال إلى ${room.nameAr}`,
-                input.avatarColor,
               ),
               ...s.activityLog,
             ].slice(0, MAX_ACTIVITY),
@@ -455,7 +445,7 @@ export const useWoraStore = create<WoraState>()(
               selectedAgentId: s.selectedAgentId === agentId ? null : s.selectedAgentId,
               followAgentId:   s.followAgentId === agentId ? null : s.followAgentId,
               activityLog: removed
-                ? [makeActivityItem(`غادر ${removed.displayName} مقر الشركة`, '#64748b'), ...s.activityLog].slice(0, MAX_ACTIVITY)
+                ? [makeActivityItem(`غادر ${removed.displayName} مقر الشركة`), ...s.activityLog].slice(0, MAX_ACTIVITY)
                 : s.activityLog,
             };
           }),
@@ -487,7 +477,6 @@ export const useWoraStore = create<WoraState>()(
                 ? [
                     makeActivityItem(
                       `تم تحديث موديل ${ag.displayName} إلى ${brain.model}`,
-                      ag.profile.avatarColor ?? '#3b82f6',
                     ),
                     ...s.activityLog,
                   ].slice(0, MAX_ACTIVITY)
@@ -513,9 +502,9 @@ export const useWoraStore = create<WoraState>()(
             };
           }),
 
-        pushActivity: (text, color = '#3b82f6') =>
+        pushActivity: (text, scope) =>
           set((s) => ({
-            activityLog: [makeActivityItem(text, color), ...s.activityLog].slice(0, MAX_ACTIVITY),
+            activityLog: [makeActivityItem(text, scope), ...s.activityLog].slice(0, MAX_ACTIVITY),
           })),
 
         upsertPresence: (entry) =>
@@ -590,9 +579,9 @@ export const useWoraStore = create<WoraState>()(
             return { ui: { ...s.ui, theme: next } };
           }),
 
-        toggleWorkspaceHUD: (force, zoneId) => set((s) => {
+        toggleWorkspaceHUD: (force, zoneId, entryId) => set((s) => {
           const show = force ?? !s.ui.showWorkspaceHUD;
-          return { ui: { ...s.ui, showWorkspaceHUD: show, workspaceZoneId: show ? zoneId ?? null : null, showChat: show ? false : s.ui.showChat } };
+          return { ui: { ...s.ui, showWorkspaceHUD: show, workspaceZoneId: show ? zoneId ?? null : null, workspaceEntryId: show ? entryId ?? null : null, showChat: show ? false : s.ui.showChat } };
         }),
         toggleChat: (force) => set((s) => {
           const show = force ?? !s.ui.showChat;
@@ -617,7 +606,6 @@ export const useWoraStore = create<WoraState>()(
             activityLog: [
               makeActivityItem(
                 `${ag.displayName} يتحرك عبر الممرات نحو ${room.nameAr}`,
-                ag.profile.avatarColor ?? room.accent,
               ),
               ...s.activityLog,
             ].slice(0, MAX_ACTIVITY),
@@ -628,7 +616,7 @@ export const useWoraStore = create<WoraState>()(
           set((s) => ({
             officeCommand: { seq: ++cmdSeq, kind: 'standup' },
             activityLog: [
-              makeActivityItem('دعوة اجتماع عام — الوكلاء يتجهون إلى مساحة الاجتماع', '#7c3aed'),
+              makeActivityItem('دعوة اجتماع عام — الوكلاء يتجهون إلى مساحة الاجتماع'),
               ...s.activityLog,
             ].slice(0, MAX_ACTIVITY),
           })),
@@ -637,7 +625,7 @@ export const useWoraStore = create<WoraState>()(
           set((s) => ({
             officeCommand: { seq: ++cmdSeq, kind: 'return-desks' },
             activityLog: [
-              makeActivityItem('عودة جميع الوكلاء عبر الممرات إلى مكاتبهم الأساسية', '#0284c7'),
+              makeActivityItem('عودة جميع الوكلاء عبر الممرات إلى مكاتبهم الأساسية'),
               ...s.activityLog,
             ].slice(0, MAX_ACTIVITY),
           })),

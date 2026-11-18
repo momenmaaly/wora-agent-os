@@ -4,7 +4,8 @@ import { useProjectStore } from '../store/useProjectStore.js';
 import { useWoraStore } from '../store/useWoraStore.js';
 import { OFFICE_ROOMS } from '../office/layout.js';
 import { ROOM_DISPLAY } from '../office/presentation.js';
-import { NAV_ITEMS, type PageId } from '../pages.js';
+import { DIRECTOR_ROOM_ID } from '../office/work.js';
+import { NAV_ITEMS, SETTINGS_ITEMS, type PageId } from '../pages.js';
 import { Dialog, EmptyState } from './ui.js';
 
 type Result = { key: string; title: string; context: string; icon: LucideIcon; activate: () => void };
@@ -21,7 +22,8 @@ export function QuickSearch({ onClose, onNavigate, onAgent, onRoom }: { onClose:
   const setProject = useProjectStore((s) => s.setActiveProject);
   const all: Result[] = [
     ...NAV_ITEMS.map((item) => ({ key: item.id, title: item.label, context: 'صفحة', icon: item.icon, activate: () => onNavigate(item.id) })),
-    ...OFFICE_ROOMS.map((room) => ({ key: room.id, title: room.nameAr, context: `قسم · ${ROOM_DISPLAY[room.id]!.label}`, icon: ROOM_DISPLAY[room.id]!.icon, activate: () => onRoom(room.id) })),
+    ...SETTINGS_ITEMS.map((item) => ({ key: item.id, title: item.label, context: 'الإعدادات', icon: item.icon, activate: () => onNavigate(item.id) })),
+    ...OFFICE_ROOMS.filter((room) => room.id !== DIRECTOR_ROOM_ID).map((room) => ({ key: room.id, title: room.nameAr, context: `قسم · ${ROOM_DISPLAY[room.id]!.label}`, icon: ROOM_DISPLAY[room.id]!.icon, activate: () => onRoom(room.id) })),
     ...Object.values(agents).map((agent) => ({ key: agent.id, title: agent.displayName, context: agent.profile.customRole, icon: UsersRound, activate: () => onAgent(agent.id) })),
     ...projects.map((project) => ({ key: project.id, title: project.name, context: 'مشروع', icon: Folder, activate: () => { setProject(project.id); onNavigate('projects'); } })),
   ];

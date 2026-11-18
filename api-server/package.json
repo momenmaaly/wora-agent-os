@@ -13,7 +13,7 @@
     "dev": "tsx watch src/index.ts",
     "dev:preview": "tsx src/scripts/preview-server.ts",
     "seed": "tsx src/scripts/seed.ts",
-    "test": "tsx --test src/lib/*.test.ts src/studio/*.test.ts"
+    "test": "tsx --test src/lib/*.test.ts src/studio/*.test.ts src/director/*.test.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.9.0",

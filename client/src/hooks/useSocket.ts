@@ -10,7 +10,7 @@
 
 import { useEffect } from 'react';
 import { io, type Socket } from 'socket.io-client';
-import { LOCAL_TASK_PREFIX, useWoraStore, type PresenceEntry } from '../store/useWoraStore.js';
+import { useWoraStore, type PresenceEntry } from '../store/useWoraStore.js';
 import { useBillingStore } from '../store/useBillingStore.js';
 import { isRoomLockedForPlan } from '../billing/plans.js';
 import {
@@ -32,6 +32,7 @@ import type {
   WorkspaceZone,
 } from '../types.js';
 import { ROOM_BY_ID } from '../office/layout.js';
+import { canTakeTask, isFinished, isLocalTask, LOCAL_TASK_PREFIX, TASK_BRIEF_LIMIT, type TaskScope } from '../office/work.js';
 import { readSessionToken } from '../lib/session.js';
 
 /* ─── CONFIG ────────────────────────────────────────────── */
@@ -48,6 +49,7 @@ function resolveSocketUrl(): string {
 
 /* ─── WIRE PAYLOAD SHAPES ───────────────────────────────── */
 interface RoomStateEvent {
+  mode?:           unknown;
   room?:           { id?: string };
   participants?:   AgentParticipant[];
   presence?:       PresenceEntry[];
@@ -128,6 +130,7 @@ function attachListeners(socket: Socket): void {
   socket.on('room:state', (data: RoomStateEvent) => {
     useWoraStore.getState().setRoomState({
       roomId:         data?.room?.id,
+      mode:           data?.mode === 'preview' ? 'preview' : 'server',
       participants:   data?.participants ?? [],
       presence:       data?.presence ?? [],
       zones:          data?.zones ?? [],
@@ -195,23 +198,7 @@ function attachListeners(socket: Socket): void {
   });
 
   socket.on('workspace:update', (data: Partial<WorkspaceUpdatePayload>) => {
-    if (!data?.zoneId || !data?.entry) return;
-    const state = useWoraStore.getState();
-    const existing = state.workspaces[data.zoneId];
-    const entries = existing?.entries ?? [];
-    const idx = entries.findIndex((e) => e.id === data.entry!.id);
-    const nextEntries =
-      idx >= 0
-        ? entries.map((e, i) => (i === idx ? data.entry! : e))
-        : [...entries, data.entry];
-
-    state.upsertWorkspace({
-      zoneId:        data.zoneId,
-      roomId:        data.roomId ?? state.roomId,
-      entries:       nextEntries,
-      lastWriteAt:   data.entry.updatedAt ?? new Date().toISOString(),
-      lastWrittenBy: data.entry.authorAgentId ?? '',
-    });
+    if (data?.entry && data.zoneId === data.entry.zoneId) recordWorkspaceEntry(data.entry);
   });
 
   socket.on('error', (data: ServerErrorEvent) => {
@@ -434,47 +421,75 @@ function swapBrain(agentId: string, brain: PublicBrainConfig, reason?: string): 
   return true;
 }
 
-function sendWorkspaceSignal(
-  zoneId: string,
-  agentId: string,
-  title: string,
-  data: Record<string, unknown> = {},
-): boolean {
+function recordWorkspaceEntry(entry: SharedWorkspaceEntry) {
+  const state = useWoraStore.getState();
+  if (entry.roomId !== state.roomId || !Object.hasOwn(ROOM_BY_ID, entry.zoneId)) return;
+  const entries = state.workspaces[entry.zoneId]?.entries ?? [];
+  const previous = entries.find((item) => item.id === entry.id);
+  if (previous && previous.updatedAt > entry.updatedAt) return;
+  state.upsertWorkspace({
+    zoneId: entry.zoneId, roomId: entry.roomId,
+    entries: previous ? entries.map((item) => item.id === entry.id ? entry : item) : [...entries.slice(-199), entry],
+    lastWriteAt: entry.updatedAt, lastWrittenBy: entry.authorAgentId,
+  });
+  const target = entry.targetAgentId ? state.agents[entry.targetAgentId] : undefined;
+  const scope = isLocalTask(entry) ? 'local' : state.serverMode ?? 'server';
+  if (!previous && target && entry.type === 'task') state.pushActivity(`أُسندت إلى ${target.displayName}: ${entry.title}`, scope);
+  if (previous && previous.status !== entry.status) {
+    if (isFinished(entry)) state.pushActivity(`اكتملت: ${entry.title}`, scope);
+    else if (typeof entry.payload['directorResponse'] === 'string' && entry.status === 'review_pending') state.pushActivity(`ردّ الوكيل جاهز: ${entry.title}`, scope);
+  }
+}
+
+export type AssignmentResult = { ok: true; entryId: string; zoneId: string; scope: TaskScope } | { ok: false; reason: 'invalid' | 'rejected' | 'unconfirmed' };
+
+type AssignmentWire = { ok: true; entry: SharedWorkspaceEntry } | { ok: false; code: string };
+
+async function sendWorkspaceSignal(zoneId: string, agentId: string, title: string, data: { source?: 'hq-board' | 'director'; brief?: string } = {}): Promise<AssignmentResult> {
   const cleanTitle = title.trim();
   const state = useWoraStore.getState();
-  if (!cleanTitle || !Object.hasOwn(ROOM_BY_ID, zoneId) || !state.agents[agentId] || isRoomLockedForPlan(zoneId, useBillingStore.getState().plan)) return false;
-
-  // Dispatch assigned agent toward that department room visually
-  state.dispatchAgentToRoom(agentId, zoneId, `مهمة جديدة: ${cleanTitle.slice(0, 28)}`);
-
-  if (state.connected && singletonSocket?.connected && !agentId.startsWith('agent-custom-') && state.zones.some((zone) => zone.id === zoneId)) {
-    return emitSafe('workspace:signal', { zoneId, agentId, title: cleanTitle, data });
+  const agent = Object.hasOwn(state.agents, agentId) ? state.agents[agentId] : undefined;
+  if (!cleanTitle || cleanTitle.length > 200 || (data.brief?.length ?? 0) > TASK_BRIEF_LIMIT || !Object.hasOwn(ROOM_BY_ID, zoneId) || !agent || !canTakeTask(agent)
+    || (data.source === 'director' && (agent.zoneId !== zoneId || (data.brief?.trim().length ?? 0) < 5)) || isRoomLockedForPlan(zoneId, useBillingStore.getState().plan)) {
+    return { ok: false, reason: 'invalid' };
   }
 
-  // Local update for standalone preview mode
+  function finish(entry: SharedWorkspaceEntry, scope: TaskScope): AssignmentResult {
+    const current = useWoraStore.getState();
+    if (entry.roomId !== current.roomId) return { ok: false, reason: 'unconfirmed' };
+    if (!current.workspaces[zoneId]?.entries.some((item) => item.id === entry.id)) recordWorkspaceEntry(entry);
+    if (current.agentLocations[agentId]?.areaId !== zoneId) current.dispatchAgentToRoom(agentId, zoneId);
+    return { ok: true, scope, zoneId, entryId: entry.id };
+  }
+
+  if (state.serverMode && !agentId.startsWith('agent-custom-') && state.zones.some((zone) => zone.id === zoneId)) {
+    if (!state.connected || !singletonSocket?.connected) return { ok: false, reason: 'rejected' };
+    try {
+      const ack: AssignmentWire | undefined = await singletonSocket.timeout(6_500).emitWithAck('workspace:signal', { zoneId, agentId, title: cleanTitle, data });
+      if (!ack || (ack.ok && (!ack.entry || ack.entry.zoneId !== zoneId || ack.entry.targetAgentId !== agentId))) return { ok: false, reason: 'unconfirmed' };
+      return ack.ok ? finish(ack.entry, state.serverMode) : { ok: false, reason: ack.code === 'WORKSPACE_UNCONFIRMED' ? 'unconfirmed' : 'rejected' };
+    } catch { return { ok: false, reason: 'unconfirmed' }; }
+  }
+
   const now = new Date().toISOString();
-  const entry: SharedWorkspaceEntry = {
-    id:            `${LOCAL_TASK_PREFIX}${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-    zoneId,
-    roomId:        state.roomId,
-    type:          'task',
-    status:        'in_progress',
-    authorAgentId: agentId,
-    title:         cleanTitle,
-    payload:       data,
-    createdAt:     now,
-    updatedAt:     now,
-    chainIds:      [],
-  };
-  const existing = state.workspaces[zoneId]?.entries ?? [];
-  state.upsertWorkspace({
-    zoneId,
-    roomId:        state.roomId,
-    entries:       [...existing, entry],
-    lastWriteAt:   now,
-    lastWrittenBy: agentId,
-  });
-  return true;
+  return finish({
+    id: `${LOCAL_TASK_PREFIX}${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, zoneId, roomId: state.roomId,
+    type: 'task', status: 'open', authorAgentId: state.localUserId, targetAgentId: agentId, title: cleanTitle,
+    payload: data.source === 'director' ? { ...data, directorExecution: 'unavailable' } : data, createdAt: now, updatedAt: now, chainIds: [],
+  }, 'local');
+}
+
+async function recommendDirector(brief: string, candidates: { agentId: string; workload: number }[]) {
+  const state = useWoraStore.getState();
+  if (!state.connected || state.serverMode !== 'server' || !singletonSocket?.connected || !readSessionToken() || candidates.length < 2) return null;
+  try {
+    const response: unknown = await singletonSocket.timeout(7_500).emitWithAck('director:recommend', { brief, candidates });
+    if (!response || typeof response !== 'object') return null;
+    const result = response as { ok?: unknown; agentId?: unknown; skill?: unknown };
+    return result.ok === true && typeof result.agentId === 'string' && candidates.some((candidate) => candidate.agentId === result.agentId)
+      && typeof result.skill === 'string' && result.skill.length >= 2 && result.skill.length <= 200
+      ? { agentId: result.agentId, skill: result.skill } : null;
+  } catch { return null; }
 }
 
 export interface SocketActions {
@@ -482,6 +497,7 @@ export interface SocketActions {
   movePlayer:          typeof movePlayer;
   swapBrain:           typeof swapBrain;
   sendWorkspaceSignal: typeof sendWorkspaceSignal;
+  recommendDirector:   typeof recommendDirector;
   getSocket:           () => Socket | null;
 }
 
@@ -490,6 +506,7 @@ const SOCKET_ACTIONS: SocketActions = Object.freeze({
   movePlayer,
   swapBrain,
   sendWorkspaceSignal,
+  recommendDirector,
   getSocket: () => singletonSocket,
 });
 

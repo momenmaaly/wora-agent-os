@@ -4,7 +4,7 @@ import { useWoraStore } from '../store/useWoraStore.js';
 import { useSocket } from '../hooks/useSocket.js';
 import { orderedAgents } from '../office/presentation.js';
 import { MessageType, type Message } from '../types.js';
-import { AgentAvatar } from './Dashboard.js';
+import { AgentAvatar } from './OfficePeople.js';
 import { Dialog, EmptyState } from './ui.js';
 
 const timeFormat = new Intl.DateTimeFormat('ar-EG', { hour: '2-digit', minute: '2-digit' });

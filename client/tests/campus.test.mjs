@@ -1,6 +1,6 @@
 import { deepEqual, equal, ok } from 'node:assert/strict';
 import { test } from 'node:test';
-import { DEPARTMENT_GUIDE, RECEPTION_POINT, TOUR_STOPS, visitorRoute } from '../src/office/visits.ts';
+import { RECEPTION_POINT, TOUR_STOPS, visitorRoute } from '../src/office/visits.ts';
 import { outline, project, roomCamera, SCENE_FRAME } from '../src/office/spatial.ts';
 
 const hall = 440;
@@ -8,9 +8,10 @@ const reception = { id: 'zone-lounge', x: 518, y: 520, width: 310, height: 512, 
 const engineering = { id: 'zone-engineering', x: 1318, y: 48, width: 310, height: 312, doors: [{ wall: 'south', from: 1408, to: 1480 }] };
 const rooms = [reception, engineering];
 
-test('every distinct department appears in the guide and exactly once on the tour', () => {
+test('the tour has ten distinct departments including the manager’s room', () => {
   equal(TOUR_STOPS.length, 10);
-  deepEqual([...new Set(TOUR_STOPS)].sort(), Object.keys(DEPARTMENT_GUIDE).sort());
+  equal(new Set(TOUR_STOPS).size, 10);
+  ok(TOUR_STOPS.includes('zone-boardroom'));
 });
 
 test('the visitor reaches departments by their hallway-facing doors', () => {

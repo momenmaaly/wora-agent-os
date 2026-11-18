@@ -44,11 +44,15 @@ export interface AiJobData {
   userMessage:           string;
   roomId:                string;
   senderId:              string;
+  workspaceTask?:        { zoneId: string; entryId: string };
 }
+
+type WorkspaceProgress = { state: 'started' } | { state: 'response'; text: string } | { state: 'failed' };
 
 export interface AiQueueOptions {
   concurrency?:       number;
   requestTimeoutMs?:  number;
+  onWorkspaceProgress?: (job: AiJobData, progress: WorkspaceProgress) => Promise<boolean>;
   onReplyPersisted?:  (roomId: string, message: Message, agentId: string) => Promise<void>;
 }
 
@@ -82,6 +86,7 @@ export class AiQueue {
   private readonly queue:            Queue<AiJobData>;
   private readonly worker:           Worker<AiJobData>;
   private readonly requestTimeoutMs: number;
+  private readonly onWorkspaceProgress?: AiQueueOptions['onWorkspaceProgress'];
   private readonly onReplyPersisted?: AiQueueOptions['onReplyPersisted'];
 
   constructor(
@@ -92,6 +97,7 @@ export class AiQueue {
     const concurrency = Math.max(1, options.concurrency ?? DEFAULT_CONCURRENCY);
     this.requestTimeoutMs = Math.max(5_000, options.requestTimeoutMs ?? DEFAULT_TIMEOUT_MS);
     this.onReplyPersisted = options.onReplyPersisted;
+    this.onWorkspaceProgress = options.onWorkspaceProgress;
 
     const connection = {
       url:                  redisUrl,
@@ -133,6 +139,16 @@ export class AiQueue {
       const { agentId, displayName, roomId, messageId } = job.data;
       const maxAttempts = job.opts.attempts ?? 1;
       const isFinalFailure = job.attemptsMade >= maxAttempts;
+      if (job.data.workspaceTask) {
+        logger.warn({ agentId, entryId: job.data.workspaceTask.entryId }, 'Director task response failed');
+        if (isFinalFailure) {
+          void this.onWorkspaceProgress?.(job.data, { state: 'failed' }).catch(() => {
+            logger.warn({ entryId: job.data.workspaceTask?.entryId }, 'Could not record failed director task response');
+          });
+          this.io.to(roomId).emit('agent:lifecycle', { agentId, state: AgentLifecycleState.Idle, avatarState: AvatarAnimState.Idle });
+        }
+        return;
+      }
 
       logger.error(
         { agentId, roomId, attempt: job.attemptsMade, maxAttempts, err: err.message },
@@ -193,13 +209,18 @@ export class AiQueue {
   }
 
   async enqueue(data: AiJobData, priority = 10): Promise<void> {
-    await this.queue.add('ai-complete', data, { priority });
+    await this.queue.add('ai-complete', data, { priority, ...(data.workspaceTask ? { attempts: 1, jobId: data.workspaceTask.entryId } : {}) });
   }
 
   private async process(job: Job<AiJobData>): Promise<void> {
-    const { agentId, roomId, messageId, userMessage, history, brainOverride } = job.data;
+    const { agentId, roomId, messageId, userMessage, history, brainOverride, workspaceTask } = job.data;
 
-    // On retries, suffix with attempt number if needed — abort handler already cleared prior stream
+    // A director job is a single text reply attached to a saved task in this room,
+    // not a regular chat message and never a tool or integration action.
+    if (workspaceTask && !await this.onWorkspaceProgress?.(job.data, { state: 'started' })) return;
+    const systemPrompt = buildSystemPrompt(job.data) + (workspaceTask
+      ? '\nRespond to the assigned task with a useful text deliverable or state what information is missing. No external tools are available. Do not claim to have acted on files, accounts, services, or outside systems.'
+      : '');
     this.io.to(roomId).emit('agent:lifecycle', {
       agentId,
       state:       AgentLifecycleState.Responding,
@@ -207,17 +228,18 @@ export class AiQueue {
     });
 
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.requestTimeoutMs);
+    const timer = setTimeout(() => controller.abort(), workspaceTask ? Math.min(this.requestTimeoutMs, 45_000) : this.requestTimeoutMs);
 
     try {
       const result = await BrainAdapterFactory.complete(agentId, {
-        systemPrompt:  buildSystemPrompt(job.data),
+        systemPrompt,
         history,
         userMessage,
         brainOverride,
         taskContext:   { agentId, roomId },
         signal:        controller.signal,
-        onChunk: (chunk: string, isDone: boolean) => {
+        maxTokens: workspaceTask ? Math.min(2_300, brainOverride?.maxTokens ?? 2_300) : undefined,
+        onChunk: workspaceTask ? undefined : (chunk: string, isDone: boolean) => {
           const payload: MessageStreamPayload = {
             messageId,
             agentId,
@@ -230,6 +252,13 @@ export class AiQueue {
           this.io.to(roomId).emit('message:stream', payload);
         },
       });
+
+      if (workspaceTask) {
+        const text = result.text.trim();
+        if (!text) throw new Error('Empty director task response');
+        await this.onWorkspaceProgress?.(job.data, { state: 'response', text: text.slice(0, 12_000) });
+        return;
+      }
 
       if (this.onReplyPersisted && result.text.trim()) {
         const replyMsg: Message = {

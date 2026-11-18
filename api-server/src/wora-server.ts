@@ -28,6 +28,8 @@ import { z, ZodError } from 'zod';
 
 import { AgentModel, type IAgentDocument } from './models/Agent.js';
 import { SharedWorkspaceManager } from './core/SharedWorkspaceManager.js';
+import { workspaceSignalSchema, type AssignmentAck, type ReplyToAssignment } from './core/taskSignal.js';
+import { chooseWithModel, createDirectorRecommender, type DirectorRecommendation } from './director/recommend.js';
 import {
   BrainAdapterFactory,
   isProviderConfigured,
@@ -244,13 +246,6 @@ const WorkspaceWriteSchema = z.object({
   payload:       z.record(z.string().max(64), z.unknown()).default({}),
   parentEntryId: z.string().uuid().optional(),
   expiresInMs:   z.number().int().min(5_000).max(86_400_000 * 7).optional(),
-});
-
-const WorkspaceSignalSchema = z.object({
-  zoneId:  SafeIdSchema.refine((id) => VALID_ZONE_IDS.has(id), 'Unknown zoneId'),
-  agentId: SafeIdSchema,
-  title:   z.string().trim().min(1).max(200),
-  data:    z.record(z.string().max(64), z.unknown()).default({}),
 });
 
 /* ─── DISTRIBUTED REDIS RATE LIMITER ────────────────────── */
@@ -555,6 +550,14 @@ export async function bootWoraServer(app: Express, port = DEFAULT_PORT) {
 
   /* ── AI Queue (BullMQ) with reply persistence ── */
   const aiQueue = new AiQueue(io, REDIS_URL, {
+    async onWorkspaceProgress(job, progress) {
+      if (!job.workspaceTask) return false;
+      const { zoneId, entryId } = job.workspaceTask;
+      const status = progress.state === 'started' ? 'in_progress' : progress.state === 'response' ? 'review_pending' : 'open';
+      const payload = progress.state === 'response' ? { directorExecution: 'ready', directorResponse: progress.text }
+        : progress.state === 'failed' ? { directorExecution: 'failed' } : undefined;
+      return Boolean(await workspaceMgr.updateStatus(zoneId, job.roomId, entryId, status, payload));
+    },
     onReplyPersisted: async (roomId, replyMsg, agentId) => {
       await appendRoomMessage(pubClient, roomId, replyMsg);
       if (isMongoReady()) {
@@ -625,6 +628,14 @@ export async function bootWoraServer(app: Express, port = DEFAULT_PORT) {
     },
     generate: (brief, signal) => generateStudioPack(studioBrain, brief, signal),
   } : undefined));
+  const recommendDirector = studioSecret && studioBrain ? createDirectorRecommender({
+    getAgents: loadActiveAgents,
+    async consumeQuota(userId, signal) {
+      return await rateLimiter.allow('director-user', userId, 6, 60_000, signal)
+        && await rateLimiter.allow('director-global', 'workspace', 90, 3_600_000, signal);
+    },
+    choose: (brief, candidates, signal) => chooseWithModel(studioBrain, brief, candidates, signal),
+  }) : null;
   app.use(express.json({ limit: '16kb' }));
 
   app.get('/health', async (_req: Request, res: Response) => {
@@ -1057,31 +1068,72 @@ export async function bootWoraServer(app: Express, port = DEFAULT_PORT) {
       }
     });
 
-    socket.on('workspace:signal', async (raw: unknown) => {
-      const allowed = await rateLimiter.allow('ws-signal', userId, 30, 60_000);
-      if (!allowed) {
-        socket.emit('error', { code: 'RATE_LIMITED', message: 'Too many workspace updates.' });
-        return;
-      }
+    function hasLiveSession() {
+      const token = socket.handshake.auth?.['token'];
+      return Boolean(AUTH_SECRET && typeof token === 'string' && verifySessionToken(token.trim(), AUTH_SECRET, true)?.userId === userId);
+    }
 
-      const parsed = WorkspaceSignalSchema.safeParse(raw);
-      if (!parsed.success) {
-        socket.emit('error', { code: 'INVALID_SIGNAL', message: 'Invalid workspace signal payload' });
-        return;
-      }
-
+    // Only authenticated, metered users with a configured agent may start a text reply.
+    // Failure to prepare the reply must not prevent saving the assigned task.
+    async function directorExecutionBrain(agent: CachedAgent) {
+      if (!hasLiveSession()) return null;
+      const signal = AbortSignal.timeout(2_000);
       try {
-        await workspaceMgr.write({
-          zoneId:        parsed.data.zoneId,
-          roomId:        privateRoomId,
-          type:          'signal',
-          authorAgentId: parsed.data.agentId,
-          title:         parsed.data.title,
-          payload:       parsed.data.data,
-        });
-      } catch (err) {
-        logger.error({ err, userId }, 'workspace:signal failed');
-        socket.emit('error', { code: 'WORKSPACE_ERROR', message: 'Failed to write workspace signal' });
+        const command = pubClient.withCommandOptions({ abortSignal: signal, timeout: 1_500 });
+        const json = pubClient.isReady ? await command.hGet(roomBrainsKey(privateRoomId), agent.agentId) : null;
+        const override = json ? PublicBrainSchema.safeParse(JSON.parse(json)) : null;
+        const brain = override?.success ? override.data : toPublicBrain(agent.brainConfig, agent.modelId);
+        if (!isSupportedModel(brain.provider, brain.model) || !isProviderConfigured(brain)) return null;
+        if (!await rateLimiter.allow('director-run-user', userId, 6, 60_000, signal)
+          || !await rateLimiter.allow('director-run-global', 'workspace', 90, 3_600_000, signal)) return null;
+        return brain;
+      } catch { return null; }
+    }
+
+    socket.on('director:recommend', async (raw: unknown, ack: (result: DirectorRecommendation) => void) => {
+      if (typeof ack !== 'function') return;
+      if (!recommendDirector || !hasLiveSession() || !socket.rooms.has(privateRoomId)) { ack({ ok: false }); return; }
+      const disconnected = new AbortController();
+      const abort = () => disconnected.abort();
+      socket.once('disconnect', abort);
+      try { ack(await recommendDirector(userId, raw, disconnected.signal)); }
+      finally { socket.off('disconnect', abort); }
+    });
+
+    socket.on('workspace:signal', async (raw: unknown, ack?: ReplyToAssignment) => {
+      function reply(result: AssignmentAck) {
+        if (typeof ack === 'function') ack(result);
+        else if (!result.ok) socket.emit('error', { code: result.code, message: 'تعذّر حفظ المهمة.' });
+      }
+      const parsed = workspaceSignalSchema.safeParse(raw);
+      if (!parsed.success || !socket.rooms.has(privateRoomId)) { reply({ ok: false, code: 'INVALID_SIGNAL' }); return; }
+      try {
+        if (!await rateLimiter.allow('ws-signal', userId, 30, 60_000)) { reply({ ok: false, code: 'RATE_LIMITED' }); return; }
+        const { zoneId, agentId, title, data } = parsed.data;
+        const agent = (await loadActiveAgents()).find((item) => item.agentId === agentId);
+        const fromDirector = data.source === 'director';
+        if (!agent || (fromDirector && agent.zoneId !== zoneId)) { reply({ ok: false, code: 'AGENT_UNAVAILABLE' }); return; }
+        const brain = fromDirector ? await directorExecutionBrain(agent) : null;
+        if (!socket.rooms.has(privateRoomId)) return;
+        const entry = await workspaceMgr.write({ zoneId, roomId: privateRoomId, type: 'task', authorAgentId: userId, targetAgentId: agentId, title,
+          payload: fromDirector ? { ...data, directorExecution: brain ? 'pending' : 'unavailable' } : data });
+        reply({ ok: true, entry });
+        if (brain && data.brief) {
+          // The target comes only from the validated assignment, never from @mentions in the brief.
+          void aiQueue.enqueue({
+            messageId: entry.id, workspaceTask: { zoneId, entryId: entry.id }, roomId: privateRoomId, senderId: userId,
+            agentId: agent.agentId, displayName: agent.displayName, locale: agent.locale ?? 'en',
+            customRole: agent.profile.customRole ?? 'AI Agent', tone: agent.profile.tone ?? 'Analytical',
+            tagline: agent.profile.tagline ?? '', specialty: agent.profile.specialty, skills: agent.profile.skills ?? [],
+            boundaries: agent.profile.boundaries ?? [], brainOverride: brain, history: [], userMessage: data.brief,
+          }).catch(async () => {
+            try { await workspaceMgr.updateStatus(zoneId, privateRoomId, entry.id, 'open', { directorExecution: 'failed' }); }
+            catch { logger.warn({ entryId: entry.id }, 'Could not record director queue failure'); }
+          });
+        }
+      } catch {
+        logger.error({ userId }, 'workspace:signal write failed');
+        reply({ ok: false, code: 'WORKSPACE_UNCONFIRMED' });
       }
     });
 

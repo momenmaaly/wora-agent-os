@@ -5,7 +5,7 @@ import { useWoraStore } from '../store/useWoraStore.js';
 import { useBillingStore } from '../store/useBillingStore.js';
 import { isRoomLockedForPlan, PLANS } from '../billing/plans.js';
 import { orderedAgents } from '../office/presentation.js';
-import { AgentAvatar } from './Dashboard.js';
+import { AgentAvatar } from './OfficePeople.js';
 import { Dialog, EmptyState, IconButton, IconTile, Notice, PageHeader } from './ui.js';
 
 const STAGE_META: Record<ProjectStage, string> = { idea: 'فكرة', planning: 'تخطيط', building: 'بناء', marketing: 'تسويق', sales: 'مبيعات', growth: 'نمو' };

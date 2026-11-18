@@ -24,7 +24,8 @@ import cors from 'cors';
 import { z } from 'zod';
 
 import { SEED_AGENTS } from './seed.js';
-import { EXAMPLE_ZONES, VALID_ZONE_IDS } from '../zones.js';
+import { EXAMPLE_ZONES } from '../zones.js';
+import { workspaceSignalSchema, type ReplyToAssignment } from '../core/taskSignal.js';
 import { createStudioRouter } from '../studio/router.js';
 import {
   BrainAdapterFactory,
@@ -91,13 +92,6 @@ const SocketBrainSwapSchema = z.object({
   reason:      z.string().trim().max(500).optional(),
 });
 
-const WorkspaceSignalSchema = z.object({
-  zoneId:  SafeIdSchema.refine((id) => VALID_ZONE_IDS.has(id), 'Unknown zoneId'),
-  agentId: SafeIdSchema,
-  title:   z.string().trim().min(1).max(200),
-  data:    z.record(z.string().max(64), z.unknown()).default({}),
-});
-
 /* ─── ISOLATED IN-MEMORY ROOM STATE ─────────────────────── */
 interface RoomBucket {
   messages:       Message[];
@@ -107,63 +101,6 @@ interface RoomBucket {
 }
 
 const rooms = new Map<string, RoomBucket>();
-
-function createInitialWorkspaces(roomId: string): Record<string, SharedWorkspaceEntry[]> {
-  const now = new Date().toISOString();
-  const makeEntry = (
-    zoneId: string,
-    type: SharedWorkspaceEntry['type'],
-    status: SharedWorkspaceEntry['status'],
-    authorAgentId: string,
-    title: string,
-    payload: Record<string, unknown>,
-  ): SharedWorkspaceEntry => ({
-    id:            randomUUID(),
-    zoneId,
-    roomId,
-    type,
-    status,
-    authorAgentId,
-    title,
-    payload,
-    createdAt:     now,
-    updatedAt:     now,
-    chainIds:      [],
-  });
-
-  return {
-    'zone-planning': [
-      makeEntry('zone-planning', 'task', 'approved', 'agent-planner-01', 'Wora v4.1 Production Architecture', {
-        milestone: '2026 Production Upgrade',
-        isolation: 'wora:ws:zone:{roomId}:{zoneId}',
-        sdk:       '@google/genai (Gemini 2.5)',
-      }),
-      makeEntry('zone-planning', 'handoff', 'in_progress', 'agent-planner-01', 'Multi-Agent Sprint Coordination', {
-        assignee: 'agent-coder-01',
-        priority: 'high',
-      }),
-    ],
-    'zone-engineering': [
-      makeEntry('zone-engineering', 'artifact', 'approved', 'agent-coder-01', 'Singleton Socket Manager + Batched mGet', {
-        duplicateStreams: 0,
-        redisComplexity:  'O(1) MGET',
-      }),
-    ],
-    'zone-review': [
-      makeEntry('zone-review', 'review', 'approved', 'agent-reviewer-01', 'Security Audit: Zero Secret Leakage', {
-        zodValidation: 'strict',
-        corsPolicy:    'allowlist',
-        redisPolicy:   'noeviction + requirepass',
-      }),
-    ],
-    'zone-analytics': [
-      makeEntry('zone-analytics', 'signal', 'open', 'agent-analyst-01', 'Telemetry Baseline Ready (10k Rooms)', {
-        p95StreamStartMs: 180,
-        memoryBound:      '768MB noeviction',
-      }),
-    ],
-  };
-}
 
 function getOrCreateRoom(roomId: string): RoomBucket {
   let bucket = rooms.get(roomId);
@@ -181,7 +118,7 @@ function getOrCreateRoom(roomId: string): RoomBucket {
     bucket = {
       messages:       [welcomeMsg],
       brainOverrides: {},
-      workspaces:     createInitialWorkspaces(roomId),
+      workspaces:     {},
       position:       { x: 0, y: 0, z: 2 },
     };
     rooms.set(roomId, bucket);
@@ -365,6 +302,7 @@ io.on('connection', (socket) => {
 
     const nowIso = new Date().toISOString();
     socket.emit('room:state', {
+      mode: 'preview',
       room: {
         id:               privateRoomId,
         name:             'Your Workspace (Preview)',
@@ -420,32 +358,31 @@ io.on('connection', (socket) => {
     io.to(privateRoomId).emit('agent:brain-updated', broadcast);
   });
 
-  socket.on('workspace:signal', (raw: unknown) => {
-    const parsed = WorkspaceSignalSchema.safeParse(raw);
-    if (!parsed.success) return;
+  socket.on('director:recommend', (_raw: unknown, ack: (result: { ok: false }) => void) => {
+    if (typeof ack === 'function') ack({ ok: false });
+  });
+
+  socket.on('workspace:signal', (raw: unknown, ack?: ReplyToAssignment) => {
+    const parsed = workspaceSignalSchema.safeParse(raw);
+    if (!parsed.success || !socket.rooms.has(privateRoomId)) {
+      if (typeof ack === 'function') ack({ ok: false, code: 'INVALID_SIGNAL' });
+      return;
+    }
+    const { zoneId, agentId, title, data } = parsed.data;
+    if (!SEED_AGENTS.some((agent) => agent.agentId === agentId && (data.source !== 'director' || agent.zoneId === zoneId))) {
+      if (typeof ack === 'function') ack({ ok: false, code: 'AGENT_UNAVAILABLE' });
+      return;
+    }
     const bucket = getOrCreateRoom(privateRoomId);
     const now = new Date().toISOString();
     const entry: SharedWorkspaceEntry = {
-      id:            randomUUID(),
-      zoneId:        parsed.data.zoneId,
-      roomId:        privateRoomId,
-      type:          'signal',
-      status:        'open',
-      authorAgentId: parsed.data.agentId,
-      title:         parsed.data.title,
-      payload:       parsed.data.data,
-      createdAt:     now,
-      updatedAt:     now,
-      chainIds:      [],
+      id: randomUUID(), zoneId, roomId: privateRoomId, type: 'task', status: 'open', authorAgentId: userId,
+      targetAgentId: agentId, title, payload: { ...data, preview: true, ...(data.source === 'director' ? { directorExecution: 'unavailable' } : {}) },
+      createdAt: now, updatedAt: now, chainIds: [],
     };
-    const list = bucket.workspaces[parsed.data.zoneId] ?? [];
-    bucket.workspaces[parsed.data.zoneId] = [...list.slice(-49), entry];
-    io.to(privateRoomId).emit('workspace:update', {
-      zoneId: parsed.data.zoneId,
-      roomId: privateRoomId,
-      entry,
-      action: 'created',
-    });
+    bucket.workspaces[zoneId] = [...(bucket.workspaces[zoneId] ?? []).slice(-49), entry];
+    io.to(privateRoomId).emit('workspace:update', { zoneId, roomId: privateRoomId, entry, action: 'created' });
+    if (typeof ack === 'function') ack({ ok: true, entry });
   });
 
   socket.on('message:send', async (raw: unknown) => {

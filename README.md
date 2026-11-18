@@ -1,6 +1,6 @@
 # Wora Agent OS
 
-Wora is an Arabic-first workspace for operating an AI team. Visitors arrive in reception and can walk through an interactive axonometric model of all ten departments. Each room has its own furnishings, team and task panel; the original floor plan is still available. A guided tour, department links and quick search let visitors explore the same office without depending on visual map controls.
+Wora is an Arabic-first workspace for operating an AI team. It opens directly in the working area: a ten-department model or floor plan, the live roster, and the department task board. **Enlarge workspace** hides the surrounding navigation and gives the map the available screen; **Escape** or the same control restores it. On narrow screens, the enlarged model is horizontally scrollable. The optional tour is under **Help**. The director's office is available from the map and the main navigation.
 
 ## Run the workspace
 
@@ -21,7 +21,7 @@ npm ci
 npm run dev:preview
 ```
 
-The client proxies `/api`, `/health`, and `/socket.io` to port 4000. The preview API seeds four agents and four server-backed departments; the map still includes all ten departments. Connected snapshots replace the starter roster and example tasks. Assignments outside the server-backed departments are labeled session-local. Without configured AI providers, replies from the preview server are also simulated.
+The client proxies `/api`, `/health`, and `/socket.io` to port 4000. The preview API seeds four agents and four server-backed departments; the map still includes all ten departments. Connected snapshots replace the starter roster; neither preview starts with fabricated activity or completed tasks. Assignments in server-backed departments are confirmed by the preview API and held in memory. Assignments to a session-local agent or a department the API does not support are marked local. Ordinary chats from the preview server simulate replies when no provider is configured; the director never simulates work as completed.
 
 ## Architecture
 
@@ -29,8 +29,8 @@ The client proxies `/api`, `/health`, and `/socket.io` to port 4000. The preview
 wora-agent-os/
 ├── client/                 # React 18, Vite 6, Zustand and CSS design tokens
 │   └── src/
-│       ├── components/     # Dashboard, interactive office, projects and workspace tools
-│       ├── office/         # Spatial SVG geometry, room guide and local movement simulation
+│       ├── components/     # Workbench, director, interactive office and projects
+│       ├── office/         # Spatial geometry, matching, reporting, and local movement
 │       ├── hooks/          # Socket.IO connection and offline fallback
 │       └── styles/         # Responsive RTL layout, light/dark themes and shared UI
 ├── api-server/             # Express 5, Socket.IO, Redis, BullMQ and MongoDB
@@ -54,12 +54,20 @@ npm --prefix api-server run build
 
 With the preview API running, verify the production client locally with `npm --prefix client run preview`:
 
-- Open reception and enter the model. Visit a department from the map and from the room selector, then use the plan toggle. All ten rooms are visitable, even when a plan restricts task assignment. Try a direct link such as `/#campus/zone-engineering`. Check the mobile menu, keyboard focus, and both themes at 320px and wider.
-- Start the guided tour, move forward and back, and return to reception. With reduced motion enabled, the visitor should arrive immediately without a camera animation.
-- Use <kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>K</kbd> to find a department, agent or project. Select an agent, send it to an unlocked room, and follow its route.
-- Exchange a message; create a department task; add a session-local agent; change an agent’s model.
+- Open `/` to go straight to the workbench. Enlarge and restore the map with Escape, visit a department from the map and room selector, then switch to the floor plan. Try direct links `/#campus/zone-engineering` and `/#director`. Rooms can be visited even when a plan restricts assignments. Check the mobile menu, keyboard focus, and both themes at 320px and wider.
+- From Help, start the optional tour, move forward and back, and return to the full map. With reduced motion enabled, the visitor should arrive immediately without a camera animation.
+- Use <kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>K</kbd> to find a department, screen, or agent. Select an agent, then use its follow control or open its chat.
+- In the director’s office, request **ملخّص الساحة**. Send **اختبر التسجيل من الموبايل**, check Sentinel’s recommendation and reason, and confirm it. Open the acknowledged task and request another summary to see the change. Try a locked-room request in Free. Add a session-local agent or change an agent’s model in the team panel.
 - Create a project and move a task with the stage dropdown. In the Studio, activate the local Pro preview, try an example brief, and edit a draft. Save one draft (or the pack) to a project, reload, and confirm the edit and the project link persist without duplicates. Download the pack and reopen an earlier pack from its history.
 - Filter the model and integration catalogues. Connect, sync, and disconnect a demo integration; no external account should be opened.
+
+## Director's office
+
+The assistant answers status requests from the current workspace task records and the labeled activity of the browser session. It does not extrapolate completed work from agent presence or movement. Reports are a snapshot, not a cross-workspace audit history. Recommendations use the available roster, matched skills, and open workload. The assistant asks for more detail if it cannot find a match, and cannot assign a task until the user confirms an eligible recipient. The local Pro control is a preview UI gate, not a production entitlement.
+
+- With an expiring signed session and an enabled Studio provider/model (`STUDIO_PROVIDER` and `STUDIO_MODEL`), the production API can use that model to rank the short list. It validates the chosen agent and the cited profile skill or role. If unavailable or the model gives an invalid answer, the assistant uses local matching. Reports never go to a provider.
+- A confirmed task is saved to the user's room and assigned to the recommended agent. In production, a signed session and that agent’s configured provider allow the API to queue **one text response**. No integrations, file changes, or other external actions are invoked. The response is attached to the task for review, not counted as completed. A missing provider or failed run is displayed separately from a saved assignment. The preview only records assignments, without claiming that the assigned work ran.
+- Each new provider path is bounded separately (6 requests per minute per user, 90 per hour across the deployment), with Redis quota checks and provider timeouts. The preview API stores assignments in memory, the production task board uses its existing scoped Redis storage (24-hour task visibility), and standalone assignments last in the browser session.
 
 ## Preview vs. production
 

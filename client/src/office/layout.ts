@@ -14,8 +14,6 @@ import {
 } from '../types.js';
 import type {
   AgentParticipant,
-  SharedWorkspaceEntry,
-  SharedWorkspaceState,
   WorkspaceZone,
 } from '../types.js';
 
@@ -125,8 +123,8 @@ export const OFFICE_ROOMS: readonly OfficeRoom[] = [
   },
   {
     id: 'zone-boardroom', code: 'R-103', kind: 'boardroom',
-    nameAr: 'مركز قيادة المشروع', nameEn: 'Project Command Center',
-    subtitleAr: 'إدارة المشروع والاجتماعات التنفيذية',
+    nameAr: 'مكتب المدير', nameEn: 'Director’s Office',
+    subtitleAr: 'تقارير الساحة وإسناد المهام',
     accent: '#7c3aed', floorTintLight: '#f9f7fc', floorTintDark: '#1a1929', rugLight: '#efeafa', rugDark: '#24203b',
     x: 918, y: 48, width: 310, height: 312, isBackendZone: true, departmentId: 'planning',
     doors: [
@@ -482,19 +480,3 @@ export const DEFAULT_COMPANY_AGENTS: AgentParticipant[] = [
   { id:'agent-analyst-01', displayName:'Nova', isHuman:false, isAgent:true, origin:AgentOrigin.Internal, zoneId:'zone-analytics', lifecycleState:AgentLifecycleState.Idle, socketId:null, assignedRoomIds:[], modelId:'llama-3.3-70b-versatile', activeTasks:1, brainConfig:{provider:BrainProvider.Groq,model:'llama-3.3-70b-versatile',maxTokens:2048,temperature:0.5}, avatarState:AvatarAnimState.Idle, locale:'ar', createdAt:BOOT_ISO, lastSeenAt:BOOT_ISO, status:ParticipantStatus.Online, activeRoomIds:[], profile:{customRole:'محللة البيانات والنمو', tone:'Analytical', avatarColor:'#059669', tagline:'أرقام تحكي وقرارات تنمو', specialty:'SLO, LTV, CAC, Churn', skills:['Analytics','Growth','Finance']} },
   { id:'agent-finance-01', displayName:'Rami', isHuman:false, isAgent:true, origin:AgentOrigin.Internal, zoneId:'zone-analytics', lifecycleState:AgentLifecycleState.Idle, socketId:null, assignedRoomIds:[], modelId:'gpt-4.1', activeTasks:1, brainConfig:{provider:BrainProvider.OpenAI,model:'gpt-4.1',maxTokens:2048,temperature:0.3}, avatarState:AvatarAnimState.Idle, locale:'ar', createdAt:BOOT_ISO, lastSeenAt:BOOT_ISO, status:ParticipantStatus.Online, activeRoomIds:[], profile:{customRole:'مدير المالية والعمليات', tone:'Formal', avatarColor:'#475569', tagline:'كل جنيه محسوب ونمو مستدام', specialty:'Budget, Ops, Unit Economics', skills:['Finance','Ops','Legal']} },
 ];
-
-export function buildDefaultWorkspaces(roomId: string): Record<string, SharedWorkspaceState> {
-  const mk=(id:string,zoneId:string,type:SharedWorkspaceEntry['type'],status:SharedWorkspaceEntry['status'],authorAgentId:string,title:string,payload:Record<string,unknown>): SharedWorkspaceEntry=>({id,zoneId,roomId,type,status,authorAgentId,title,payload,createdAt:BOOT_ISO,updatedAt:BOOT_ISO,chainIds:[]});
-  return {
-    'zone-product':     { zoneId:'zone-product',     roomId, entries:[ mk('init-prod-1','zone-product','task','in_progress','agent-product-01','صياغة PRD: متجر إلكتروني ذكي للمنتجات الحرفية',{stage:'discovery'}), mk('init-prod-2','zone-product','artifact','open','agent-product-01','لوحة أفكار: 12 فكرة منتج جديدة',{votes:34}) ], lastWriteAt:BOOT_ISO, lastWrittenBy:'agent-product-01' },
-    'zone-planning':    { zoneId:'zone-planning',    roomId, entries:[ mk('init-p1','zone-planning','task','in_progress','agent-planner-01','خطة إطلاق Q1-2027: من الفكرة للإيراد',{sprint:'Sprint 1'}), mk('init-p2','zone-planning','handoff','approved','agent-planner-01','تسليم خارطة الطريق للهندسة',{to:'Atlas'}) ], lastWriteAt:BOOT_ISO, lastWrittenBy:'agent-planner-01' },
-    'zone-boardroom':   { zoneId:'zone-boardroom',   roomId, entries:[ mk('init-b1','zone-boardroom','signal','open','agent-planner-01','اجتماع الإطلاق: كل الأقسام مدعوة',{time:'10:00'} ) ], lastWriteAt:BOOT_ISO, lastWrittenBy:'agent-planner-01' },
-    'zone-engineering': { zoneId:'zone-engineering', roomId, entries:[ mk('init-e1','zone-engineering','artifact','approved','agent-coder-01','إعداد monorepo + CI/CD + Redis',{stack:'Next+Node'}), mk('init-e2','zone-engineering','task','in_progress','agent-eng-02','بناء محرك التوصيات بالذكاء الاصطناعي',{model:'deepseek-coder'}) ], lastWriteAt:BOOT_ISO, lastWrittenBy:'agent-coder-01' },
-    'zone-design':      { zoneId:'zone-design',      roomId, entries:[ mk('init-d1','zone-design','artifact','open','agent-design-01','تصميم هوية بصرية + UI Kit',{tool:'Figma'}) ], lastWriteAt:BOOT_ISO, lastWrittenBy:'agent-design-01' },
-    'zone-review':      { zoneId:'zone-review',      roomId, entries:[ mk('init-r1','zone-review','review','approved','agent-reviewer-01','تدقيق أمان + اختبارات E2E',{severity:'0 حرجة'}) ], lastWriteAt:BOOT_ISO, lastWrittenBy:'agent-reviewer-01' },
-    'zone-marketing':   { zoneId:'zone-marketing',   roomId, entries:[ mk('init-m1','zone-marketing','signal','open','agent-marketing-01','حملة إطلاق: 7 محتويات + 3 إعلانات',{budget:'$2k'}), mk('init-m2','zone-marketing','task','in_progress','agent-marketing-02','بحث كلمات مفتاحية: 40 كلمة',{volume:'120K'}) ], lastWriteAt:BOOT_ISO, lastWrittenBy:'agent-marketing-01' },
-    'zone-sales':       { zoneId:'zone-sales',       roomId, entries:[ mk('init-s1','zone-sales','signal','open','agent-sales-01','إعداد CRM + نصوص البيع',{crm:'HubSpot'}) ], lastWriteAt:BOOT_ISO, lastWrittenBy:'agent-sales-01' },
-    'zone-analytics':   { zoneId:'zone-analytics',   roomId, entries:[ mk('init-a1','zone-analytics','signal','open','agent-analyst-01','لوحة تحليلات: CAC/LTV/Churn',{p95:175}), mk('init-a2','zone-analytics','task','open','agent-finance-01','نموذج تسعير وتوقعات 12 شهر',{mrr:'$50k'}) ], lastWriteAt:BOOT_ISO, lastWrittenBy:'agent-analyst-01' },
-    'zone-lounge':      { zoneId:'zone-lounge',      roomId, entries:[ mk('init-l1','zone-lounge','signal','open','agent-planner-01','فعالية ثقافية: عرض المنتج الأول',{time:'الخميس 4PM'}) ], lastWriteAt:BOOT_ISO, lastWrittenBy:'agent-planner-01' },
-  };
-}

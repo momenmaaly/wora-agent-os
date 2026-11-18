@@ -6,11 +6,11 @@ import { useOfficeMotion } from '../office/useOfficeSimulation.js';
 import { useWoraStore } from '../store/useWoraStore.js';
 
 const MATERIALS = {
-  stone: ['#2e2a40', '#1f1c31', '#272238'],
-  wall: ['#464059', '#302b43', '#39334e'],
-  glass: ['#71658d', '#292540', '#49405f'],
+  stone: ['#3d4d55', '#27363d', '#303e47'],
+  wall: ['#556670', '#3a4b53', '#4c5d66'],
+  glass: ['#7a9298', '#374e56', '#5a747c'],
   oak: ['#b58b6e', '#694f54', '#856060'],
-  device: ['#514968', '#272335', '#38304e'],
+  device: ['#4a5964', '#23333b', '#394950'],
   textile: ['var(--spatial-tint)', 'var(--spatial-side)', 'var(--spatial-fabric)'],
 } as const;
 
@@ -153,8 +153,8 @@ const Terrain = memo(function Terrain({ selectedId, close, onRoom }: { selectedI
     <g aria-hidden="true">
       <Surface x={-13} y={13} w={WORLD_WIDTH + 44} d={WORLD_HEIGHT + 43} z={-37} className="spatial-ground-shadow" />
       <Solid x={0} y={0} w={WORLD_WIDTH} d={WORLD_HEIGHT} h={36} z={-37} />
-      <Surface x={0} y={0} w={WORLD_WIDTH} d={WORLD_HEIGHT} fill="#26263b" />
-      {Object.values(CORRIDORS).map((corridor) => <Surface key={corridor.id} {...corridor} w={corridor.width} d={corridor.height} fill="#3b374d" />)}
+      <Surface x={0} y={0} w={WORLD_WIDTH} d={WORLD_HEIGHT} fill="#33454e" />
+      {Object.values(CORRIDORS).map((corridor) => <Surface key={corridor.id} {...corridor} w={corridor.width} d={corridor.height} fill="#475860" />)}
       <Rail x={48} y={440} toX={1952} toY={440} className="spatial-hall-line" />
       {[473, 873, 1273, 1673].map((x) => <Rail key={x} x={x} y={54} toX={x} toY={1028} className="spatial-hall-line" />)}
       {[96, 470, 874, 1274, 1674, 1917].map((x) => <Surface key={x} x={x} y={495} w={35} d={7} fill="#d9b184" />)}

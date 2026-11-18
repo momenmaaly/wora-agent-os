@@ -4,7 +4,7 @@ import type { AgentParticipant } from '../types.js';
 export const ROOM_DISPLAY: Record<string, { label: string; icon: LucideIcon; tone: string }> = {
   'zone-product': { label: 'المنتج', icon: Lightbulb, tone: 'gold' },
   'zone-planning': { label: 'التخطيط', icon: Layers3, tone: 'violet' },
-  'zone-boardroom': { label: 'القيادة', icon: UsersRound, tone: 'violet' },
+  'zone-boardroom': { label: 'مكتب المدير', icon: UsersRound, tone: 'violet' },
   'zone-engineering': { label: 'الهندسة', icon: Code2, tone: 'cyan' },
   'zone-design': { label: 'التصميم', icon: PenTool, tone: 'pink' },
   'zone-review': { label: 'الجودة', icon: ShieldCheck, tone: 'gold' },

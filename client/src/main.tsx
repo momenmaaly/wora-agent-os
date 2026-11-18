@@ -7,9 +7,11 @@ import '@fontsource-variable/inter';
 import App from './App.js';
 import './index.css';
 import './styles/shell.css';
-import './styles/dashboard.css';
+import './styles/floorplan.css';
 import './styles/features.css';
 import './styles/campus.css';
+import './styles/workbench.css';
+import './styles/director.css';
 
 const root = document.getElementById('root');
 if (!root) throw new Error('Root element #root not found');

@@ -130,7 +130,6 @@ export function OfficeFloorplan({ selectedRoomId, onRoom, onAgent }: { selectedR
 
   return (
     <div className="map-canvas">
-      <div className="map-coordinate" dir="ltr"><span>WORA HQ</span><i /> FLOOR 01</div>
       <div className="map-controls" aria-label="تحكم الخريطة">
         <IconButton icon={Plus} label="تكبير الخريطة" disabled={zoom >= 2.65} onClick={() => setZoom((value) => Math.min(2.65, value * 1.22))} />
         <IconButton icon={Minus} label="تصغير الخريطة" disabled={zoom <= 1} onClick={() => { const next = Math.max(1, zoom / 1.22); setZoom(next); if (next === 1) { setFollow(null); setCenter(CENTER); } }} />
