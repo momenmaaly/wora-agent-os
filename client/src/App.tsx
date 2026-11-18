@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { lazy, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { CircleHelp } from 'lucide-react';
 import { CompanyHeader } from './components/CompanyHeader.js';
 import { CompanySidebar } from './components/CompanySidebar.js';
@@ -9,6 +9,7 @@ import { WorkspaceBoard } from './components/WorkspaceBoard.js';
 import { AgentSkillsDialog } from './components/AgentSkillsDialog.js';
 import { QuickSearch } from './components/QuickSearch.js';
 import { WorkspaceSettings } from './components/WorkspaceSettings.js';
+import { WorkspacePage } from './components/WorkspacePage.js';
 import { Dialog } from './components/ui.js';
 import { useSocketLifecycle } from './hooks/useSocket.js';
 import { useOfficeMotion, useOfficeSimulation } from './office/useOfficeSimulation.js';
@@ -124,7 +125,7 @@ export default function App() {
       <CompanyHeader page={page} onHome={toCampus} onDirector={toDirector} onMenu={() => setOverlay('menu')} onSearch={() => setOverlay('search')} />
       <main id="main-content" className="app-scroll hq-scroll" tabIndex={-1} ref={main}>
         {page !== 'director' && <div className={`page-frame page-${page}`} key={page}>
-          <Suspense fallback={<div className="panel panel-pad subtle" role="status">جارٍ تحميل الصفحة…</div>}>
+          <WorkspacePage>
             {page === 'campus' && <Campus roomId={roomId} tourIndex={tourIndex} onVisit={visit} onAssign={assign} onDirector={toDirector} />}
             {page === 'projects' && <Projects onUpgrade={toPricing} onIntegrations={toIntegrations} />}
             {page === 'studio' && <Studio onUpgrade={toPricing} onProjects={toProjects} />}
@@ -132,12 +133,12 @@ export default function App() {
             {page === 'models' && <Models onUpgrade={toPricing} />}
             {page === 'integrations' && <Integrations />}
             {page === 'pricing' && <Pricing onStudio={toStudio} />}
-          </Suspense>
+          </WorkspacePage>
         </div>}
         {(visitedDirector || page === 'director') && <div className="page-frame page-director" hidden={page !== 'director'}>
-          <Suspense fallback={<div className="panel panel-pad subtle" role="status">جارٍ تحميل مكتب المدير…</div>}>
+          <WorkspacePage loading="جارٍ تحميل مكتب المدير…">
             <Director key={activeRoom} focusInput={page === 'director' && hash === '#director/task'} onCampus={toCampus} onUpgrade={toPricing} />
-          </Suspense>
+          </WorkspacePage>
         </div>}
       </main>
     </div>
