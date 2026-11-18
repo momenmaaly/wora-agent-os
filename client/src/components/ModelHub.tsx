@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { Box, Cpu, KeyRound, Layers3, Search, Sparkles, Zap } from 'lucide-react';
 import { MODEL_CATALOG, DEPARTMENTS, type ModelTier } from '../office/models.js';
 import { FREE_MODEL_IDS } from '../billing/plans.js';
-import { PROVIDER_VISUALS } from '../office/catalog.js';
+import { PROVIDER_VISUALS } from '../office/layout.js';
 import { useBillingStore } from '../store/useBillingStore.js';
 import { BRAIN_MODELS, BrainProvider } from '../types.js';
 import { EmptyState, Notice, PageHeader } from './ui.js';

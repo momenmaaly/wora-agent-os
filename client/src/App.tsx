@@ -4,17 +4,19 @@ import { CompanyHeader } from './components/CompanyHeader.js';
 import { CompanySidebar } from './components/CompanySidebar.js';
 import { HireAgentModal } from './components/HireAgentModal.js';
 import { ModelSwapModal } from './components/ModelSwapModal.js';
-import { ChatHUD } from './components/ChatPanel.js';
-import { AgentSkillsHUD } from './components/AgentSkillsHUD.js';
-import { SharedWorkspaceHUD } from './components/SharedWorkspaceHUD.js';
+import { ChatDrawer } from './components/ChatDrawer.js';
+import { WorkspaceBoard } from './components/WorkspaceBoard.js';
+import { AgentSkillsDialog } from './components/AgentSkillsDialog.js';
 import { QuickSearch } from './components/QuickSearch.js';
 import { WorkspaceSettings } from './components/WorkspaceSettings.js';
 import { Dialog } from './components/ui.js';
 import { useSocketLifecycle } from './hooks/useSocket.js';
-import { commandHash, workspaceRoute, PAGES, type PageId } from './pages.js';
+import { useOfficeMotion, useOfficeSimulation } from './office/useOfficeSimulation.js';
+import { DIRECTOR_ROOM_ID } from './office/work.js';
+import { officeHash, workspaceRoute, PAGES, type PageId } from './pages.js';
 import { useWoraStore } from './store/useWoraStore.js';
 
-const CommandCenter = lazy(() => import('./components/CommandCenter.js').then((module) => ({ default: module.CommandCenter })));
+const Campus = lazy(() => import('./components/Campus.js').then((module) => ({ default: module.Campus })));
 const Director = lazy(() => import('./components/DirectorOffice.js').then((module) => ({ default: module.DirectorOffice })));
 const Projects = lazy(() => import('./components/ProjectOSBoard.js').then((module) => ({ default: module.ProjectOSBoard })));
 const Studio = lazy(() => import('./components/ProductStudio.js').then((module) => ({ default: module.ProductStudio })));
@@ -22,23 +24,25 @@ const Models = lazy(() => import('./components/ModelHub.js').then((module) => ({
 const Integrations = lazy(() => import('./components/IntegrationsHub.js').then((module) => ({ default: module.IntegrationsHub })));
 const Pricing = lazy(() => import('./components/PricingPlans.js').then((module) => ({ default: module.PricingPlans })));
 
-function Runtime() {
+function Runtime({ initialRoomId }: { initialRoomId: string | null }) {
+  useOfficeSimulation(initialRoomId);
   useSocketLifecycle();
   return null;
 }
 
-function closeWorkspaceDialogs() {
+function closeOfficeDialogs() {
   const office = useWoraStore.getState();
   if (office.ui.showChat) office.toggleChat(false);
   if (office.ui.showWorkspaceHUD) office.toggleWorkspaceHUD(false);
   if (office.ui.showHireModal) office.setShowHireModal(false);
   if (office.ui.modelSwapAgentId) office.openModelSwap(null);
-  if (office.ui.skillsDialog) office.openAgentSkills(null);
+  if (office.ui.skillsAgentId) office.openAgentSkills(null);
 }
 
 export default function App() {
   const [hash, setHash] = useState(() => window.location.hash);
   const { page, roomId, tourIndex } = workspaceRoute(hash);
+  const initialRoomId = useRef(roomId);
   const activeRoom = useWoraStore((state) => state.roomId);
   const [visitedDirector, setVisitedDirector] = useState(page === 'director');
   const [overlay, setOverlay] = useState<'menu' | 'help' | 'search' | null>(null);
@@ -47,7 +51,7 @@ export default function App() {
 
   const navigateHash = useCallback((target: string) => {
     setOverlay(null);
-    closeWorkspaceDialogs();
+    closeOfficeDialogs();
     const current = window.location.hash;
     if (current === target || (!current && target === '#campus')) return;
     if (workspaceRoute(current).page !== workspaceRoute(target).page) focusOnNavigate.current = true;
@@ -55,12 +59,12 @@ export default function App() {
     setHash(target);
   }, []);
   const navigate = useCallback((target: PageId) => {
-    if (target === 'campus') useWoraStore.getState().selectAgent(null);
+    if (target === 'campus' || target === 'director') useWoraStore.getState().resetCamera();
     navigateHash(`#${target}`);
   }, [navigateHash]);
   const visit = useCallback((id: string | null, tour = false) => {
-    useWoraStore.getState().selectAgent(null);
-    navigateHash(commandHash(id, tour));
+    useWoraStore.getState().resetCamera();
+    navigateHash(officeHash(id, tour));
   }, [navigateHash]);
   const toCampus = useCallback(() => navigate('campus'), [navigate]);
   const toDirector = useCallback(() => navigate('director'), [navigate]);
@@ -71,19 +75,22 @@ export default function App() {
   const toIntegrations = useCallback(() => navigate('integrations'), [navigate]);
   const openAgent = useCallback((agentId: string) => {
     navigateHash('#campus');
-    useWoraStore.getState().selectAgent(agentId);
+    useWoraStore.getState().focusAgentCamera(agentId);
     main.current?.scrollTo({ top: 0 });
   }, [navigateHash]);
 
   useEffect(() => {
-    if (page === 'director') setVisitedDirector(true);
+    if (page === 'director') {
+      setVisitedDirector(true);
+      useOfficeMotion.getState().visitRoom(DIRECTOR_ROOM_ID);
+    }
   }, [page]);
   useEffect(() => {
     const routeChanged = (event: HashChangeEvent) => {
       if (workspaceRoute(new URL(event.oldURL).hash).page !== workspaceRoute(window.location.hash).page) focusOnNavigate.current = true;
       setOverlay(null);
-      closeWorkspaceDialogs();
-      useWoraStore.getState().selectAgent(null);
+      closeOfficeDialogs();
+      useWoraStore.getState().resetCamera();
       setHash(window.location.hash);
     };
     const hotkey = (event: KeyboardEvent) => {
@@ -110,15 +117,15 @@ export default function App() {
   }, [page]);
 
   return <div className="app-shell">
-    <Runtime />
+    <Runtime initialRoomId={initialRoomId.current} />
     <a href="#main-content" className="button primary skip-link" onClick={(event) => { event.preventDefault(); main.current?.focus(); }}>تخطَ إلى المحتوى</a>
-    <CompanyHeader page={page} onHome={toCampus} onDirector={toDirector} onMenu={() => setOverlay('menu')} onSearch={() => setOverlay('search')} />
     <aside className="company-sidebar desktop-sidebar"><CompanySidebar page={page} onNavigate={navigate} onHelp={() => setOverlay('help')} /></aside>
     <div className="app-main">
+      <CompanyHeader page={page} onHome={toCampus} onDirector={toDirector} onMenu={() => setOverlay('menu')} onSearch={() => setOverlay('search')} />
       <main id="main-content" className="app-scroll hq-scroll" tabIndex={-1} ref={main}>
         {page !== 'director' && <div className={`page-frame page-${page}`} key={page}>
           <Suspense fallback={<div className="panel panel-pad subtle" role="status">جارٍ تحميل الصفحة…</div>}>
-            {page === 'campus' && <CommandCenter roomId={roomId} tourIndex={tourIndex} onVisit={visit} onAssign={assign} onDirector={toDirector} />}
+            {page === 'campus' && <Campus roomId={roomId} tourIndex={tourIndex} onVisit={visit} onAssign={assign} onDirector={toDirector} />}
             {page === 'projects' && <Projects onUpgrade={toPricing} onIntegrations={toIntegrations} />}
             {page === 'studio' && <Studio onUpgrade={toPricing} onProjects={toProjects} />}
             {page === 'settings' && <WorkspaceSettings onNavigate={navigate} />}
@@ -128,7 +135,7 @@ export default function App() {
           </Suspense>
         </div>}
         {(visitedDirector || page === 'director') && <div className="page-frame page-director" hidden={page !== 'director'}>
-          <Suspense fallback={<div className="panel panel-pad subtle" role="status">جارٍ تحميل لوحة المدير…</div>}>
+          <Suspense fallback={<div className="panel panel-pad subtle" role="status">جارٍ تحميل مكتب المدير…</div>}>
             <Director key={activeRoom} focusInput={page === 'director' && hash === '#director/task'} onCampus={toCampus} onUpgrade={toPricing} />
           </Suspense>
         </div>}
@@ -137,11 +144,11 @@ export default function App() {
     {overlay === 'menu' && <Dialog key="menu" title="التنقل" variant="navigation" onClose={() => setOverlay(null)}><div className="company-sidebar"><CompanySidebar page={page} onNavigate={navigate} onHelp={() => setOverlay('help')} /></div></Dialog>}
     {overlay === 'search' && <QuickSearch onClose={() => setOverlay(null)} onNavigate={navigate} onAgent={openAgent} onRoom={visit} />}
     {overlay === 'help' && <Dialog key="help" icon={CircleHelp} title="استخدام مساحة العمل" onClose={() => setOverlay(null)}>
-      <div className="field-stack"><p>اختَر قناة عمل أو عقدة وكيل. استخدم «تكبير الشبكة» للتركيز، واضغط Esc للرجوع.</p><p>من لوحة المدير اطلب «ملخص الساحة» أو اكتب مهمة جديدة لإسنادها.</p><button type="button" className="button" onClick={() => visit(null, true)}>جولة القنوات</button></div>
+      <div className="field-stack"><p>اختَر قسمًا أو وكيلًا من الساحة. استخدم «تكبير الساحة» للتركيز، واضغط Esc للرجوع.</p><p>من مكتب المدير اطلب «ملخص الساحة» أو اكتب مهمة جديدة لإسنادها.</p><button type="button" className="button" onClick={() => visit(null, true)}>جولة الأقسام</button></div>
     </Dialog>}
-    <ChatHUD />
-    <SharedWorkspaceHUD />
-    <AgentSkillsHUD />
+    <ChatDrawer />
+    <WorkspaceBoard />
+    <AgentSkillsDialog />
     <ModelSwapModal />
     <HireAgentModal onHired={openAgent} />
   </div>;

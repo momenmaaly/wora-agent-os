@@ -3,7 +3,7 @@ import { Plus, UserRoundPlus } from 'lucide-react';
 import { isRoomLockedForPlan } from '../billing/plans.js';
 import { useBillingStore } from '../store/useBillingStore.js';
 import { useWoraStore } from '../store/useWoraStore.js';
-import { CHANNELS } from '../office/channels.js';
+import { OFFICE_ROOMS } from '../office/layout.js';
 import { BRAIN_MODELS, BRAIN_PROVIDER_LABELS, BrainProvider } from '../types.js';
 import { Dialog, Notice } from './ui.js';
 
@@ -35,7 +35,7 @@ function HireForm({ onClose, onHired }: { onClose: () => void; onHired: (id: str
         <label className="label">اسم الوكيل<input className="field" data-initial-focus value={name} onChange={(event) => setName(event.target.value)} maxLength={36} minLength={2} placeholder="مثال: Karim" dir="auto" required /></label>
         <label className="label">الدور<input className="field" value={role} onChange={(event) => setRole(event.target.value)} maxLength={65} minLength={2} placeholder="مثال: مصمّم تجربة المستخدم" dir="auto" required /></label>
       </div>
-      <label className="label">القسم الأساسي<select className="field" value={zone} onChange={(event) => setZone(event.target.value)}>{CHANNELS.map((room) => {
+      <label className="label">القسم الأساسي<select className="field" value={zone} onChange={(event) => setZone(event.target.value)}>{OFFICE_ROOMS.map((room) => {
         const locked = isRoomLockedForPlan(room.id, plan);
         return <option key={room.id} value={room.id} disabled={locked}>{room.nameAr}{locked ? ' — Pro' : ''}</option>;
       })}</select></label>
@@ -49,7 +49,7 @@ function HireForm({ onClose, onHired }: { onClose: () => void; onHired: (id: str
         }}>{Object.entries(BRAIN_PROVIDER_LABELS).map(([id, title]) => <option key={id} value={id}>{title}</option>)}</select></label>
         <label className="label">النموذج<select className="field" dir="ltr" value={model} onChange={(event) => setModel(event.target.value)}>{BRAIN_MODELS[provider].map((id) => <option key={id}>{id}</option>)}</select></label>
       </div>
-      <Notice>يظهر الوكيل فورًا في قناته. الوكلاء المضافون هنا متاحون لهذه الجلسة فقط.</Notice>
+      <Notice>يبدأ الوكيل من الاستقبال ويتجه إلى مكتبه على الخريطة. الوكلاء المضافون هنا متاحون لهذه الجلسة فقط.</Notice>
     </form>
   </Dialog>;
 }

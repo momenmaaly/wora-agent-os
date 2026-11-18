@@ -1,7 +1,7 @@
 /**
  * preview-server.ts — Wora Agent OS v4.1 (Zero-Dependency Sandbox Preview)
  * ────────────────────────────────────────────────────────────────────────
- * Standalone in-memory API + Socket.IO server for instant command interface evaluation
+ * Standalone in-memory API + Socket.IO server for instant workspace and office evaluation
  * when Redis and MongoDB are not running (e.g. cloud sandboxes or local demo).
  *
  * Features:

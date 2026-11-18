@@ -1,10 +1,9 @@
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react';
-import { ArrowRight, ExternalLink, Github, Plus, ShieldCheck } from 'lucide-react';
+import { ArrowRight, ExternalLink, Github, Plus, Puzzle, ShieldCheck } from 'lucide-react';
 import { getAgentSkills, importAgentSkill, setAgentSkillActive, skillErrorMessage } from '../skills/api.js';
 import { useWoraStore } from '../store/useWoraStore.js';
 import type { AgentParticipant, AgentSkillCatalog, ImportedSkill } from '../types.js';
-import { AgentAvatar } from './AgentAvatar.js';
-import { CommandGlyph } from './CommandGlyph.js';
+import { AgentAvatar } from './OfficePeople.js';
 import { Dialog } from './ui.js';
 
 const record = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -31,13 +30,12 @@ function SkillTag({ skill }: { skill: ImportedSkill }) {
 
 type Step = { kind: 'catalog' } | { kind: 'import' } | { kind: 'review'; skillId: string };
 
-function SkillsPanel({ agent, roomId, start, onClose }: { agent: AgentParticipant; roomId: string; start: 'catalog' | 'import'; onClose: () => void }) {
+function SkillsPanel({ agent, roomId, onClose }: { agent: AgentParticipant; roomId: string; onClose: () => void }) {
   const connected = useWoraStore((s) => s.connected);
   const mode = useWoraStore((s) => s.serverMode);
   const revision = agent.skillSnapshot?.revision ?? 0;
-  const local = agent.id.startsWith('agent-custom-');
-  const ready = connected && !local ? mode : null;
-  const [step, setStep] = useState<Step>({ kind: start });
+  const ready = connected ? mode : null;
+  const [step, setStep] = useState<Step>({ kind: 'catalog' });
   const [url, setUrl] = useState('');
   const [catalog, setCatalog] = useState<AgentSkillCatalog | null>(null);
   const [loading, setLoading] = useState(false);
@@ -112,12 +110,12 @@ function SkillsPanel({ agent, roomId, start, onClose }: { agent: AgentParticipan
   const focused = step.kind === 'review' ? catalog?.skills.find((skill) => skill.id === step.skillId) : undefined;
   const title = step.kind === 'import' ? 'استيراد مهارة من GitHub' : step.kind === 'review' ? 'مراجعة المهارة' : 'مهارات الوكيل';
   const formDisabled = !ready || writing;
-  return <Dialog icon={Github} className="command-hud skills-hud" title={title} onClose={onClose}
+  return <Dialog icon={Github} className="skills-dialog" title={title} onClose={onClose}
     footer={step.kind === 'import' ? <><button className="button ghost" type="button" onClick={() => goTo({ kind: 'catalog' })} disabled={writing}>قائمة المهارات</button><button type="submit" form="skill-import-form" className="button primary" disabled={formDisabled || !url.trim()}><Github size={16} aria-hidden="true" />{writing ? 'جارٍ قراءة التعريف…' : 'استيراد للمراجعة'}</button></>
       : step.kind === 'review' ? <><button className="button ghost" type="button" onClick={() => goTo({ kind: 'catalog' })} disabled={writing}><ArrowRight size={15} aria-hidden="true" />قائمة المهارات</button>{focused && <button className={`button${focused.active ? '' : ' primary'}`} onClick={() => toggle(focused)} disabled={formDisabled}>{writing ? 'جارٍ الحفظ…' : focused.active ? 'إلغاء التفعيل' : 'تفعيل المهارة'}</button>}</>
         : <button className="button primary" type="button" onClick={() => goTo({ kind: 'import' })} disabled={!ready}><Plus size={16} aria-hidden="true" />استيراد من GitHub</button>}>
-    <div className="skill-agent-context"><AgentAvatar agent={agent} /><div><strong><bdi>{agent.displayName}</bdi></strong><small dir="auto">{agent.profile.customRole}</small></div><span className="hud-label" dir="ltr">SKILL REGISTRY</span></div>
-    {!ready && <p className="notice">{local ? 'هذا الوكيل محلي لهذه الجلسة. الاستيراد متاح للوكلاء المسجّلين في الخادم فقط.' : 'يلزم الاتصال بخادم مساحة العمل لاستيراد المهارات أو تفعيلها.'}</p>}
+    <div className="skill-agent-context"><AgentAvatar agent={agent} /><div><strong><bdi>{agent.displayName}</bdi></strong><small dir="auto">{agent.profile.customRole}</small></div></div>
+    {!ready && <p className="notice">يلزم الاتصال بخادم مساحة العمل لاستيراد المهارات أو تفعيلها.</p>}
     {ready === 'preview' && <p className="field-note">سجل المعاينة مؤقت: يبقى عند إعادة تحميل الصفحة، ويُمسح عند إعادة تشغيل الخادم.</p>}
     {step.kind === 'import' && <form id="skill-import-form" className="field-stack" onSubmit={importSkill}>
       <label className="label">رابط المستودع العام<input ref={urlField} data-initial-focus={ready ? '' : undefined} dir="ltr" className="field skill-url" type="url" placeholder="https://github.com/owner/repo" maxLength={240} value={url} required autoComplete="off" spellCheck={false} onChange={(event) => setUrl(event.target.value)} disabled={formDisabled} /></label>
@@ -134,11 +132,11 @@ function SkillsPanel({ agent, roomId, start, onClose }: { agent: AgentParticipan
           <h3>{group === 'active' ? 'المهارات المفعّلة' : 'غير مفعّلة'} <bdi>{items.length}</bdi></h3>
           {items.length > 0 ? <ul>{items.map((skill) => <li key={skill.id}>
             <button className="skill-list-row" type="button" onClick={() => goTo({ kind: 'review', skillId: skill.id })}>
-              <CommandGlyph kind="skill" size={19} /><span><strong><bdi>{skill.name}</bdi></strong><small dir="ltr">{skill.source.repository}</small></span><SkillTag skill={skill} />
+              <Puzzle size={17} aria-hidden="true" /><span><strong><bdi>{skill.name}</bdi></strong><small dir="ltr">{skill.source.repository}</small></span><SkillTag skill={skill} />
             </button>
           </li>)}</ul> : <p className="field-note">لا توجد مهارات في هذه المجموعة.</p>}
         </section>;
-      }) : <p className="hud-empty">لم تُستورد مهارات لهذا الوكيل بعد.</p>)}
+      }) : <p className="field-note">لم تُستورد مهارات لهذا الوكيل بعد.</p>)}
     </div>}
     {focused && <article className="skill-review">
       <div className="skill-review-title"><h3 ref={reviewHeading} tabIndex={-1} dir="auto">{focused.name}</h3><SkillTag skill={focused} /></div>
@@ -155,11 +153,9 @@ function SkillsPanel({ agent, roomId, start, onClose }: { agent: AgentParticipan
   </Dialog>;
 }
 
-export function AgentSkillsHUD() {
-  const options = useWoraStore((s) => s.ui.skillsDialog);
-  const agent = useWoraStore((s) => options ? s.agents[options.agentId] : undefined);
+export function AgentSkillsDialog() {
+  const agent = useWoraStore((s) => s.ui.skillsAgentId ? s.agents[s.ui.skillsAgentId] : undefined);
   const roomId = useWoraStore((s) => s.roomId);
   const close = useWoraStore((s) => s.openAgentSkills);
-  if (!options || !agent) return null;
-  return <SkillsPanel key={`${roomId}/${agent.id}/${options.mode}`} roomId={roomId} agent={agent} start={options.mode} onClose={() => close(null)} />;
+  return agent ? <SkillsPanel key={`${roomId}/${agent.id}`} roomId={roomId} agent={agent} onClose={() => close(null)} /> : null;
 }

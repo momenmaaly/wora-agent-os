@@ -3,7 +3,7 @@ import { Check, Cpu } from 'lucide-react';
 import { useWoraStore } from '../store/useWoraStore.js';
 import { useSocket } from '../hooks/useSocket.js';
 import { BRAIN_MODELS, BRAIN_PROVIDER_LABELS, BrainProvider, type AgentParticipant } from '../types.js';
-import { AgentAvatar } from './AgentAvatar.js';
+import { AgentAvatar } from './OfficePeople.js';
 import { Dialog, Notice } from './ui.js';
 
 function SwapForm({ agent, onClose }: { agent: AgentParticipant; onClose: () => void }) {

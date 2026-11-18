@@ -1,6 +1,6 @@
 # Wora Agent OS
 
-Wora is an Arabic-first command center for an AI team. The workspace opens on a signal mesh with live agent nodes, ten work channels, and floating agent, chat, and task panels. **Enlarge network** focuses the mesh; **Escape** or the same control restores the full view. The Director is available from the navigation and the work channels. The former virtual office, floor plans, and movement simulation are not part of the interface.
+Wora is an Arabic-first workspace for operating an AI team. It opens directly in the working area: a ten-department model or floor plan, the live roster, and the department task board. **Enlarge workspace** hides the surrounding navigation and gives the map the available screen; **Escape** or the same control restores it. On narrow screens, the enlarged model is horizontally scrollable. The optional tour is under **Help**. The director's office is available from the map and the main navigation.
 
 ## Run the workspace
 
@@ -12,7 +12,7 @@ npm ci
 npm run dev
 ```
 
-Open `http://localhost:5173`. Without an API, Wora uses a local roster and simulated replies. Add the optional in-memory server for a connected preview:
+Open `http://localhost:5173`. Without an API, Wora uses the local office and simulated replies. Add the optional in-memory server for a connected preview:
 
 ```bash
 # In a second terminal, from the repository root
@@ -21,7 +21,7 @@ npm ci
 npm run dev:preview
 ```
 
-The client proxies `/api`, `/health`, and `/socket.io` to port 4000. The preview API seeds four agents and four server-backed channels; the command center still lists all ten channels. Connected snapshots replace the starter roster; neither preview starts with fabricated activity or completed tasks. Assignments in server-backed channels are confirmed by the preview API and held in memory. Assignments to a session-local agent or a channel the API does not support are marked local. Ordinary chats from the preview server simulate replies when no provider is configured; the director never simulates work as completed.
+The client proxies `/api`, `/health`, and `/socket.io` to port 4000. The preview API seeds four agents and four server-backed departments; the map still includes all ten departments. Connected snapshots replace the starter roster; neither preview starts with fabricated activity or completed tasks. Assignments in server-backed departments are confirmed by the preview API and held in memory. Assignments to a session-local agent or a department the API does not support are marked local. Ordinary chats from the preview server simulate replies when no provider is configured; the director never simulates work as completed.
 
 ## Architecture
 
@@ -29,13 +29,14 @@ The client proxies `/api`, `/health`, and `/socket.io` to port 4000. The preview
 wora-agent-os/
 ├── client/                 # React 18, Vite 6, Zustand and CSS design tokens
 │   └── src/
-│       ├── components/     # Command mesh, agent/chat/task HUDs, Director
-│       ├── office/         # Work channels, matching and reporting
+│       ├── components/     # Workbench, director, interactive office and projects
+│       ├── office/         # Spatial geometry, matching, reporting, and local movement
 │       ├── hooks/          # Socket.IO connection and offline fallback
-│       ├── skills/         # Typed skills API client
+│       ├── skills/         # Typed GitHub skill registry client
 │       └── styles/         # Responsive RTL layout, light/dark themes and shared UI
 ├── api-server/             # Express 5, Socket.IO, Redis, BullMQ and MongoDB
 ├── shared/types/           # Shared backend contracts and model registry
+├── design-concepts/        # Original office design references
 ├── nginx/                  # Reverse proxy configuration
 └── docker-compose.prod.yml
 ```
@@ -56,16 +57,17 @@ For the optional real-MongoDB catalog test, set `WORA_TEST_MONGO_URL` to a **dis
 
 With the preview API running, verify the production client locally with `npm --prefix client run preview`:
 
-- Open `/`, select an agent in the mesh or roster, and open a chat or swap its model. Watch the node update as it thinks and replies. Enlarge and restore the network with Escape. Try `/#campus/zone-engineering` and `/#director`; all channels can be browsed even when a plan restricts task assignment.
-- Check the optional tour under Help, keyboard focus, light/dark themes, and reduced-motion mode at 320px and wider. Use <kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>K</kbd> to find a channel, screen, or agent.
-- In the Director, request **ملخّص الساحة**. Send **اختبر التسجيل من الموبايل**, check Sentinel’s recommendation and reason, and confirm it. Open the acknowledged task and request another summary to see the change. Try a locked channel in Free. Add a session-local agent in the roster.
-- On Aria’s inspector, choose **استيراد مهارة** and use `https://github.com/octocat/Spoon-Knife` to test the README path. Verify that it starts inactive, inspect the source, then activate it. Open the same workspace in another tab or reload and check the active count. Re-importing the same repository does not create another entry. The test suite includes a `skill.json` fixture with required inputs.
+- Open `/` to go straight to the workbench. Enlarge and restore the map with Escape, visit a department from the map and room selector, then switch to the floor plan. Try direct links `/#campus/zone-engineering` and `/#director`. Rooms can be visited even when a plan restricts assignments. Check the mobile menu, keyboard focus, and both themes at 320px and wider.
+- From Help, start the optional tour, move forward and back, and return to the full map. With reduced motion enabled, the visitor should arrive immediately without a camera animation.
+- Use <kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>K</kbd> to find a department, screen, or agent. Select an agent, then use its follow control or open its chat.
+- In the director’s office, request **ملخّص الساحة**. Send **اختبر التسجيل من الموبايل**, check Sentinel’s recommendation and reason, and confirm it. Open the acknowledged task and request another summary to see the change. Try a locked-room request in Free. Add a session-local agent or change an agent’s model in the team panel.
+- Select a connected agent in the team panel, open **مهارات GitHub**, and choose **استيراد من GitHub**. Use `https://github.com/octocat/Spoon-Knife` to verify inactive review and explicit activation. The test suite also covers `skill.json` with required inputs.
 - Create a project and move a task with the stage dropdown. In the Studio, activate the local Pro preview, try an example brief, and edit a draft. Save one draft (or the pack) to a project, reload, and confirm the edit and the project link persist without duplicates. Download the pack and reopen an earlier pack from its history.
 - Filter the model and integration catalogues. Connect, sync, and disconnect a demo integration; no external account should be opened.
 
-## Director
+## Director's office
 
-The assistant answers status requests from the current workspace task records and the labeled activity of the browser session. It does not extrapolate completed work from agent lifecycle signals. Reports are a snapshot, not a cross-workspace audit history. Recommendations use the available roster, matched skills, and open workload. The assistant asks for more detail if it cannot find a match, and cannot assign a task until the user confirms an eligible recipient. The local Pro control is a preview UI gate, not a production entitlement.
+The assistant answers status requests from the current workspace task records and the labeled activity of the browser session. It does not extrapolate completed work from agent presence or movement. Reports are a snapshot, not a cross-workspace audit history. Recommendations use the available roster, matched skills, and open workload. The assistant asks for more detail if it cannot find a match, and cannot assign a task until the user confirms an eligible recipient. The local Pro control is a preview UI gate, not a production entitlement.
 
 - With an expiring signed session and an enabled Studio provider/model (`STUDIO_PROVIDER` and `STUDIO_MODEL`), the production API can use that model to rank the short list. It validates the chosen agent and the cited profile skill or role. If unavailable or the model gives an invalid answer, the assistant uses local matching. Reports never go to a provider.
 - A confirmed task is saved to the user's room and assigned to the recommended agent. In production, a signed session and that agent’s configured provider allow the API to queue **one text response**. No integrations, file changes, or other external actions are invoked. The response is attached to the task for review, not counted as completed. A missing provider or failed run is displayed separately from a saved assignment. The preview only records assignments, without claiming that the assigned work ran.

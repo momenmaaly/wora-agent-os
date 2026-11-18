@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Check, Github, Link2, Plug2, RefreshCw, Search, Unplug } from 'lucide-react';
 import { INTEGRATIONS, type IntegrationDef } from '../integrations/catalog.js';
 import { useIntegrationsStore } from '../store/useIntegrationsStore.js';
-import { CHANNELS } from '../office/channels.js';
+import { OFFICE_ROOMS } from '../office/layout.js';
 import { ROOM_DISPLAY } from '../office/presentation.js';
 import { EmptyState, Notice, PageHeader } from './ui.js';
 
@@ -32,7 +32,7 @@ export function IntegrationsHub() {
       <section className="panel panel-pad integration-toolbar">
         <div className="catalog-toolbar">
           <label className="catalog-search"><Search size={18} /><input type="search" className="field" value={query} onChange={(event) => setQuery(event.target.value)} aria-label="البحث عن تكامل" placeholder="ابحث عن أداة مثل GitHub أو Figma..." /></label>
-          <select className="field" aria-label="تصفية حسب القسم" value={room} onChange={(event) => setRoom(event.target.value)}><option value="all">كل الأقسام</option>{CHANNELS.map((zone) => <option key={zone.id} value={zone.id}>{zone.nameAr}</option>)}</select>
+          <select className="field" aria-label="تصفية حسب القسم" value={room} onChange={(event) => setRoom(event.target.value)}><option value="all">كل الأقسام</option>{OFFICE_ROOMS.map((zone) => <option key={zone.id} value={zone.id}>{zone.nameAr}</option>)}</select>
           <button type="button" className="filter-chip" aria-pressed={connectedOnly} onClick={() => setConnectedOnly(!connectedOnly)}><Link2 size={15} />المربوطة فقط</button>
         </div>
         <div className="filter-row" aria-label="فئات التكاملات">{CATEGORIES.map((item) => <button type="button" className="filter-chip" key={item.id} aria-pressed={category === item.id} onClick={() => setCategory(item.id)}>{item.label}</button>)}</div>

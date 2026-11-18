@@ -1,16 +1,16 @@
 /**
- * useSocket.ts — Wora command workspace socket manager + Standalone Preview Fallback
+ * useSocket.ts — Wora HQ Singleton Socket Manager + Standalone Preview Fallback
  * ──────────────────────────────────────────────────────────────────────────────
  * Maintains a single module-scoped Socket.IO connection (preventing duplicate
  * token streams and StrictMode socket leaks). When deployed to a static preview
  * host (such as Vercel) before an API server URL is configured, it transitions
- * cleanly into interactive company simulation mode so model
+ * cleanly into interactive company simulation mode so agent movement, model
  * hot-swapping, workspace tasks, and live chat all work out of the box.
  */
 
 import { useEffect } from 'react';
 import { io, type Socket } from 'socket.io-client';
-import { useWoraStore } from '../store/useWoraStore.js';
+import { useWoraStore, type PresenceEntry } from '../store/useWoraStore.js';
 import { useBillingStore } from '../store/useBillingStore.js';
 import { isRoomLockedForPlan } from '../billing/plans.js';
 import {
@@ -33,7 +33,7 @@ import type {
   WorkspaceUpdatePayload,
   WorkspaceZone,
 } from '../types.js';
-import { CHANNEL_BY_ID } from '../office/channels.js';
+import { ROOM_BY_ID } from '../office/layout.js';
 import { canTakeTask, isFinished, isLocalTask, LOCAL_TASK_PREFIX, TASK_BRIEF_LIMIT, type TaskScope } from '../office/work.js';
 import { readPreviewSession, readSessionToken, rememberPreviewSession } from '../lib/session.js';
 
@@ -55,12 +55,26 @@ interface RoomStateEvent {
   room?:           { id?: string; createdBy?: string };
   previewSession?: unknown;
   participants?:   AgentParticipant[];
+  presence?:       PresenceEntry[];
   zones?:          WorkspaceZone[];
   recentMessages?: Message[];
   workspaces?:     SharedWorkspaceState[];
 }
 
-interface ParticipantJoinedEvent { participant?: AgentParticipant }
+interface ParticipantJoinedEvent {
+  participant?: AgentParticipant;
+  presence?:    PresenceEntry;
+}
+
+interface ParticipantLeftEvent {
+  participantId?: string;
+}
+
+interface ParticipantMovedEvent {
+  participantId?: string;
+  roomId?:        string;
+  position?:      { x: number; y: number; z: number };
+}
 
 interface MessageReceivedEvent {
   message?: Message;
@@ -80,17 +94,23 @@ interface ServerErrorEvent {
 }
 
 /* ─── SINGLETON STATE ───────────────────────────────────── */
+const MOVE_THROTTLE_MS  = 120;
 const TEARDOWN_GRACE_MS = 150;
 
 let singletonSocket: Socket | null = null;
 let activeLifecycleOwners = 0;
 let pendingTeardownTimer: ReturnType<typeof setTimeout> | null = null;
+let lastMoveSentAt = 0;
 let connectFailures = 0;
 
 function attachListeners(socket: Socket): void {
   socket.on('connect', () => {
     connectFailures = 0;
-    socket.emit('room:join', {});
+    const state = useWoraStore.getState();
+    socket.emit('room:join', {
+      roomId:   state.roomId,
+      position: networkPosition(state.localPosition),
+    });
   });
 
   socket.on('disconnect', () => {
@@ -119,6 +139,7 @@ function attachListeners(socket: Socket): void {
       userId:         data?.room?.createdBy,
       mode:           data?.mode === 'preview' ? 'preview' : 'server',
       participants:   data?.participants ?? [],
+      presence:       data?.presence ?? [],
       zones:          data?.zones ?? [],
       recentMessages: data?.recentMessages ?? [],
       workspaces:     data?.workspaces ?? [],
@@ -128,6 +149,25 @@ function attachListeners(socket: Socket): void {
   socket.on('participant:joined', (data: ParticipantJoinedEvent) => {
     const state = useWoraStore.getState();
     if (data?.participant?.isAgent) state.upsertAgent(data.participant);
+    if (data?.presence) state.upsertPresence(data.presence);
+  });
+
+  socket.on('participant:left', (data: ParticipantLeftEvent) => {
+    if (data?.participantId) {
+      useWoraStore.getState().removePresence(data.participantId);
+    }
+  });
+
+  socket.on('participant:moved', (data: ParticipantMovedEvent) => {
+    if (data?.participantId && data?.position) {
+      const state = useWoraStore.getState();
+      state.upsertPresence({
+        participantId: data.participantId,
+        roomId:        data.roomId ?? state.roomId,
+        position:      data.position,
+        joinedAt:      state.presence[data.participantId]?.joinedAt ?? new Date().toISOString(),
+      });
+    }
   });
 
   socket.on('message:received', (data: MessageReceivedEvent) => {
@@ -161,8 +201,10 @@ function attachListeners(socket: Socket): void {
     }
   });
 
-  socket.on('agent:skills-updated', (data: AgentSkillUpdate) => {
-    if (data?.agentId && Number.isSafeInteger(data.revision) && Array.isArray(data.activeNames)) useWoraStore.getState().updateAgentSkills(data);
+  socket.on('agent:skills-updated', (event: AgentSkillUpdate) => {
+    if (event?.agentId && Number.isSafeInteger(event.revision) && Array.isArray(event.activeNames)) {
+      useWoraStore.getState().updateAgentSkills(event);
+    }
   });
 
   socket.on('workspace:update', (data: Partial<WorkspaceUpdatePayload>) => {
@@ -259,20 +301,26 @@ async function runLocalSimulatedStream(agent: AgentParticipant, userText: string
   const provider = agent.brainConfig?.provider ?? BrainProvider.Google;
   const model    = agent.brainConfig?.model ?? agent.modelId;
   const providerLabel = BRAIN_PROVIDER_LABELS[provider] ?? provider;
+  const loc = store.agentLocations[agent.id];
+  const homeRoom = agent.zoneId ? ROOM_BY_ID[agent.zoneId] : undefined;
   const roomId = store.roomId;
-  const channel = agent.zoneId ? CHANNEL_BY_ID[agent.zoneId] : undefined;
+
+  // Send agent back toward their workstation if they are out roaming
+  if (homeRoom && loc && loc.areaId !== homeRoom.id) {
+    store.dispatchAgentToRoom(agent.id, homeRoom.id, 'عائد للمكتب للرد على رسالتك');
+  }
 
   store.updateAgentLifecycle(agent.id, AgentLifecycleState.Thinking, AvatarAnimState.Thinking);
   await new Promise((r) => setTimeout(r, 380));
-
   if (useWoraStore.getState().roomId !== roomId) return;
+
   store.updateAgentLifecycle(agent.id, AgentLifecycleState.Responding, AvatarAnimState.Talking);
 
   const cleanPrompt = userText.replace(/@[\p{L}\p{N}_-]+/gu, '').trim() || userText.trim();
   const reply =
-    `أهلاً! معك ${agent.displayName} (${agent.profile.customRole}) ضمن ${channel?.nameAr ?? 'الفريق'}.\n` +
-    `نموذج الوكيل في المعاينة ${model} (${providerLabel})، واستلمت طلبك: «${cleanPrompt.slice(0, 140)}».\n` +
-    `هذا ردّ محاكاة محلي. اربط خادمًا مهيّأً لتفعيل الاستدعاء الفعلي لنموذج ${model}.`;
+    `أهلاً! معك ${agent.displayName} (${agent.profile.customRole}) من ${homeRoom?.nameAr ?? 'مقر الشركة'}.\n` +
+    `أعمل حالياً عبر موديل ${model} (${providerLabel})، واستلمت طلبك: «${cleanPrompt.slice(0, 140)}».\n` +
+    `جاري التنسيق مع الفريق داخل المقر — ويمكنك ربط الخادم الخلفي في أي وقت لتفعيل الاستدعاء الفعلي لنموذج ${model}.`;
 
   const messageId = `sim-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
   const tokens = reply.match(/\S+\s*|\s+/g) ?? [reply];
@@ -346,6 +394,21 @@ function sendMessage(content: string, options?: { replyToId?: string; targetAgen
   return true;
 }
 
+function networkPosition(position: { x: number; y: number; z: number }) {
+  const clamp = (value: number) => Math.max(-500, Math.min(500, Number(value.toFixed(2))));
+  return { x: clamp((position.x - 800) / 20), y: 0, z: clamp((position.z - 480) / 20) };
+}
+
+function movePlayer(position: { x: number; y: number; z: number }): boolean {
+  const state = useWoraStore.getState();
+  state.setLocalPosition(position);
+  const now = Date.now();
+  if (now - lastMoveSentAt < MOVE_THROTTLE_MS) return false;
+  lastMoveSentAt = now;
+  if (singletonSocket?.connected) return emitSafe('room:move', { roomId: state.roomId, position: networkPosition(position) });
+  return true;
+}
+
 function swapBrain(agentId: string, brain: PublicBrainConfig, reason?: string): boolean {
   if (!agentId || !brain.provider || !brain.model) return false;
 
@@ -373,7 +436,7 @@ function swapBrain(agentId: string, brain: PublicBrainConfig, reason?: string): 
 
 function recordWorkspaceEntry(entry: SharedWorkspaceEntry) {
   const state = useWoraStore.getState();
-  if (entry.roomId !== state.roomId || !Object.hasOwn(CHANNEL_BY_ID, entry.zoneId)) return;
+  if (entry.roomId !== state.roomId || !Object.hasOwn(ROOM_BY_ID, entry.zoneId)) return;
   const entries = state.workspaces[entry.zoneId]?.entries ?? [];
   const previous = entries.find((item) => item.id === entry.id);
   if (previous && previous.updatedAt > entry.updatedAt) return;
@@ -399,7 +462,7 @@ async function sendWorkspaceSignal(zoneId: string, agentId: string, title: strin
   const cleanTitle = title.trim();
   const state = useWoraStore.getState();
   const agent = Object.hasOwn(state.agents, agentId) ? state.agents[agentId] : undefined;
-  if (!cleanTitle || cleanTitle.length > 200 || (data.brief?.length ?? 0) > TASK_BRIEF_LIMIT || !Object.hasOwn(CHANNEL_BY_ID, zoneId) || !agent || !canTakeTask(agent)
+  if (!cleanTitle || cleanTitle.length > 200 || (data.brief?.length ?? 0) > TASK_BRIEF_LIMIT || !Object.hasOwn(ROOM_BY_ID, zoneId) || !agent || !canTakeTask(agent)
     || (data.source === 'director' && (agent.zoneId !== zoneId || (data.brief?.trim().length ?? 0) < 5)) || isRoomLockedForPlan(zoneId, useBillingStore.getState().plan)) {
     return { ok: false, reason: 'invalid' };
   }
@@ -408,6 +471,7 @@ async function sendWorkspaceSignal(zoneId: string, agentId: string, title: strin
     const current = useWoraStore.getState();
     if (entry.roomId !== current.roomId) return { ok: false, reason: 'unconfirmed' };
     if (!current.workspaces[zoneId]?.entries.some((item) => item.id === entry.id)) recordWorkspaceEntry(entry);
+    if (current.agentLocations[agentId]?.areaId !== zoneId) current.dispatchAgentToRoom(agentId, zoneId);
     return { ok: true, scope, zoneId, entryId: entry.id };
   }
 
@@ -443,6 +507,7 @@ async function recommendDirector(brief: string, candidates: { agentId: string; w
 
 export interface SocketActions {
   sendMessage:         typeof sendMessage;
+  movePlayer:          typeof movePlayer;
   swapBrain:           typeof swapBrain;
   sendWorkspaceSignal: typeof sendWorkspaceSignal;
   recommendDirector:   typeof recommendDirector;
@@ -451,6 +516,7 @@ export interface SocketActions {
 
 const SOCKET_ACTIONS: SocketActions = Object.freeze({
   sendMessage,
+  movePlayer,
   swapBrain,
   sendWorkspaceSignal,
   recommendDirector,
