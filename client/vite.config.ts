@@ -26,6 +26,7 @@ export default defineConfig({
     proxy: {
       '/api':       { target: 'http://127.0.0.1:4000', changeOrigin: true },
       '/health':    { target: 'http://127.0.0.1:4000', changeOrigin: true },
+      '/ready':     { target: 'http://127.0.0.1:4000', changeOrigin: true },
       '/socket.io': { target: 'http://127.0.0.1:4000', ws: true },
     },
   },
@@ -35,6 +36,7 @@ export default defineConfig({
     proxy: {
       '/api':       { target: 'http://127.0.0.1:4000', changeOrigin: true },
       '/health':    { target: 'http://127.0.0.1:4000', changeOrigin: true },
+      '/ready':     { target: 'http://127.0.0.1:4000', changeOrigin: true },
       '/socket.io': { target: 'http://127.0.0.1:4000', ws: true },
     },
   },

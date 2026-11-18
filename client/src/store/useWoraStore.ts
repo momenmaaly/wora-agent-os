@@ -135,6 +135,7 @@ export interface WoraState {
   setRoomId:              (id: string) => void;
   setConnected:           (v: boolean) => void;
   setDemoMode:            (v: boolean) => void;
+  expireWorkspaceSession: () => void;
   setConnectionError:     (e: string | null) => void;
   setRoomState:           (state: {
     roomId?:        string;
@@ -309,6 +310,18 @@ export const useWoraStore = create<WoraState>()(
         })),
         setDemoMode:        (v)  => set({ demoMode: v }),
         setConnectionError: (e)  => set({ connectionError: e }),
+
+        expireWorkspaceSession: () => set((state) => {
+          const agents = buildInitialAgents();
+          return {
+            roomId: `wora-${state.localUserId}`, workspaceUserId: state.localUserId,
+            connected: false, connectionError: 'SESSION_EXPIRED',
+            agents, agentLocations: buildInitialLocations(agents), zones: DEFAULT_COMPANY_ZONES,
+            messages: [], presence: {}, workspaces: {}, activityLog: [], activeStreams: {},
+            selectedAgentId: null, followAgentId: null, lastSwappedAgent: null,
+            ui: { ...state.ui, skillsAgentId: null, modelSwapAgentId: null, showWorkspaceHUD: false, workspaceZoneId: null, workspaceEntryId: null },
+          };
+        }),
 
         setRoomState: ({ roomId: nextRoomId, userId, mode, participants, presence, zones, recentMessages, workspaces }) => {
           const state = get();

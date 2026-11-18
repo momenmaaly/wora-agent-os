@@ -1,6 +1,5 @@
 # ══════════════════════════════════════════════════════════════════
 #  Wora Agent OS v4.1 — Production Docker Compose (2026)
-#  Target: 10,000+ concurrent isolated workspaces
 #  Usage:
 #    1. cp .env.example .env   (populate secrets & domain)
 #    2. docker compose -f docker-compose.prod.yml up -d --build
@@ -58,8 +57,8 @@ services:
       MONGO_URI: ${MONGO_URI:?MONGO_URI must be set in .env}
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:?ALLOWED_ORIGINS must be set in .env}
-      AUTH_SECRET: ${AUTH_SECRET:-}
-      ADMIN_API_KEY: ${ADMIN_API_KEY:?ADMIN_API_KEY must be set in .env}
+      AUTH_SECRET: ${AUTH_SECRET:?AUTH_SECRET must be set in .env}
+      ADMIN_API_KEY: ${ADMIN_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}

@@ -5,12 +5,17 @@ import { canTakeTask, isBusyAgent, taskCountByAgent } from '../office/work.js';
 import { useWoraStore } from '../store/useWoraStore.js';
 import type { AgentParticipant, SharedWorkspaceEntry } from '../types.js';
 import { IconButton } from './ui.js';
+import { isSessionError } from '../lib/session.js';
+import { requiresWorkspaceConnection } from '../hooks/useSocket.js';
 
 export function ConnectionBadge() {
   const connected = useWoraStore((s) => s.connected);
   const demo = useWoraStore((s) => s.demoMode);
   const mode = useWoraStore((s) => s.serverMode);
-  const label = connected ? mode === 'preview' ? 'خادم المعاينة' : 'متصل بالمقر' : mode ? 'غير متصل' : demo ? 'معاينة محلية' : 'جارٍ الاتصال';
+  const error = useWoraStore((s) => s.connectionError);
+  const label = connected ? mode === 'preview' ? 'خادم المعاينة' : 'متصل بالمقر'
+    : error === 'SESSION_EXPIRED' ? 'انتهت الجلسة' : isSessionError(error) ? 'الجلسة مطلوبة'
+      : mode || (demo && requiresWorkspaceConnection()) ? 'غير متصل' : demo ? 'معاينة محلية' : 'جارٍ الاتصال';
   return <span className={`connection-badge${connected ? ' is-ready' : ''}`} role="status"><span className="status-dot" />{label}</span>;
 }
 

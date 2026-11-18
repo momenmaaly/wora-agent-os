@@ -1,7 +1,7 @@
-import { deepEqual, equal } from 'node:assert/strict';
+import { deepEqual, equal, ok, throws } from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 import { test } from 'node:test';
-import { verifySessionToken } from './session.js';
+import { issueSessionToken, verifySessionToken } from './session.js';
 
 const secret = 'test-only-signing-fixture';
 const encode = (value: object) => Buffer.from(JSON.stringify(value)).toString('base64url');
@@ -26,6 +26,16 @@ test('unverifiable, expired, malformed, or undated sessions are refused for live
   equal(verifySessionToken(sign({ ...payload, sub: ['studio-user'] }), secret, true), null);
   equal(verifySessionToken(sign({ ...payload, nbf: expires }), secret, true), null);
   equal(verifySessionToken(sign({ sub: 'studio-user' }), secret, true), null);
-  // Existing workspace sockets may still accept legacy signed sessions without expiry.
+  // Only explicitly non-production verification can accept legacy sessions without expiry.
   equal(verifySessionToken(sign({ sub: 'studio-user' }), secret)?.userId, 'studio-user');
+});
+
+test('the operator issuer signs short-lived sessions only for valid workspace IDs', () => {
+  const now = Date.now();
+  const token = issueSessionToken('release-owner', secret, 120);
+  const verified = verifySessionToken(token, secret, true);
+  equal(verified?.userId, 'release-owner');
+  ok(verified?.expiresAt && verified.expiresAt > now + 7_198_000 && verified.expiresAt <= Date.now() + 7_200_000);
+  for (const minutes of [0, 481, 1.5, Infinity]) throws(() => issueSessionToken('release-owner', secret, minutes));
+  throws(() => issueSessionToken('invalid id', secret, 30));
 });

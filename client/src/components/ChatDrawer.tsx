@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { AtSign, Bot, MessageCircle, Send } from 'lucide-react';
 import { useWoraStore } from '../store/useWoraStore.js';
-import { useSocket } from '../hooks/useSocket.js';
+import { requiresWorkspaceConnection, useSocket } from '../hooks/useSocket.js';
 import { orderedAgents } from '../office/presentation.js';
 import { MessageType, type Message } from '../types.js';
 import { AgentAvatar } from './OfficePeople.js';
@@ -44,11 +44,15 @@ function ChatPanel({ onClose }: { onClose: () => void }) {
   const messages = useWoraStore((s) => s.messages);
   const streams = useWoraStore((s) => s.activeStreams);
   const connected = useWoraStore((s) => s.connected);
+  const mode = useWoraStore((s) => s.serverMode);
+  const connectionRequired = useWoraStore(requiresWorkspaceConnection);
   const { sendMessage } = useSocket();
   const [target, setTarget] = useState(() => useWoraStore.getState().selectedAgentId ?? '');
   const [draft, setDraft] = useState('');
   const recipients = useMemo(() => orderedAgents(agentMap), [agentMap]);
   const targetId = agentMap[target] ? target : '';
+  const customTarget = targetId.startsWith('agent-custom-') && !/@[\p{L}\p{N}_-]{2,}/u.test(draft);
+  const unavailable = !connected && connectionRequired && !customTarget;
   const visibleMessages = useMemo(() => {
     const inFlight: Array<Message & { streaming: true }> = Object.values(streams).map((stream) => ({
       id: stream.messageId, senderId: stream.agentId, roomId: '', content: stream.content,
@@ -63,10 +67,12 @@ function ChatPanel({ onClose }: { onClose: () => void }) {
   }
 
   return <Dialog icon={MessageCircle} variant="drawer" className="chat-drawer" title="محادثة الفريق" onClose={onClose}
-    description={connected && !targetId.startsWith('agent-custom-') ? 'محادثة داخل مساحة العمل الحالية.' : 'تجربة محلية: الردود في هذا الوضع محاكاة.'}
+    description={unavailable ? 'المحادثة غير متصلة. راجع جلسة مساحة العمل في الإعدادات.'
+      : connected && !customTarget ? mode === 'preview' ? 'خادم المعاينة: الردود محاكاة ولا تُحفظ بعد إعادة تشغيل الخادم.' : 'محادثة خاصة داخل مساحة العمل الحالية.'
+        : 'تجربة محلية: الردود في هذا الوضع محاكاة.'}
     footer={<form className="chat-form" onSubmit={send}>
       <input className="field" aria-label="رسالتك" maxLength={4_000} value={draft} dir="auto" onChange={(event) => setDraft(event.target.value)} placeholder="اكتب رسالة…" />
-      <button type="submit" aria-label="إرسال الرسالة" className="button primary" disabled={!draft.trim()}><Send size={17} aria-hidden="true" /></button>
+      <button type="submit" aria-label="إرسال الرسالة" className="button primary" disabled={!draft.trim() || unavailable}><Send size={17} aria-hidden="true" /></button>
     </form>}>
     <label className="chat-target"><AtSign size={16} /><span>إلى</span><select className="field" aria-label="المستلم" value={targetId} onChange={(event) => setTarget(event.target.value)}>
       <option value="">الفريق · محادثة عامة</option>

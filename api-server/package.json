@@ -6,11 +6,12 @@
     "node": ">=22.0.0"
   },
   "scripts": {
-    "build": "esbuild src/index.ts --bundle --platform=node --target=node22 --format=esm --packages=external --outfile=dist/index.mjs && esbuild src/scripts/seed.ts --bundle --platform=node --target=node22 --format=esm --packages=external --outfile=dist/seed.mjs",
+    "build": "esbuild src/index.ts --bundle --platform=node --target=node22 --format=esm --packages=external --outfile=dist/index.mjs && esbuild src/scripts/seed.ts --bundle --platform=node --target=node22 --format=esm --packages=external --outfile=dist/seed.mjs && esbuild src/scripts/issue-session.ts --bundle --platform=node --target=node22 --format=esm --packages=external --outfile=dist/issue-session.mjs",
     "typecheck": "tsc --noEmit",
     "start": "node dist/index.mjs",
     "seed:prod": "node dist/seed.mjs",
-    "dev": "tsx watch src/index.ts",
+    "session:issue": "node dist/issue-session.mjs",
+    "dev": "NODE_ENV=development tsx watch src/index.ts",
     "dev:preview": "tsx src/scripts/preview-server.ts",
     "seed": "tsx src/scripts/seed.ts",
     "test": "tsx --test src/lib/*.test.ts src/studio/*.test.ts src/director/*.test.ts src/skills/*.test.ts"

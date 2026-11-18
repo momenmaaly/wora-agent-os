@@ -1,5 +1,16 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
+const sessionUserId = /^[a-zA-Z0-9_-]{3,64}$/u;
+
+export function issueSessionToken(userId: string, secret: string, minutes: number): string {
+  if (!sessionUserId.test(userId) || !secret || !Number.isInteger(minutes) || minutes < 1 || minutes > 480) {
+    throw new Error('Invalid workspace session arguments');
+  }
+  const exp = Math.floor(Date.now() / 1_000) + minutes * 60;
+  const payload = Buffer.from(JSON.stringify({ sub: userId, exp })).toString('base64url');
+  return `${payload}.${createHmac('sha256', secret).update(payload).digest('base64url')}`;
+}
+
 export function safeEqual(a: string, b: string): boolean {
   const left = Buffer.from(a, 'utf8');
   const right = Buffer.from(b, 'utf8');
@@ -22,11 +33,11 @@ export function verifySessionToken(token: string, secret: string, requireExpiry 
     if (!payload || typeof payload !== 'object') return null;
     const now = Date.now() / 1_000;
     if (requireExpiry || payload.exp !== undefined) {
-      if (typeof payload.exp !== 'number' || !Number.isSafeInteger(payload.exp) || payload.exp <= now) return null;
+      if (typeof payload.exp !== 'number' || !Number.isSafeInteger(payload.exp * 1_000) || !Number.isInteger(payload.exp) || payload.exp <= now) return null;
     }
     if (payload.nbf !== undefined && (typeof payload.nbf !== 'number' || !Number.isSafeInteger(payload.nbf) || payload.nbf > now)) return null;
     const userId = payload.sub ?? payload.userId;
-    if (typeof userId !== 'string' || !/^[a-zA-Z0-9_-]{3,64}$/.test(userId)) return null;
+    if (typeof userId !== 'string' || !sessionUserId.test(userId)) return null;
     return { userId, displayName: typeof payload.name === 'string' ? payload.name : undefined,
       ...(typeof payload.exp === 'number' ? { expiresAt: payload.exp * 1_000 } : {}) };
   } catch {

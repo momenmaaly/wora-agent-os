@@ -10,8 +10,8 @@ build/
 
 # Environment & Secrets
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
 nginx/ssl/*.pem
 nginx/ssl/*.key
 

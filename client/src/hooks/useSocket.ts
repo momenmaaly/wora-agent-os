@@ -35,7 +35,7 @@ import type {
 } from '../types.js';
 import { ROOM_BY_ID } from '../office/layout.js';
 import { canTakeTask, isFinished, isLocalTask, LOCAL_TASK_PREFIX, TASK_BRIEF_LIMIT, type TaskScope } from '../office/work.js';
-import { readPreviewSession, readSessionToken, rememberPreviewSession } from '../lib/session.js';
+import { clearWorkspaceSession, isSessionError, readPreviewSession, readSessionToken, rememberPreviewSession } from '../lib/session.js';
 
 /* ─── CONFIG ────────────────────────────────────────────── */
 function getExplicitServerUrl(): string | undefined {
@@ -47,6 +47,12 @@ function getExplicitServerUrl(): string | undefined {
 
 function resolveSocketUrl(): string {
   return getExplicitServerUrl() ?? window.location.origin;
+}
+
+/** Do not silently simulate a private workspace if the real connection fails. */
+export function requiresWorkspaceConnection(state = useWoraStore.getState()) {
+  if (state.serverMode === 'preview') return false;
+  return Boolean(state.serverMode === 'server' || isSessionError(state.connectionError) || getExplicitServerUrl() || readSessionToken());
 }
 
 /* ─── WIRE PAYLOAD SHAPES ───────────────────────────────── */
@@ -119,9 +125,21 @@ function attachListeners(socket: Socket): void {
     state.setDemoMode(true);
   });
 
+  socket.on('session:expired', () => {
+    clearWorkspaceSession();
+    useWoraStore.getState().expireWorkspaceSession();
+  });
+
   socket.on('connect_error', (err: Error) => {
     connectFailures += 1;
     const state = useWoraStore.getState();
+    if (err.message === 'AUTH_INVALID' && state.serverMode === 'server') {
+      // The client may have been offline when the server emitted session:expired.
+      clearWorkspaceSession();
+      state.expireWorkspaceSession();
+      socket.disconnect();
+      return;
+    }
     state.setConnected(false);
     state.setDemoMode(true);
     state.setConnectionError(err.message);
@@ -212,9 +230,13 @@ function attachListeners(socket: Socket): void {
   });
 
   socket.on('error', (data: ServerErrorEvent) => {
+    const state = useWoraStore.getState();
+    if (data?.code === 'ROSTER_UNAVAILABLE' || data?.code === 'JOIN_ERROR') {
+      state.setConnected(false);
+      state.setConnectionError(data.code);
+    }
     const text = data?.message?.trim();
     if (!text) return;
-    const state = useWoraStore.getState();
     state.addMessage({
       id:        `sys-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       roomId:    state.roomId,
@@ -319,8 +341,8 @@ async function runLocalSimulatedStream(agent: AgentParticipant, userText: string
   const cleanPrompt = userText.replace(/@[\p{L}\p{N}_-]+/gu, '').trim() || userText.trim();
   const reply =
     `أهلاً! معك ${agent.displayName} (${agent.profile.customRole}) من ${homeRoom?.nameAr ?? 'مقر الشركة'}.\n` +
-    `أعمل حالياً عبر موديل ${model} (${providerLabel})، واستلمت طلبك: «${cleanPrompt.slice(0, 140)}».\n` +
-    `جاري التنسيق مع الفريق داخل المقر — ويمكنك ربط الخادم الخلفي في أي وقت لتفعيل الاستدعاء الفعلي لنموذج ${model}.`;
+    `استلمت طلبك: «${cleanPrompt.slice(0, 140)}».\n` +
+    `هذا ردّ محاكاة. لم يُستدعَ نموذج ${model} (${providerLabel}).`;
 
   const messageId = `sim-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
   const tokens = reply.match(/\S+\s*|\s+/g) ?? [reply];
@@ -374,6 +396,8 @@ function sendMessage(content: string, options?: { replyToId?: string; targetAgen
       ...(!hasMention && targetId ? { targetAgentId: targetId } : {}),
     });
   }
+
+  if (!isCustomOnlyTarget && requiresWorkspaceConnection(state)) return false;
 
   // Standalone interactive simulation fallback
   const userMsg: Message = {
@@ -474,6 +498,8 @@ async function sendWorkspaceSignal(zoneId: string, agentId: string, title: strin
     if (current.agentLocations[agentId]?.areaId !== zoneId) current.dispatchAgentToRoom(agentId, zoneId);
     return { ok: true, scope, zoneId, entryId: entry.id };
   }
+
+  if (!state.connected && !agentId.startsWith('agent-custom-') && requiresWorkspaceConnection(state)) return { ok: false, reason: 'rejected' };
 
   if (state.serverMode && !agentId.startsWith('agent-custom-') && state.zones.some((zone) => zone.id === zoneId)) {
     if (!state.connected || !singletonSocket?.connected) return { ok: false, reason: 'rejected' };

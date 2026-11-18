@@ -8,9 +8,7 @@
  *  - Pre-loads all 4 core agents (@Aria, @Atlas, @Sentinel, @Nova) & 4 zones
  *  - Enforces strict per-user `wora-{userId}` room isolation & Zod validation
  *  - Supports live per-room Hot-Swap Brain & Shared Workspace HUD entries
- *  - Streams live LLM tokens via `BrainAdapterFactory` when provider API keys
- *    are configured in `process.env`, or falls back to realistic token-by-token
- *    agent simulation so every interactive workflow can be tested immediately.
+ *  - Streams simulated replies only. Never accesses a paid model provider.
  *
  * NOTE: For production deployments use `npm start` (`wora-server.ts`) backed by
  *       Redis (`noeviction`) and MongoDB.
@@ -31,12 +29,7 @@ import { verifySessionToken } from '../lib/session.js';
 import { createGitHubImporter } from '../skills/github.js';
 import { createSkillsRouter } from '../skills/router.js';
 import { createMemorySkillStore } from '../skills/store.js';
-import {
-  BrainAdapterFactory,
-  isProviderConfigured,
-  isSupportedModel,
-  type ConversationTurn,
-} from '../ai/BrainAdapter.js';
+import { isSupportedModel } from '../ai/BrainAdapter.js';
 import {
   AgentLifecycleState,
   AgentOrigin,
@@ -207,7 +200,7 @@ function buildSimulatedReply(
       `النموذج النشط في غرفتك المعزولة (${roomId}): ${label} / ${brain.model}\n\n` +
       `استلمت رسالتك: "${snippet}"\n` +
       `• التخصص: ${agent.profile.specialty}\n` +
-      `• وضع المعاينة الحية نشط — أضف مفتاح الـ API في ملف .env لتفعيل الاستدعاء الفعلي لنموذج ${brain.model} مباشرة.`
+      '• هذا ردّ محاكاة. لم يُستدعَ أي نموذج فعلي.'
     );
   }
 
@@ -216,7 +209,7 @@ function buildSimulatedReply(
     `Active brain in isolated room (${roomId}): ${label} / ${brain.model}\n\n` +
     `Received: "${snippet}"\n` +
     `• Focus: ${agent.profile.specialty}\n` +
-    `• Sandbox preview simulation active — set the provider API key in .env to stream live completions from ${brain.model}.`
+    '• Simulated reply. No model provider was called.'
   );
 }
 
@@ -228,7 +221,7 @@ async function sleep(ms: number): Promise<void> {
 const app = express();
 app.disable('x-powered-by');
 app.use(cors({ origin: true, credentials: true }));
-// Keep this public sandbox on local templates even if chat providers are configured.
+// Never generate with a provider in sandbox mode.
 app.use('/api/studio', createStudioRouter());
 
 const httpServer = createServer(app);
@@ -315,7 +308,7 @@ app.get('/api/brains', (_req: Request, res: Response) => {
       provider,
       label:      BRAIN_PROVIDER_LABELS[provider],
       models:     BRAIN_MODELS[provider],
-      configured: isProviderConfigured({ provider }),
+      configured: false,
     })),
   );
 });
@@ -481,11 +474,6 @@ io.on('connection', (socket) => {
       if (fallback) targets.set(fallback.agentId, fallback);
     }
 
-    const priorHistory: ConversationTurn[] = bucket.messages
-      .slice(-16)
-      .filter((m) => m.type === MessageType.Text || m.type === MessageType.Mention)
-      .map((m) => ({ senderId: m.senderId, content: m.content }));
-
     const userMsg: Message = {
       id:        randomUUID(),
       roomId:    privateRoomId,
@@ -510,54 +498,16 @@ io.on('connection', (socket) => {
 
       setLifecycle(bucket, agent.agentId, AgentLifecycleState.Thinking);
 
-      let fullReply = '';
       try {
-        if (isProviderConfigured({ provider: activeBrain.provider })) {
-          let emittedFirst = false;
-          const result = await BrainAdapterFactory.complete(agent.agentId, {
-            systemPrompt:  `You are ${agent.displayName}, ${agent.profile.customRole} in Wora Agent OS. Specialty: ${agent.profile.specialty}. Tone: ${agent.profile.tone}.`,
-            history:       priorHistory,
-            userMessage:   content,
-            taskContext:   { agentId: agent.agentId, roomId: privateRoomId },
-            brainOverride: activeBrain,
-            onChunk: (chunk: string, isDone: boolean) => {
-              if (!emittedFirst && chunk) {
-                emittedFirst = true;
-                setLifecycle(bucket, agent.agentId, AgentLifecycleState.Responding);
-              }
-              io.to(privateRoomId).emit('message:stream', {
-                messageId,
-                agentId: agent.agentId,
-                taskId:  messageId,
-                chunk,
-                isDone,
-              });
-            },
-          });
-          fullReply = result.text;
-        } else {
-          await sleep(320);
-          setLifecycle(bucket, agent.agentId, AgentLifecycleState.Responding);
-          fullReply = buildSimulatedReply(agent, activeBrain, content, privateRoomId);
-          const tokens = fullReply.match(/\S+\s*|\s+/g) ?? [fullReply];
-          for (const token of tokens) {
-            io.to(privateRoomId).emit('message:stream', {
-              messageId,
-              agentId: agent.agentId,
-              taskId:  messageId,
-              chunk:   token,
-              isDone:  false,
-            });
-            await sleep(22);
-          }
-          io.to(privateRoomId).emit('message:stream', {
-            messageId,
-            agentId: agent.agentId,
-            taskId:  messageId,
-            chunk:   '',
-            isDone:  true,
-          });
+        await sleep(320);
+        setLifecycle(bucket, agent.agentId, AgentLifecycleState.Responding);
+        const fullReply = buildSimulatedReply(agent, activeBrain, content, privateRoomId);
+        const tokens = fullReply.match(/\S+\s*|\s+/g) ?? [fullReply];
+        for (const chunk of tokens) {
+          io.to(privateRoomId).emit('message:stream', { messageId, agentId: agent.agentId, taskId: messageId, chunk, isDone: false });
+          await sleep(22);
         }
+        io.to(privateRoomId).emit('message:stream', { messageId, agentId: agent.agentId, taskId: messageId, chunk: '', isDone: true });
 
         if (fullReply.trim()) {
           bucket.messages = [

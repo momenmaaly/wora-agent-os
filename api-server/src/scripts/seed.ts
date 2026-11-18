@@ -13,22 +13,9 @@
 import { pathToFileURL } from 'node:url';
 import mongoose from 'mongoose';
 import { AgentModel } from '../models/Agent.js';
+import { sanitizeEnv } from '../lib/config.js';
 import { BrainProvider } from '../../../shared/types/index.js';
 import type { BrainConfig, SupportedLocale } from '../../../shared/types/index.js';
-
-function sanitizeEnv(raw?: string): string | undefined {
-  if (!raw) return undefined;
-  let value = raw.trim();
-  const pastedAssignment = value.match(/^[A-Z][A-Z0-9_]{1,39}=(.*)$/s);
-  if (pastedAssignment?.[1] !== undefined) value = pastedAssignment[1].trim();
-  if (
-    (value.startsWith('"') && value.endsWith('"')) ||
-    (value.startsWith("'") && value.endsWith("'"))
-  ) {
-    value = value.slice(1, -1).trim();
-  }
-  return value || undefined;
-}
 
 interface SeedAgentInput {
   agentId:     string;

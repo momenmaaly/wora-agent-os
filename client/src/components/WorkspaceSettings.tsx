@@ -1,5 +1,6 @@
 import { ArrowUpLeft } from 'lucide-react';
 import { SETTINGS_ITEMS, type SettingsPage } from '../pages.js';
+import { WorkspaceSession } from './WorkspaceSession.js';
 
 const descriptions = {
   models: 'اطّلع على النماذج المتاحة للفريق.',
@@ -15,5 +16,6 @@ export function WorkspaceSettings({ onNavigate }: { onNavigate: (page: SettingsP
         <item.icon size={20} aria-hidden="true" /><span><strong>{item.label}</strong><small>{descriptions[item.id]}</small></span><ArrowUpLeft size={17} aria-hidden="true" />
       </button>)}
     </div>
+    <WorkspaceSession />
   </section>;
 }
