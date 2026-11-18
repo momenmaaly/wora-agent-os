@@ -1,6 +1,6 @@
 # Wora Agent OS
 
-Wora is an Arabic-first workspace for operating an AI team. It opens directly in the working area: a ten-department model or floor plan, the live roster, and the department task board. **Enlarge workspace** hides the surrounding navigation and gives the map the available screen; **Escape** or the same control restores it. On narrow screens, the enlarged model is horizontally scrollable. The optional tour is under **Help**. The director's office is available from the map and the main navigation.
+Wora is an Arabic-first command center for an AI team. The workspace opens on a signal mesh with live agent nodes, ten work channels, and floating agent, chat, and task panels. **Enlarge network** focuses the mesh; **Escape** or the same control restores the full view. The Director is available from the navigation and the work channels. The former virtual office, floor plans, and movement simulation are not part of the interface.
 
 ## Run the workspace
 
@@ -12,7 +12,7 @@ npm ci
 npm run dev
 ```
 
-Open `http://localhost:5173`. Without an API, Wora uses the local office and simulated replies. Add the optional in-memory server for a connected preview:
+Open `http://localhost:5173`. Without an API, Wora uses a local roster and simulated replies. Add the optional in-memory server for a connected preview:
 
 ```bash
 # In a second terminal, from the repository root
@@ -21,7 +21,7 @@ npm ci
 npm run dev:preview
 ```
 
-The client proxies `/api`, `/health`, and `/socket.io` to port 4000. The preview API seeds four agents and four server-backed departments; the map still includes all ten departments. Connected snapshots replace the starter roster; neither preview starts with fabricated activity or completed tasks. Assignments in server-backed departments are confirmed by the preview API and held in memory. Assignments to a session-local agent or a department the API does not support are marked local. Ordinary chats from the preview server simulate replies when no provider is configured; the director never simulates work as completed.
+The client proxies `/api`, `/health`, and `/socket.io` to port 4000. The preview API seeds four agents and four server-backed channels; the command center still lists all ten channels. Connected snapshots replace the starter roster; neither preview starts with fabricated activity or completed tasks. Assignments in server-backed channels are confirmed by the preview API and held in memory. Assignments to a session-local agent or a channel the API does not support are marked local. Ordinary chats from the preview server simulate replies when no provider is configured; the director never simulates work as completed.
 
 ## Architecture
 
@@ -29,13 +29,13 @@ The client proxies `/api`, `/health`, and `/socket.io` to port 4000. The preview
 wora-agent-os/
 ├── client/                 # React 18, Vite 6, Zustand and CSS design tokens
 │   └── src/
-│       ├── components/     # Workbench, director, interactive office and projects
-│       ├── office/         # Spatial geometry, matching, reporting, and local movement
+│       ├── components/     # Command mesh, agent/chat/task HUDs, Director
+│       ├── office/         # Work channels, matching and reporting
 │       ├── hooks/          # Socket.IO connection and offline fallback
+│       ├── skills/         # Typed skills API client
 │       └── styles/         # Responsive RTL layout, light/dark themes and shared UI
 ├── api-server/             # Express 5, Socket.IO, Redis, BullMQ and MongoDB
 ├── shared/types/           # Shared backend contracts and model registry
-├── design-concepts/        # Original office design references
 ├── nginx/                  # Reverse proxy configuration
 └── docker-compose.prod.yml
 ```
@@ -52,22 +52,51 @@ npm --prefix api-server test
 npm --prefix api-server run build
 ```
 
+For the optional real-MongoDB catalog test, set `WORA_TEST_MONGO_URL` to a **disposable test MongoDB instance**. The test creates and drops its own database.
+
 With the preview API running, verify the production client locally with `npm --prefix client run preview`:
 
-- Open `/` to go straight to the workbench. Enlarge and restore the map with Escape, visit a department from the map and room selector, then switch to the floor plan. Try direct links `/#campus/zone-engineering` and `/#director`. Rooms can be visited even when a plan restricts assignments. Check the mobile menu, keyboard focus, and both themes at 320px and wider.
-- From Help, start the optional tour, move forward and back, and return to the full map. With reduced motion enabled, the visitor should arrive immediately without a camera animation.
-- Use <kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>K</kbd> to find a department, screen, or agent. Select an agent, then use its follow control or open its chat.
-- In the director’s office, request **ملخّص الساحة**. Send **اختبر التسجيل من الموبايل**, check Sentinel’s recommendation and reason, and confirm it. Open the acknowledged task and request another summary to see the change. Try a locked-room request in Free. Add a session-local agent or change an agent’s model in the team panel.
+- Open `/`, select an agent in the mesh or roster, and open a chat or swap its model. Watch the node update as it thinks and replies. Enlarge and restore the network with Escape. Try `/#campus/zone-engineering` and `/#director`; all channels can be browsed even when a plan restricts task assignment.
+- Check the optional tour under Help, keyboard focus, light/dark themes, and reduced-motion mode at 320px and wider. Use <kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>K</kbd> to find a channel, screen, or agent.
+- In the Director, request **ملخّص الساحة**. Send **اختبر التسجيل من الموبايل**, check Sentinel’s recommendation and reason, and confirm it. Open the acknowledged task and request another summary to see the change. Try a locked channel in Free. Add a session-local agent in the roster.
+- On Aria’s inspector, choose **استيراد مهارة** and use `https://github.com/octocat/Spoon-Knife` to test the README path. Verify that it starts inactive, inspect the source, then activate it. Open the same workspace in another tab or reload and check the active count. Re-importing the same repository does not create another entry. The test suite includes a `skill.json` fixture with required inputs.
 - Create a project and move a task with the stage dropdown. In the Studio, activate the local Pro preview, try an example brief, and edit a draft. Save one draft (or the pack) to a project, reload, and confirm the edit and the project link persist without duplicates. Download the pack and reopen an earlier pack from its history.
 - Filter the model and integration catalogues. Connect, sync, and disconnect a demo integration; no external account should be opened.
 
-## Director's office
+## Director
 
-The assistant answers status requests from the current workspace task records and the labeled activity of the browser session. It does not extrapolate completed work from agent presence or movement. Reports are a snapshot, not a cross-workspace audit history. Recommendations use the available roster, matched skills, and open workload. The assistant asks for more detail if it cannot find a match, and cannot assign a task until the user confirms an eligible recipient. The local Pro control is a preview UI gate, not a production entitlement.
+The assistant answers status requests from the current workspace task records and the labeled activity of the browser session. It does not extrapolate completed work from agent lifecycle signals. Reports are a snapshot, not a cross-workspace audit history. Recommendations use the available roster, matched skills, and open workload. The assistant asks for more detail if it cannot find a match, and cannot assign a task until the user confirms an eligible recipient. The local Pro control is a preview UI gate, not a production entitlement.
 
 - With an expiring signed session and an enabled Studio provider/model (`STUDIO_PROVIDER` and `STUDIO_MODEL`), the production API can use that model to rank the short list. It validates the chosen agent and the cited profile skill or role. If unavailable or the model gives an invalid answer, the assistant uses local matching. Reports never go to a provider.
 - A confirmed task is saved to the user's room and assigned to the recommended agent. In production, a signed session and that agent’s configured provider allow the API to queue **one text response**. No integrations, file changes, or other external actions are invoked. The response is attached to the task for review, not counted as completed. A missing provider or failed run is displayed separately from a saved assignment. The preview only records assignments, without claiming that the assigned work ran.
 - Each new provider path is bounded separately (6 requests per minute per user, 90 per hour across the deployment), with Redis quota checks and provider timeouts. The preview API stores assignments in memory, the production task board uses its existing scoped Redis storage (24-hour task visibility), and standalone assignments last in the browser session.
+
+## GitHub skill registry
+
+Only public GitHub repository URLs of the form `https://github.com/owner/repo` are accepted. The API uses Octokit to read the repository's public visibility and then **root `skill.json`** or, if that file is absent, its **README**. A descriptor looks like this:
+
+```json
+{
+  "name": "Note Summary",
+  "description": "Summarize a plain text note.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "note": { "type": "string" },
+      "language": { "enum": ["ar", "en"] }
+    },
+    "required": ["note"],
+    "additionalProperties": false
+  }
+}
+```
+
+`input_schema` and `parameters` are accepted as descriptor aliases. For README imports, use a `json` fenced block with the descriptor or an explicit object input schema. Otherwise Wora takes the heading and first descriptive paragraph and reports that no input schema was declared. It does not guess missing inputs from code. The review shows the source file and blob SHA, required/optional inputs, and the full schema as text. Invalid descriptors return a validation error rather than silently replacing declared inputs. JSON Schema references are not dereferenced.
+
+- `GET /api/agents/:agentId/skills` reads the signed workspace's catalog; `POST /api/agents/:agentId/skills/import-github` with `{ "url": "…" }` saves an inactive draft, returning its `skillId`. Re-importing a normalized repository returns the existing record. `PATCH /api/agents/:agentId/skills/:skillId` with `{ "active": true }` explicitly activates it; `false` deactivates it.
+- Production requires an expiring `AUTH_SECRET` session and MongoDB. The `AgentSkillSet` collection links to `AgentModel` by agent ID and is keyed by **workspace and agent**, rather than adding one user's skills to the shared `AgentModel.profile`. Revisioned writes avoid lost toggles and duplicates. Socket.IO emits `agent:skills-updated` only to that workspace, and `room:state` hydrates counts on reconnect. The public agent catalog does not include these private records.
+- Imports are limited to 12 repositories per agent, 4 imports per user per minute, 3 concurrent imports per API process, 64 KiB per metadata file, and a 7.5-second GitHub deadline. Redis applies a shared hourly quota in production. Optional **`GITHUB_SKILLS_TOKEN`** increases the budget; use a server-only token with no private repository access. Never add it to `VITE_*` or paste it into the app.
+- The sandbox API issues a separate signed preview session and keeps skills in memory. They survive reload/reconnect within a preview session, not a server restart. Standalone/static and session-local agents cannot import. **Activation only registers reviewed metadata.** Wora does not clone, install, run, or prompt a model with repository contents.
 
 ## Preview vs. production
 
@@ -101,6 +130,6 @@ docker compose -f docker-compose.prod.yml exec api node dist/seed.mjs
 ### Railway or separate hosts
 
 1. Deploy `api-server` from the repository root using `api-server/Dockerfile`.
-2. Attach Redis and MongoDB. Configure `MONGO_URI`, `REDIS_URL`, `ALLOWED_ORIGINS`, `ADMIN_API_KEY`, and production authentication. Set optional AI provider keys in the API service environment, never in Vite variables.
+2. Attach Redis and MongoDB. Configure `MONGO_URI`, `REDIS_URL`, `ALLOWED_ORIGINS`, `ADMIN_API_KEY`, and production authentication. Add `GITHUB_SKILLS_TOKEN` only if needed. Set optional AI provider keys in the API service environment, never in Vite variables.
 3. Seed the four core agents by running `node dist/seed.mjs` once.
 4. Deploy the client from `client/`. If the API is not behind the same origin, set `VITE_API_URL` and `VITE_SOCKET_URL` to the public API URL at build time.

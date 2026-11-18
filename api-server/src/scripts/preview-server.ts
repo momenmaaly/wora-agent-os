@@ -1,7 +1,7 @@
 /**
  * preview-server.ts — Wora Agent OS v4.1 (Zero-Dependency Sandbox Preview)
  * ────────────────────────────────────────────────────────────────────────
- * Standalone in-memory API + Socket.IO server for instant UI/3D evaluation
+ * Standalone in-memory API + Socket.IO server for instant command interface evaluation
  * when Redis and MongoDB are not running (e.g. cloud sandboxes or local demo).
  *
  * Features:
@@ -18,7 +18,7 @@
 
 import express, { type Request, type Response } from 'express';
 import { createServer } from 'node:http';
-import { randomUUID } from 'node:crypto';
+import { createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { Server as SocketIOServer } from 'socket.io';
 import cors from 'cors';
 import { z } from 'zod';
@@ -27,6 +27,10 @@ import { SEED_AGENTS } from './seed.js';
 import { EXAMPLE_ZONES } from '../zones.js';
 import { workspaceSignalSchema, type ReplyToAssignment } from '../core/taskSignal.js';
 import { createStudioRouter } from '../studio/router.js';
+import { verifySessionToken } from '../lib/session.js';
+import { createGitHubImporter } from '../skills/github.js';
+import { createSkillsRouter } from '../skills/router.js';
+import { createMemorySkillStore } from '../skills/store.js';
 import {
   BrainAdapterFactory,
   isProviderConfigured,
@@ -43,6 +47,7 @@ import {
   MessageType,
   ParticipantStatus,
   RoomAccessMode,
+  lifecycleToAvatarState,
 } from '../../../shared/types/index.js';
 import type {
   AgentParticipant,
@@ -98,6 +103,7 @@ interface RoomBucket {
   brainOverrides: Record<string, PublicBrainConfig>;
   workspaces:     Record<string, SharedWorkspaceEntry[]>;
   position:       { x: number; y: number; z: number };
+  lifecycle:      Record<string, AgentLifecycleState>;
 }
 
 const rooms = new Map<string, RoomBucket>();
@@ -119,6 +125,7 @@ function getOrCreateRoom(roomId: string): RoomBucket {
       messages:       [welcomeMsg],
       brainOverrides: {},
       workspaces:     {},
+      lifecycle:      {},
       position:       { x: 0, y: 0, z: 2 },
     };
     rooms.set(roomId, bucket);
@@ -223,7 +230,6 @@ app.disable('x-powered-by');
 app.use(cors({ origin: true, credentials: true }));
 // Keep this public sandbox on local templates even if chat providers are configured.
 app.use('/api/studio', createStudioRouter());
-app.use(express.json({ limit: '16kb' }));
 
 const httpServer = createServer(app);
 const io = new SocketIOServer(httpServer, {
@@ -232,6 +238,42 @@ const io = new SocketIOServer(httpServer, {
   maxHttpBufferSize: 32_768,
   path:              '/socket.io',
 });
+
+// Preview users can try the real importer without receiving server credentials or trusting a client-chosen room ID.
+const previewSecret = randomBytes(32).toString('hex');
+const skillStore = createMemorySkillStore();
+const quotas = new Map<string, { end: number; count: number }>();
+function allow(key: string, limit: number, windowMs: number) {
+  const now = Date.now();
+  for (const [item, bucket] of quotas) if (bucket.end <= now) quotas.delete(item);
+  const current = quotas.get(key);
+  if (current) return ++current.count <= limit;
+  if (quotas.size >= 512) return false;
+  quotas.set(key, { end: now + windowMs, count: 1 });
+  return true;
+}
+function previewTokenFor(userId: string) {
+  const payload = Buffer.from(JSON.stringify({ sub: userId, exp: Math.floor(Date.now() / 1_000) + 86_400 })).toString('base64url');
+  return `${payload}.${createHmac('sha256', previewSecret).update(payload).digest('base64url')}`;
+}
+const githubToken = process.env['GITHUB_SKILLS_TOKEN']?.trim();
+app.use('/api/agents/:agentId/skills', createSkillsRouter({
+  available: () => true,
+  authenticate(token) {
+    const session = verifySessionToken(token, previewSecret, true);
+    return session ? { userId: session.userId, roomId: `wora-${session.userId}` } : null;
+  },
+  hasAgent: (_roomId, agentId) => SEED_AGENTS.some((agent) => agent.agentId === agentId),
+  async consumeQuota(kind, userId) {
+    if (!allow(`${kind}:${userId}`, kind === 'import' ? 4 : 20, 60_000)) return 60;
+    if (kind === 'import' && !allow('github', githubToken ? 60 : 16, 3_600_000)) return 3_600;
+    return null;
+  },
+  importGitHub: createGitHubImporter({ token: githubToken }),
+  store: skillStore,
+  publish: (event) => io.to(event.roomId).emit('agent:skills-updated', event),
+}));
+app.use(express.json({ limit: '16kb' }));
 
 let connectionCount = 0;
 
@@ -280,10 +322,16 @@ app.get('/api/brains', (_req: Request, res: Response) => {
 
 io.use((socket, next) => {
   const auth = socket.handshake.auth as Record<string, unknown> | undefined;
-  const rawUserId = typeof auth?.['userId'] === 'string' ? auth['userId'].trim() : '';
-  socket.data['userId'] = /^[a-zA-Z0-9_-]{4,64}$/.test(rawUserId)
-    ? rawUserId
-    : `user-${randomUUID().slice(0, 12)}`;
+  const token = typeof auth?.['previewSession'] === 'string' ? auth['previewSession'] : '';
+  const session = verifySessionToken(token, previewSecret, true);
+  const userId = session?.userId ?? `preview-${randomUUID()}`;
+  if (connectionCount >= 240 || (rooms.size >= 512 && !rooms.has(`wora-${userId}`))) {
+    next(new Error('SERVER_FULL'));
+    return;
+  }
+  getOrCreateRoom(`wora-${userId}`);
+  socket.data['userId'] = userId;
+  socket.data['previewSession'] = session ? token : previewTokenFor(userId);
   next();
 });
 
@@ -301,8 +349,10 @@ io.on('connection', (socket) => {
     }
 
     const nowIso = new Date().toISOString();
+    const skillIndex = await skillStore.getIndex(privateRoomId);
     socket.emit('room:state', {
       mode: 'preview',
+      previewSession: socket.data['previewSession'],
       room: {
         id:               privateRoomId,
         name:             'Your Workspace (Preview)',
@@ -312,7 +362,11 @@ io.on('connection', (socket) => {
         assignedAgentIds: SEED_AGENTS.map((a) => a.agentId),
         zoneIds:          EXAMPLE_ZONES.map((z) => z.id),
       },
-      participants:   SEED_AGENTS.map((a) => toParticipant(a, privateRoomId, bucket.brainOverrides[a.agentId])),
+      participants:   SEED_AGENTS.map((a) => {
+        const state = bucket.lifecycle[a.agentId] ?? AgentLifecycleState.Idle;
+        return { ...toParticipant(a, privateRoomId, bucket.brainOverrides[a.agentId]), lifecycleState: state, avatarState: lifecycleToAvatarState(state),
+          skillSnapshot: skillIndex[a.agentId] ?? { revision: 0, activeNames: [] } };
+      }),
       presence:       [{ participantId: userId, roomId: privateRoomId, position: bucket.position, joinedAt: nowIso }],
       recentMessages: bucket.messages.slice(-100),
       zones:          EXAMPLE_ZONES,
@@ -385,6 +439,11 @@ io.on('connection', (socket) => {
     if (typeof ack === 'function') ack({ ok: true, entry });
   });
 
+  function setLifecycle(bucket: RoomBucket, agentId: string, state: AgentLifecycleState) {
+    bucket.lifecycle[agentId] = state;
+    io.to(privateRoomId).emit('agent:lifecycle', { roomId: privateRoomId, agentId, state, avatarState: lifecycleToAvatarState(state) });
+  }
+
   socket.on('message:send', async (raw: unknown) => {
     const parsed = MessageSendSchema.safeParse(raw);
     if (!parsed.success) {
@@ -449,11 +508,7 @@ io.on('connection', (socket) => {
       };
       const messageId = randomUUID();
 
-      io.to(privateRoomId).emit('agent:lifecycle', {
-        agentId:     agent.agentId,
-        state:       AgentLifecycleState.Thinking,
-        avatarState: AvatarAnimState.Thinking,
-      });
+      setLifecycle(bucket, agent.agentId, AgentLifecycleState.Thinking);
 
       let fullReply = '';
       try {
@@ -468,11 +523,7 @@ io.on('connection', (socket) => {
             onChunk: (chunk: string, isDone: boolean) => {
               if (!emittedFirst && chunk) {
                 emittedFirst = true;
-                io.to(privateRoomId).emit('agent:lifecycle', {
-                  agentId:     agent.agentId,
-                  state:       AgentLifecycleState.Responding,
-                  avatarState: AvatarAnimState.Talking,
-                });
+                setLifecycle(bucket, agent.agentId, AgentLifecycleState.Responding);
               }
               io.to(privateRoomId).emit('message:stream', {
                 messageId,
@@ -486,11 +537,7 @@ io.on('connection', (socket) => {
           fullReply = result.text;
         } else {
           await sleep(320);
-          io.to(privateRoomId).emit('agent:lifecycle', {
-            agentId:     agent.agentId,
-            state:       AgentLifecycleState.Responding,
-            avatarState: AvatarAnimState.Talking,
-          });
+          setLifecycle(bucket, agent.agentId, AgentLifecycleState.Responding);
           fullReply = buildSimulatedReply(agent, activeBrain, content, privateRoomId);
           const tokens = fullReply.match(/\S+\s*|\s+/g) ?? [fullReply];
           for (const token of tokens) {
@@ -526,7 +573,9 @@ io.on('connection', (socket) => {
             },
           ];
         }
-      } catch (err) {
+        setLifecycle(bucket, agent.agentId, AgentLifecycleState.Idle);
+      } catch {
+        setLifecycle(bucket, agent.agentId, AgentLifecycleState.Error);
         io.to(privateRoomId).emit('message:stream', {
           messageId,
           agentId: agent.agentId,
@@ -537,13 +586,7 @@ io.on('connection', (socket) => {
         });
         socket.emit('error', {
           code:    'AI_ERROR',
-          message: `${agent.displayName} error: ${err instanceof Error ? err.message : 'Unknown error'}`,
-        });
-      } finally {
-        io.to(privateRoomId).emit('agent:lifecycle', {
-          agentId:     agent.agentId,
-          state:       AgentLifecycleState.Idle,
-          avatarState: AvatarAnimState.Idle,
+          message: `تعذّر على ${agent.displayName} الردّ. جرّب مرة أخرى.`,
         });
       }
     }

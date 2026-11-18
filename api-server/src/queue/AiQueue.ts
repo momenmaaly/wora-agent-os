@@ -17,7 +17,7 @@ import { BrainAdapterFactory, type ConversationTurn } from '../ai/BrainAdapter.j
 import { logger } from '../lib/logger.js';
 import {
   AgentLifecycleState,
-  AvatarAnimState,
+  lifecycleToAvatarState,
   MessageType,
 } from '../../../shared/types/index.js';
 import type {
@@ -54,6 +54,7 @@ export interface AiQueueOptions {
   requestTimeoutMs?:  number;
   onWorkspaceProgress?: (job: AiJobData, progress: WorkspaceProgress) => Promise<boolean>;
   onReplyPersisted?:  (roomId: string, message: Message, agentId: string) => Promise<void>;
+  onLifecycle?:       (job: AiJobData, state: AgentLifecycleState, jobTtlMs: number) => void;
 }
 
 const QUEUE_NAME         = 'wora-ai-jobs';
@@ -88,6 +89,7 @@ export class AiQueue {
   private readonly requestTimeoutMs: number;
   private readonly onWorkspaceProgress?: AiQueueOptions['onWorkspaceProgress'];
   private readonly onReplyPersisted?: AiQueueOptions['onReplyPersisted'];
+  private readonly onLifecycle?: AiQueueOptions['onLifecycle'];
 
   constructor(
     private readonly io: SocketIOServer,
@@ -98,6 +100,7 @@ export class AiQueue {
     this.requestTimeoutMs = Math.max(5_000, options.requestTimeoutMs ?? DEFAULT_TIMEOUT_MS);
     this.onReplyPersisted = options.onReplyPersisted;
     this.onWorkspaceProgress = options.onWorkspaceProgress;
+    this.onLifecycle = options.onLifecycle;
 
     const connection = {
       url:                  redisUrl,
@@ -145,7 +148,7 @@ export class AiQueue {
           void this.onWorkspaceProgress?.(job.data, { state: 'failed' }).catch(() => {
             logger.warn({ entryId: job.data.workspaceTask?.entryId }, 'Could not record failed director task response');
           });
-          this.io.to(roomId).emit('agent:lifecycle', { agentId, state: AgentLifecycleState.Idle, avatarState: AvatarAnimState.Idle });
+          this.reportLifecycle(job.data, AgentLifecycleState.Error);
         }
         return;
       }
@@ -169,19 +172,11 @@ export class AiQueue {
       this.io.to(roomId).emit('message:stream', abortPayload);
 
       if (!isFinalFailure) {
-        this.io.to(roomId).emit('agent:lifecycle', {
-          agentId,
-          state:       AgentLifecycleState.Refining,
-          avatarState: AvatarAnimState.Thinking,
-        });
+        this.reportLifecycle(job.data, AgentLifecycleState.Refining);
         return;
       }
 
-      this.io.to(roomId).emit('agent:lifecycle', {
-        agentId,
-        state:       AgentLifecycleState.Error,
-        avatarState: AvatarAnimState.Error,
-      });
+      this.reportLifecycle(job.data, AgentLifecycleState.Error);
 
       this.io.to(roomId).emit('message:received', {
         message: {
@@ -197,15 +192,16 @@ export class AiQueue {
     });
 
     this.worker.on('completed', (job) => {
-      const { agentId, roomId } = job.data;
-      this.io.to(roomId).emit('agent:lifecycle', {
-        agentId,
-        state:       AgentLifecycleState.Idle,
-        avatarState: AvatarAnimState.Idle,
-      });
+      this.reportLifecycle(job.data, AgentLifecycleState.Idle);
     });
 
     logger.info({ queue: QUEUE_NAME, concurrency }, 'AiQueue worker initialized');
+  }
+
+  private reportLifecycle(job: AiJobData, state: AgentLifecycleState) {
+    const duration = job.workspaceTask ? Math.min(this.requestTimeoutMs, 45_000) : this.requestTimeoutMs;
+    if (this.onLifecycle) this.onLifecycle(job, state, Math.min(duration + 30_000, 900_000));
+    else this.io.to(job.roomId).emit('agent:lifecycle', { roomId: job.roomId, agentId: job.agentId, state, avatarState: lifecycleToAvatarState(state) });
   }
 
   async enqueue(data: AiJobData, priority = 10): Promise<void> {
@@ -221,11 +217,8 @@ export class AiQueue {
     const systemPrompt = buildSystemPrompt(job.data) + (workspaceTask
       ? '\nRespond to the assigned task with a useful text deliverable or state what information is missing. No external tools are available. Do not claim to have acted on files, accounts, services, or outside systems.'
       : '');
-    this.io.to(roomId).emit('agent:lifecycle', {
-      agentId,
-      state:       AgentLifecycleState.Responding,
-      avatarState: AvatarAnimState.Talking,
-    });
+    this.reportLifecycle(job.data, AgentLifecycleState.Thinking);
+    let responding = false;
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), workspaceTask ? Math.min(this.requestTimeoutMs, 45_000) : this.requestTimeoutMs);
@@ -240,6 +233,10 @@ export class AiQueue {
         signal:        controller.signal,
         maxTokens: workspaceTask ? Math.min(2_300, brainOverride?.maxTokens ?? 2_300) : undefined,
         onChunk: workspaceTask ? undefined : (chunk: string, isDone: boolean) => {
+          if (chunk && !responding) {
+            responding = true;
+            this.reportLifecycle(job.data, AgentLifecycleState.Responding);
+          }
           const payload: MessageStreamPayload = {
             messageId,
             agentId,

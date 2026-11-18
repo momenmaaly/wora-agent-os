@@ -10,3 +10,26 @@ export function readSessionToken(): string | undefined {
   }
   return undefined;
 }
+
+const PREVIEW_SESSION_KEY = 'wora:previewSession';
+let previewSession: string | undefined;
+
+function isPreviewSession(value: unknown): value is string {
+  return typeof value === 'string' && value.length <= 512 && /^[\w-]+\.[\w-]+$/u.test(value);
+}
+
+export function readPreviewSession(): string | undefined {
+  if (previewSession) return previewSession;
+  try {
+    const saved = window.localStorage.getItem(PREVIEW_SESSION_KEY);
+    if (isPreviewSession(saved)) return saved;
+  } catch { /* The tab can keep its preview token without storage. */ }
+  return previewSession;
+}
+
+export function rememberPreviewSession(value: unknown) {
+  if (!isPreviewSession(value)) return;
+  previewSession = value;
+  try { window.localStorage.setItem(PREVIEW_SESSION_KEY, value); }
+  catch { /* Ephemeral browser-only fallback. */ }
+}

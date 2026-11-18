@@ -3,9 +3,9 @@ import { ArrowLeft, ArrowUp, ClipboardList, FolderKanban, Layers3, LayoutGrid, L
 import { useProjectStore, COLUMN_META, type KanbanTask, type ProjectStage, type TaskColumn } from '../store/useProjectStore.js';
 import { useWoraStore } from '../store/useWoraStore.js';
 import { useBillingStore } from '../store/useBillingStore.js';
-import { isRoomLockedForPlan, PLANS } from '../billing/plans.js';
+import { PLANS } from '../billing/plans.js';
 import { orderedAgents } from '../office/presentation.js';
-import { AgentAvatar } from './OfficePeople.js';
+import { AgentAvatar } from './AgentAvatar.js';
 import { Dialog, EmptyState, IconButton, IconTile, Notice, PageHeader } from './ui.js';
 
 const STAGE_META: Record<ProjectStage, string> = { idea: 'فكرة', planning: 'تخطيط', building: 'بناء', marketing: 'تسويق', sales: 'مبيعات', growth: 'نمو' };
@@ -29,7 +29,7 @@ export function ProjectOSBoard({ onUpgrade, onIntegrations }: { onUpgrade: () =>
   const store = useProjectStore();
   const plan = useBillingStore((s) => s.plan);
   const agentMap = useWoraStore((s) => s.agents);
-  const dispatch = useWoraStore((s) => s.dispatchAgentToRoom);
+  const pushActivity = useWoraStore((s) => s.pushActivity);
   const [tab, setTab] = useState<Tab>('overview');
   const [editor, setEditor] = useState<Editor | null>(null);
   const [deleteTask, setDeleteTask] = useState<KanbanTask | null>(null);
@@ -45,7 +45,7 @@ export function ProjectOSBoard({ onUpgrade, onIntegrations }: { onUpgrade: () =>
     const task = tasks.find((item) => item.id === id);
     if (!task || task.column === column) return;
     store.moveTask(id, column);
-    if (task.assigneeId && !isRoomLockedForPlan(COLUMN_ROOMS[column], plan)) dispatch(task.assigneeId, COLUMN_ROOMS[column], `انتقلت المهمة إلى ${COLUMN_META[column].labelAr}`);
+    pushActivity(`انتقلت مهمة المشروع «${task.title}» إلى ${COLUMN_META[column].labelAr}`, 'local');
   }
 
   function save(event: FormEvent<HTMLFormElement>) {
@@ -62,7 +62,7 @@ export function ProjectOSBoard({ onUpgrade, onIntegrations }: { onUpgrade: () =>
       const column = data.get('column') as TaskColumn;
       const agent = agentMap[String(data.get('agent') ?? '')];
       store.addTask({ projectId: project.id, title, description, column, priority: data.get('priority') as KanbanTask['priority'], assigneeId: agent?.id ?? '', department: COLUMN_ROOMS[column], modelId: agent?.brainConfig?.model ?? agent?.modelId ?? '' });
-      if (agent && !isRoomLockedForPlan(COLUMN_ROOMS[column], plan)) dispatch(agent.id, COLUMN_ROOMS[column], `مهمة جديدة: ${title}`);
+      if (agent) pushActivity(`أُسندت مهمة مشروع إلى ${agent.displayName}: ${title}`, 'local');
     } else if (project && editor.kind === 'product') {
       const price = Number(data.get('price'));
       if (!Number.isFinite(price) || price < 0) return;

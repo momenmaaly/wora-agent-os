@@ -4,7 +4,7 @@ import { useWoraStore } from '../store/useWoraStore.js';
 import { useSocket } from '../hooks/useSocket.js';
 import { orderedAgents } from '../office/presentation.js';
 import { MessageType, type Message } from '../types.js';
-import { AgentAvatar } from './OfficePeople.js';
+import { AgentAvatar } from './AgentAvatar.js';
 import { Dialog, EmptyState } from './ui.js';
 
 const timeFormat = new Intl.DateTimeFormat('ar-EG', { hour: '2-digit', minute: '2-digit' });
@@ -12,6 +12,7 @@ const timeFormat = new Intl.DateTimeFormat('ar-EG', { hour: '2-digit', minute: '
 function Messages({ messages }: { messages: Array<Message & { streaming?: boolean }> }) {
   const agents = useWoraStore((s) => s.agents);
   const localUser = useWoraStore((s) => s.localUserId);
+  const workspaceUser = useWoraStore((s) => s.workspaceUserId);
   const scroll = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
 
@@ -23,7 +24,7 @@ function Messages({ messages }: { messages: Array<Message & { streaming?: boolea
     onScroll={(event) => { const list = event.currentTarget; stickToBottom.current = list.scrollHeight - list.scrollTop - list.clientHeight < 64; }}>
     {messages.length ? <ul aria-label="رسائل الفريق">
       {messages.map((message) => {
-        const isMe = message.senderId === localUser;
+        const isMe = message.senderId === localUser || message.senderId === workspaceUser;
         const sender = agents[message.senderId];
         if (message.type === MessageType.System) return <li className="chat-system" key={message.id} dir="auto">{message.content}</li>;
         return <li className={`chat-message${isMe ? ' is-me' : ''}`} key={message.id}>
@@ -38,7 +39,7 @@ function Messages({ messages }: { messages: Array<Message & { streaming?: boolea
   </div>;
 }
 
-function ChatPanel({ onClose }: { onClose: () => void }) {
+export function ChatPanel({ onClose }: { onClose: () => void }) {
   const agentMap = useWoraStore((s) => s.agents);
   const messages = useWoraStore((s) => s.messages);
   const streams = useWoraStore((s) => s.activeStreams);
@@ -61,10 +62,10 @@ function ChatPanel({ onClose }: { onClose: () => void }) {
     if (sendMessage(draft, { targetAgentId: targetId || null })) setDraft('');
   }
 
-  return <Dialog icon={MessageCircle} variant="drawer" className="chat-drawer" title="محادثة الفريق" onClose={onClose}
+  return <Dialog icon={MessageCircle} variant="hud" className="command-hud chat-drawer" title="محادثة الفريق" onClose={onClose}
     description={connected && !targetId.startsWith('agent-custom-') ? 'محادثة داخل مساحة العمل الحالية.' : 'تجربة محلية: الردود في هذا الوضع محاكاة.'}
     footer={<form className="chat-form" onSubmit={send}>
-      <input className="field" aria-label="رسالتك" maxLength={4_000} value={draft} dir="auto" onChange={(event) => setDraft(event.target.value)} placeholder="اكتب رسالة…" />
+      <input className="field" aria-label="رسالتك" data-initial-focus maxLength={4_000} value={draft} dir="auto" onChange={(event) => setDraft(event.target.value)} placeholder="اكتب رسالة…" />
       <button type="submit" aria-label="إرسال الرسالة" className="button primary" disabled={!draft.trim()}><Send size={17} aria-hidden="true" /></button>
     </form>}>
     <label className="chat-target"><AtSign size={16} /><span>إلى</span><select className="field" aria-label="المستلم" value={targetId} onChange={(event) => setTarget(event.target.value)}>
@@ -76,7 +77,7 @@ function ChatPanel({ onClose }: { onClose: () => void }) {
   </Dialog>;
 }
 
-export function ChatDrawer() {
+export function ChatHUD() {
   const open = useWoraStore((s) => s.ui.showChat);
   const toggle = useWoraStore((s) => s.toggleChat);
   return open ? <ChatPanel onClose={() => toggle(false)} /> : null;

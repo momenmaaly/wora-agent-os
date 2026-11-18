@@ -1,8 +1,5 @@
 import { create } from 'zustand';
 import { devtools, subscribeWithSelector } from 'zustand/middleware';
-import { isRoomLockedForPlan } from '../billing/plans.js';
-import { RECEPTION_POINT } from '../office/visits.js';
-import { useBillingStore } from './useBillingStore.js';
 import {
   AgentLifecycleState,
   AgentOrigin,
@@ -12,6 +9,7 @@ import {
 } from '../types.js';
 import type {
   AgentParticipant,
+  AgentSkillUpdate,
   BrainProvider,
   Message,
   PublicBrainConfig,
@@ -22,18 +20,10 @@ import {
   AGENT_ROLE_AR,
   DEFAULT_COMPANY_AGENTS,
   DEFAULT_COMPANY_ZONES,
-  OFFICE_ROOMS,
-  ROOM_BY_ID,
-} from '../office/layout.js';
+} from '../office/catalog.js';
+import { CHANNELS, CHANNEL_BY_ID } from '../office/channels.js';
 
 import { isLocalTask, type ServerMode, type TaskScope } from '../office/work.js';
-
-export interface PresenceEntry {
-  participantId: string;
-  roomId:        string;
-  position:      { x: number; y: number; z: number };
-  joinedAt:      string;
-}
 
 export interface StreamChunk {
   messageId: string;
@@ -52,42 +42,12 @@ export interface AppendStreamInput {
   aborted?:  boolean;
 }
 
-export type AgentActivityKind =
-  | 'desk'
-  | 'walking'
-  | 'meeting'
-  | 'collab'
-  | 'coffee'
-  | 'board'
-  | 'thinking'
-  | 'responding';
-
-export interface AgentLocationSnapshot {
-  areaId:           string;
-  areaNameAr:       string;
-  targetRoomId:     string | null;
-  targetRoomNameAr: string | null;
-  isWalking:        boolean;
-  activity:         AgentActivityKind;
-  statusTextAr:     string;
-}
-
 export interface ActivityFeedItem {
   id:        string;
   text:      string;
   scope:     TaskScope | 'session';
   timestamp: string;
 }
-
-export type OfficeCommand =
-  | { seq: number; kind: 'dispatch-room'; agentId: string; roomId: string; spotId?: string; reasonAr?: string; activity?: AgentActivityKind }
-  | { seq: number; kind: 'standup' }
-  | { seq: number; kind: 'return-desks' }
-  | { seq: number; kind: 'handoff'; fromAgentId?: string; toAgentId?: string }
-  | { seq: number; kind: 'focus-room'; roomId: string }
-  | { seq: number; kind: 'focus-agent'; agentId: string }
-  | { seq: number; kind: 'reset-camera' }
-  | { seq: number; kind: 'spawn-at-reception'; agentId: string; homeRoomId: string };
 
 export interface HireAgentInput {
   displayName: string;
@@ -105,39 +65,38 @@ export interface WoraState {
   demoMode:          boolean;
   connectionError:   string | null;
   agents:            Record<string, AgentParticipant>;
-  agentLocations:    Record<string, AgentLocationSnapshot>;
-  lastSwappedAgent:  { agentId: string; at: number } | null;
+
   zones:             WorkspaceZone[];
-  presence:          Record<string, PresenceEntry>;
+
   messages:          Message[];
   workspaces:        Record<string, SharedWorkspaceState>;
   activeStreams:     Record<string, StreamChunk>;
   activityLog:       ActivityFeedItem[];
   selectedAgentId:   string | null;
-  followAgentId:     string | null;
+
   localUserId:       string;
-  localPosition:     { x: number; y: number; z: number };
-  officeCommand:     OfficeCommand | null;
+  workspaceUserId:   string;
   ui: {
     theme:            'light' | 'dark';
     showWorkspaceHUD: boolean;
     workspaceZoneId:  string | null;
     workspaceEntryId: string | null;
     showChat:         boolean;
-    autoRoam:         boolean;
+
     modelSwapAgentId: string | null;
     showHireModal:    boolean;
+    skillsDialog:     { agentId: string; mode: 'catalog' | 'import' } | null;
   };
 
-  setRoomId:              (id: string) => void;
   setConnected:           (v: boolean) => void;
   setDemoMode:            (v: boolean) => void;
   setConnectionError:     (e: string | null) => void;
   setRoomState:           (state: {
     roomId?:        string;
+    userId?:        string;
     mode:           ServerMode;
     participants:   AgentParticipant[];
-    presence:       PresenceEntry[];
+
     zones:          WorkspaceZone[];
     recentMessages: Message[];
     workspaces:     SharedWorkspaceState[];
@@ -145,39 +104,31 @@ export interface WoraState {
   upsertAgent:            (agent: AgentParticipant) => void;
   hireAgent:              (input: HireAgentInput) => AgentParticipant;
   removeCustomAgent:      (agentId: string) => void;
-  updateAgentLifecycle:   (agentId: string, state: AgentLifecycleState, avatarState: AvatarAnimState) => void;
+  updateAgentLifecycle:   (agentId: string, state: AgentLifecycleState, avatarState: AvatarAnimState, revision?: number) => void;
+  updateAgentSkills:      (event: AgentSkillUpdate) => void;
   updateAgentBrain:       (agentId: string, brain: PublicBrainConfig) => void;
-  setAgentLocation:       (agentId: string, loc: AgentLocationSnapshot) => void;
+
   pushActivity:           (text: string, scope: TaskScope) => void;
-  upsertPresence:         (entry: PresenceEntry) => void;
-  removePresence:         (participantId: string) => void;
+
   addMessage:             (msg: Message) => void;
   appendStream:           (input: AppendStreamInput) => void;
   upsertWorkspace:        (ws: SharedWorkspaceState) => void;
   selectAgent:            (id: string | null) => void;
-  setFollowAgent:         (id: string | null) => void;
-  setLocalPosition:       (pos: { x: number; y: number; z: number }) => void;
+
   toggleTheme:            () => void;
   toggleWorkspaceHUD:     (force?: boolean, zoneId?: string | null, entryId?: string) => void;
   toggleChat:             (force?: boolean) => void;
-  toggleAutoRoam:         () => void;
+
   openModelSwap:          (agentId: string | null) => void;
+  openAgentSkills:        (agentId: string | null, mode?: 'catalog' | 'import') => void;
   setShowHireModal:       (open: boolean) => void;
-  dispatchAgentToRoom:    (agentId: string, roomId: string, reasonAr?: string) => void;
-  callTeamStandup:        () => void;
-  returnAllToDesks:       () => void;
-  triggerHandoff:         (fromAgentId?: string, toAgentId?: string) => void;
-  focusRoomCamera:        (roomId: string) => void;
-  focusAgentCamera:       (agentId: string) => void;
-  resetCamera:            () => void;
+
 }
 
 const USER_ID_STORAGE_KEY = 'wora:localUserId';
 const THEME_STORAGE_KEY   = 'wora:hqTheme';
 const MAX_MESSAGES        = 200;
 const MAX_ACTIVITY        = 28;
-
-let cmdSeq = 1;
 
 function getOrCreateUserId(): string {
   try {
@@ -202,14 +153,14 @@ function readInitialTheme(): 'light' | 'dark' {
   } catch {
     // ignore storage errors
   }
-  return 'light';
+  return 'dark';
 }
 
 function applyDomTheme(theme: 'light' | 'dark'): void {
   if (typeof document === 'undefined') return;
   document.documentElement.dataset.theme = theme;
   document.documentElement.classList.toggle('dark', theme === 'dark');
-  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'dark' ? '#17202a' : '#f2f4f5');
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'dark' ? '#080e17' : '#edf3f4');
   try {
     window.localStorage.setItem(THEME_STORAGE_KEY, theme);
   } catch {
@@ -223,23 +174,6 @@ function buildInitialAgents(): Record<string, AgentParticipant> {
     map[a.id] = a;
   }
   return map;
-}
-
-function buildInitialLocations(agents: Record<string, AgentParticipant>): Record<string, AgentLocationSnapshot> {
-  const out: Record<string, AgentLocationSnapshot> = {};
-  for (const ag of Object.values(agents)) {
-    const room = (ag.zoneId ? ROOM_BY_ID[ag.zoneId] : undefined) ?? OFFICE_ROOMS[0]!;
-    out[ag.id] = {
-      areaId:           room.id,
-      areaNameAr:       room.nameAr,
-      targetRoomId:     null,
-      targetRoomNameAr: null,
-      isWalking:        false,
-      activity:         'desk',
-      statusTextAr:     'على المكتب',
-    };
-  }
-  return out;
 }
 
 function makeActivityItem(text: string, scope: ActivityFeedItem['scope'] = 'session'): ActivityFeedItem {
@@ -268,36 +202,30 @@ export const useWoraStore = create<WoraState>()(
         demoMode:         false,
         connectionError:  null,
         agents:           initialAgents,
-        agentLocations:   buildInitialLocations(initialAgents),
-        lastSwappedAgent: null,
         zones:            DEFAULT_COMPANY_ZONES,
-        presence:         {},
         messages:         [],
         workspaces:       {},
         activeStreams:    {},
         activityLog:      [],
         selectedAgentId: null,
-        followAgentId:   null,
         localUserId,
-        localPosition:   { x: RECEPTION_POINT.x, y: 0, z: RECEPTION_POINT.y },
-        officeCommand:   null,
+        workspaceUserId: localUserId,
         ui: {
           theme:            initialTheme,
           showWorkspaceHUD: false,
           workspaceZoneId:  null,
           workspaceEntryId: null,
           showChat:         false,
-          autoRoam:         false,
           modelSwapAgentId: null,
           showHireModal:    false,
+          skillsDialog:     null,
         },
 
-        setRoomId:          (id) => set({ roomId: id }),
-        setConnected:       (v)  => set({ connected: v, demoMode: v ? false : get().demoMode, connectionError: v ? null : get().connectionError }),
+        setConnected:       (v)  => set({ connected: v, demoMode: v ? false : get().demoMode, connectionError: v ? null : get().connectionError, ...(!v && get().serverMode ? { activeStreams: {} } : {}) }),
         setDemoMode:        (v)  => set({ demoMode: v }),
         setConnectionError: (e)  => set({ connectionError: e }),
 
-        setRoomState: ({ roomId: nextRoomId, mode, participants, presence, zones, recentMessages, workspaces }) => {
+        setRoomState: ({ roomId: nextRoomId, userId, mode, participants, zones, recentMessages, workspaces }) => {
           const state = get();
           const roomId = nextRoomId ?? state.roomId;
           const sameRoom = roomId === state.roomId;
@@ -305,55 +233,40 @@ export const useWoraStore = create<WoraState>()(
 
           // A connected snapshot is authoritative, including empty lists. Keep only
           // explicit session-local additions from the standalone preview.
-          const nextAgents: Record<string, AgentParticipant> = {};
+          const nextAgents = Object.create(null) as Record<string, AgentParticipant>;
           for (const p of serverAgents) {
             const roleAr = AGENT_ROLE_AR[p.id];
-            nextAgents[p.id] = roleAr ? { ...p, profile: { ...p.profile, customRole: roleAr } } : p;
+            const previous = sameRoom ? state.agents[p.id] : undefined;
+            const previousSkills = previous?.skillSnapshot;
+            const skillSnapshot = previousSkills && previousSkills.revision > (p.skillSnapshot?.revision ?? 0) ? previousSkills : p.skillSnapshot;
+            const newerLifecycle = previous?.lifecycleRevision && p.lifecycleRevision !== undefined && previous.lifecycleRevision > p.lifecycleRevision ? previous : p;
+            nextAgents[p.id] = { ...p, skillSnapshot, lifecycleRevision: newerLifecycle.lifecycleRevision, lifecycleState: newerLifecycle.lifecycleState,
+              avatarState: newerLifecycle.avatarState, profile: roleAr ? { ...p.profile, customRole: roleAr } : p.profile };
           }
           for (const agent of Object.values(state.agents)) {
             if (sameRoom && agent.id.startsWith('agent-custom-') && !(agent.id in nextAgents)) nextAgents[agent.id] = agent;
           }
 
-          const presenceMap: Record<string, PresenceEntry> = {};
-          for (const p of presence) presenceMap[p.participantId] = p;
-
-          const wsMap: Record<string, SharedWorkspaceState> = Object.fromEntries(workspaces.filter((ws) => ws.roomId === roomId && Object.hasOwn(ROOM_BY_ID, ws.zoneId)).map((ws) => [ws.zoneId, ws]));
+          const wsMap: Record<string, SharedWorkspaceState> = Object.fromEntries(workspaces.filter((ws) => ws.roomId === roomId && Object.hasOwn(CHANNEL_BY_ID, ws.zoneId)).map((ws) => [ws.zoneId, ws]));
           for (const local of sameRoom ? Object.values(state.workspaces) : []) {
             const additions = local.entries.filter(isLocalTask);
             if (additions.length) wsMap[local.zoneId] = { ...local, ...wsMap[local.zoneId], entries: [...(wsMap[local.zoneId]?.entries ?? []), ...additions] };
           }
 
-          const nextLocations = Object.fromEntries(Object.entries(state.agentLocations).filter(([id]) => sameRoom && Object.hasOwn(nextAgents, id)));
-          for (const ag of Object.values(nextAgents)) {
-            if (!nextLocations[ag.id]) {
-              const room = (ag.zoneId ? ROOM_BY_ID[ag.zoneId] : undefined) ?? OFFICE_ROOMS[0]!;
-              nextLocations[ag.id] = {
-                areaId:           room.id,
-                areaNameAr:       room.nameAr,
-                targetRoomId:     null,
-                targetRoomNameAr: null,
-                isWalking:        false,
-                activity:         'desk',
-                statusTextAr:     'على المكتب',
-              };
-            }
-          }
-
           set({
             roomId,
+            workspaceUserId: userId ?? state.localUserId,
+            ui: sameRoom ? state.ui : { ...state.ui, skillsDialog: null },
             connected:      true,
             serverMode:     mode,
             demoMode:       false,
             connectionError: null,
             agents:         nextAgents,
-            agentLocations: nextLocations,
             zones,
-            presence:       presenceMap,
             messages:       recentMessages.filter((message) => message.roomId === roomId).slice(-MAX_MESSAGES),
             activityLog:    sameRoom ? state.activityLog : [],
             workspaces:     wsMap,
             selectedAgentId: state.selectedAgentId && nextAgents[state.selectedAgentId] ? state.selectedAgentId : null,
-            followAgentId:   state.followAgentId && nextAgents[state.followAgentId] ? state.followAgentId : null,
             activeStreams:  {},
           });
         },
@@ -364,7 +277,7 @@ export const useWoraStore = create<WoraState>()(
         hireAgent: (input) => {
           const id = `agent-custom-${Date.now().toString(36)}`;
           const now = new Date().toISOString();
-          const room = ROOM_BY_ID[input.zoneId] ?? OFFICE_ROOMS[0]!;
+          const room = CHANNEL_BY_ID[input.zoneId] ?? CHANNELS[0];
           const newAgent: AgentParticipant = {
             id,
             displayName:     input.displayName.trim(),
@@ -401,28 +314,10 @@ export const useWoraStore = create<WoraState>()(
 
           set((s) => ({
             agents: { ...s.agents, [id]: newAgent },
-            agentLocations: {
-              ...s.agentLocations,
-              [id]: {
-                areaId:           'zone-lounge',
-                areaNameAr:       'الاستقبال واستراحة الموظفين',
-                targetRoomId:     room.id,
-                targetRoomNameAr: room.nameAr,
-                isWalking:        true,
-                activity:         'walking',
-                statusTextAr:     `متجه إلى ${room.nameAr}`,
-              },
-            },
             selectedAgentId: id,
-            officeCommand: {
-              seq:        ++cmdSeq,
-              kind:       'spawn-at-reception',
-              agentId:    id,
-              homeRoomId: room.id,
-            },
             activityLog: [
               makeActivityItem(
-                `انضم ${newAgent.displayName} (${input.model}) ويتجه من الاستقبال إلى ${room.nameAr}`,
+                `أُضيف ${newAgent.displayName} إلى قناة ${room.nameAr}`,
               ),
               ...s.activityLog,
             ].slice(0, MAX_ACTIVITY),
@@ -437,29 +332,28 @@ export const useWoraStore = create<WoraState>()(
             const nextAgents = { ...s.agents };
             const removed = nextAgents[agentId];
             delete nextAgents[agentId];
-            const nextLocs = { ...s.agentLocations };
-            delete nextLocs[agentId];
             return {
               agents:          nextAgents,
-              agentLocations:  nextLocs,
               selectedAgentId: s.selectedAgentId === agentId ? null : s.selectedAgentId,
-              followAgentId:   s.followAgentId === agentId ? null : s.followAgentId,
               activityLog: removed
-                ? [makeActivityItem(`غادر ${removed.displayName} مقر الشركة`), ...s.activityLog].slice(0, MAX_ACTIVITY)
+                ? [makeActivityItem(`أُزيل ${removed.displayName} من الفريق`), ...s.activityLog].slice(0, MAX_ACTIVITY)
                 : s.activityLog,
             };
           }),
 
-        updateAgentLifecycle: (agentId, state, avatarState) =>
+        updateAgentLifecycle: (agentId, state, avatarState, revision) =>
           set((s) => {
             const ag = s.agents[agentId];
-            if (!ag) return s;
-            return {
-              agents: {
-                ...s.agents,
-                [agentId]: { ...ag, lifecycleState: state, avatarState },
-              },
-            };
+            if (!ag || (revision !== undefined && (ag.lifecycleRevision ?? 0) >= revision)
+              || (revision === undefined && ag.lifecycleState === state && ag.avatarState === avatarState)) return s;
+            return { agents: { ...s.agents, [agentId]: { ...ag, lifecycleState: state, avatarState, lifecycleRevision: revision } } };
+          }),
+
+        updateAgentSkills: ({ roomId, agentId, revision, activeNames }) =>
+          set((s) => {
+            const agent = s.agents[agentId];
+            if (s.roomId !== roomId || !agent || (agent.skillSnapshot?.revision ?? -1) >= revision) return s;
+            return { agents: { ...s.agents, [agentId]: { ...agent, skillSnapshot: { revision, activeNames } } } };
           }),
 
         updateAgentBrain: (agentId, brain) =>
@@ -472,7 +366,6 @@ export const useWoraStore = create<WoraState>()(
                 ...s.agents,
                 [agentId]: { ...ag, brainConfig: brain, modelId: brain.model },
               },
-              lastSwappedAgent: { agentId, at: Date.now() },
               activityLog: changed
                 ? [
                     makeActivityItem(
@@ -484,39 +377,10 @@ export const useWoraStore = create<WoraState>()(
             };
           }),
 
-        setAgentLocation: (agentId, loc) =>
-          set((s) => {
-            const prev = s.agentLocations[agentId];
-            if (
-              prev &&
-              prev.areaId === loc.areaId &&
-              prev.targetRoomId === loc.targetRoomId &&
-              prev.isWalking === loc.isWalking &&
-              prev.activity === loc.activity &&
-              prev.statusTextAr === loc.statusTextAr
-            ) {
-              return s;
-            }
-            return {
-              agentLocations: { ...s.agentLocations, [agentId]: loc },
-            };
-          }),
-
         pushActivity: (text, scope) =>
           set((s) => ({
             activityLog: [makeActivityItem(text, scope), ...s.activityLog].slice(0, MAX_ACTIVITY),
           })),
-
-        upsertPresence: (entry) =>
-          set((s) => ({ presence: { ...s.presence, [entry.participantId]: entry } })),
-
-        removePresence: (id) =>
-          set((s) => {
-            if (!(id in s.presence)) return s;
-            const next = { ...s.presence };
-            delete next[id];
-            return { presence: next };
-          }),
 
         addMessage: (msg) =>
           set((s) => {
@@ -568,9 +432,7 @@ export const useWoraStore = create<WoraState>()(
         upsertWorkspace: (ws) =>
           set((s) => ({ workspaces: { ...s.workspaces, [ws.zoneId]: ws } })),
 
-        selectAgent:      (id)  => set((s) => ({ selectedAgentId: id, followAgentId: id === s.followAgentId ? s.followAgentId : null })),
-        setFollowAgent:   (id)  => set({ followAgentId: id, selectedAgentId: id ?? get().selectedAgentId }),
-        setLocalPosition: (pos) => set({ localPosition: pos }),
+        selectAgent: (id) => set({ selectedAgentId: id }),
 
         toggleTheme: () =>
           set((s) => {
@@ -587,71 +449,12 @@ export const useWoraStore = create<WoraState>()(
           const show = force ?? !s.ui.showChat;
           return { ui: { ...s.ui, showChat: show, showWorkspaceHUD: show ? false : s.ui.showWorkspaceHUD } };
         }),
-        toggleAutoRoam:     () => set((s) => ({ ui: { ...s.ui, autoRoam: !s.ui.autoRoam } })),
+        openAgentSkills: (agentId, mode = 'catalog') => set((s) => ({ ui: { ...s.ui, skillsDialog: agentId ? { agentId, mode } : null } })),
         openModelSwap:      (agentId) => set((s) => ({ ui: { ...s.ui, modelSwapAgentId: agentId } })),
         setShowHireModal:   (open) => set((s) => ({ ui: { ...s.ui, showHireModal: open } })),
 
-        dispatchAgentToRoom: (agentId, roomId, reasonAr) => {
-          const ag = get().agents[agentId];
-          const room = Object.hasOwn(ROOM_BY_ID, roomId) ? ROOM_BY_ID[roomId] : undefined;
-          if (!ag || !room || isRoomLockedForPlan(roomId, useBillingStore.getState().plan)) return;
-          set((s) => ({
-            officeCommand: {
-              seq:      ++cmdSeq,
-              kind:     'dispatch-room',
-              agentId,
-              roomId,
-              reasonAr: reasonAr ?? `يتجه إلى ${room.nameAr}`,
-            },
-            activityLog: [
-              makeActivityItem(
-                `${ag.displayName} يتحرك عبر الممرات نحو ${room.nameAr}`,
-              ),
-              ...s.activityLog,
-            ].slice(0, MAX_ACTIVITY),
-          }));
-        },
-
-        callTeamStandup: () =>
-          set((s) => ({
-            officeCommand: { seq: ++cmdSeq, kind: 'standup' },
-            activityLog: [
-              makeActivityItem('دعوة اجتماع عام — الوكلاء يتجهون إلى مساحة الاجتماع'),
-              ...s.activityLog,
-            ].slice(0, MAX_ACTIVITY),
-          })),
-
-        returnAllToDesks: () =>
-          set((s) => ({
-            officeCommand: { seq: ++cmdSeq, kind: 'return-desks' },
-            activityLog: [
-              makeActivityItem('عودة جميع الوكلاء عبر الممرات إلى مكاتبهم الأساسية'),
-              ...s.activityLog,
-            ].slice(0, MAX_ACTIVITY),
-          })),
-
-        triggerHandoff: (fromAgentId, toAgentId) =>
-          set((s) => ({
-            officeCommand: { seq: ++cmdSeq, kind: 'handoff', fromAgentId, toAgentId },
-          })),
-
-        focusRoomCamera:  (roomId)  => set({ followAgentId: null, officeCommand: { seq: ++cmdSeq, kind: 'focus-room', roomId } }),
-        focusAgentCamera: (agentId) => set({ selectedAgentId: agentId, followAgentId: null, officeCommand: { seq: ++cmdSeq, kind: 'focus-agent', agentId } }),
-        resetCamera:      ()        => set({ followAgentId: null, officeCommand: { seq: ++cmdSeq, kind: 'reset-camera' } }),
       };
     }),
-    { name: 'WoraHQStore' },
+    { name: 'WoraCommandStore' },
   ),
 );
-
-/* ─── STABLE SELECTORS ──────────────────────────────────── */
-export const selectAgentsMap     = (s: WoraState) => s.agents;
-export const selectAgentLocs     = (s: WoraState) => s.agentLocations;
-export const selectMessages      = (s: WoraState) => s.messages;
-export const selectStreams        = (s: WoraState) => s.activeStreams;
-export const selectWorkspaces    = (s: WoraState) => s.workspaces;
-export const selectUI            = (s: WoraState) => s.ui;
-export const selectConnected     = (s: WoraState) => s.connected;
-export const selectDemoMode      = (s: WoraState) => s.demoMode;
-export const selectSelectedAgent = (s: WoraState) =>
-  s.selectedAgentId ? (s.agents[s.selectedAgentId] ?? null) : null;

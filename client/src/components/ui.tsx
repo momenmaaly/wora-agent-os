@@ -1,9 +1,9 @@
-import { useId, useLayoutEffect, useRef, type ButtonHTMLAttributes, type ReactNode } from 'react';
+import { forwardRef, useId, useLayoutEffect, useRef, type ButtonHTMLAttributes, type ReactNode } from 'react';
 import { Info, X, type LucideIcon } from 'lucide-react';
 
-export function IconButton({ icon: Icon, label, className = '', ...props }: ButtonHTMLAttributes<HTMLButtonElement> & { icon: LucideIcon; label: string }) {
-  return <button type="button" className={`icon-button ${className}`} aria-label={label} title={label} {...props}><Icon size={18} aria-hidden="true" /></button>;
-}
+export const IconButton = forwardRef<HTMLButtonElement, ButtonHTMLAttributes<HTMLButtonElement> & { icon: LucideIcon; label: string }>(function IconButton({ icon: Icon, label, className = '', ...props }, ref) {
+  return <button ref={ref} type="button" className={`icon-button ${className}`} aria-label={label} title={label} {...props}><Icon size={18} aria-hidden="true" /></button>;
+});
 
 export function IconTile({ icon: Icon, tone = 'violet' }: { icon: LucideIcon; tone?: 'violet' | 'cyan' | 'mint' | 'gold' }) {
   return <span className={`icon-tile tone-${tone}`}><Icon size={19} strokeWidth={1.7} aria-hidden="true" /></span>;
@@ -37,7 +37,7 @@ export function Dialog({ title, description, icon, onClose, children, footer, va
   onClose: () => void;
   children: ReactNode;
   footer?: ReactNode;
-  variant?: 'center' | 'drawer' | 'navigation' | 'search';
+  variant?: 'center' | 'navigation' | 'search' | 'hud';
   className?: string;
 }) {
   const ref = useRef<HTMLDialogElement>(null);

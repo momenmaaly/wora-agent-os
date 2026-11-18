@@ -38,11 +38,15 @@ import {
 } from './ai/BrainAdapter.js';
 import { AiQueue } from './queue/AiQueue.js';
 import { PresenceStore } from './store/PresenceStore.js';
+import { AgentRuntimeStore } from './store/AgentRuntimeStore.js';
 import { EXAMPLE_ZONES, VALID_ZONE_IDS } from './zones.js';
 import { logger } from './lib/logger.js';
 import { safeEqual, verifySessionToken } from './lib/session.js';
 import { generateStudioPack, resolveStudioBrain } from './studio/drafts.js';
 import { createStudioRouter } from './studio/router.js';
+import { createGitHubImporter } from './skills/github.js';
+import { createSkillsRouter } from './skills/router.js';
+import { createMongoSkillStore } from './models/AgentSkills.js';
 
 import {
   AgentLifecycleState,
@@ -55,6 +59,7 @@ import {
   MessageType,
   ParticipantStatus,
   RoomAccessMode,
+  lifecycleToAvatarState,
 } from '../../shared/types/index.js';
 import type {
   AgentParticipant,
@@ -94,6 +99,7 @@ const AUTH_SECRET    = sanitizeEnv(process.env['AUTH_SECRET']);
 const ADMIN_API_KEY  = sanitizeEnv(process.env['ADMIN_API_KEY']);
 
 const BRAIN_EVICT_CHANNEL   = 'wora:events:brain-evict';
+const skillChannel = (roomId: string) => `skills:${roomId}`;
 const ROOM_HISTORY_LIMIT    = 100;
 const AI_CONTEXT_TURNS      = 16;
 const ROOM_DATA_TTL_SECONDS = 86_400 * 7; // 7 days
@@ -499,6 +505,7 @@ export async function bootWoraServer(app: Express, port = DEFAULT_PORT) {
   });
 
   const presence = new PresenceStore(pubClient);
+  const runtime = new AgentRuntimeStore(pubClient);
   const rateLimiter = new RedisRateLimiter(pubClient);
 
   /* ── Socket.IO with Redis adapter ── */
@@ -550,6 +557,11 @@ export async function bootWoraServer(app: Express, port = DEFAULT_PORT) {
 
   /* ── AI Queue (BullMQ) with reply persistence ── */
   const aiQueue = new AiQueue(io, REDIS_URL, {
+    onLifecycle(job, state, ttl) {
+      void runtime.report(job.roomId, job.agentId, job.messageId, state, ttl)
+        .then((event) => io.to(event.roomId).emit('agent:lifecycle', event))
+        .catch(() => logger.warn('Agent runtime signal could not be saved'));
+    },
     async onWorkspaceProgress(job, progress) {
       if (!job.workspaceTask) return false;
       const { zoneId, entryId } = job.workspaceTask;
@@ -593,6 +605,7 @@ export async function bootWoraServer(app: Express, port = DEFAULT_PORT) {
       }
       socket.data['userId']      = verified.userId;
       socket.data['displayName'] = verified.displayName ?? 'User';
+      socket.data['sessionExpiresAt'] = verified.expiresAt;
       next();
       return;
     }
@@ -636,6 +649,26 @@ export async function bootWoraServer(app: Express, port = DEFAULT_PORT) {
     },
     choose: (brief, candidates, signal) => chooseWithModel(studioBrain, brief, candidates, signal),
   }) : null;
+  const skillStore = createMongoSkillStore();
+  const githubToken = sanitizeEnv(process.env['GITHUB_SKILLS_TOKEN']);
+  app.use('/api/agents/:agentId/skills', createSkillsRouter({
+    available: () => Boolean(AUTH_SECRET && isMongoReady()),
+    authenticate(token) {
+      const session = AUTH_SECRET && verifySessionToken(token, AUTH_SECRET, true);
+      return session ? { userId: session.userId, roomId: `wora-${session.userId}` } : null;
+    },
+    async hasAgent(_roomId, agentId) {
+      return Boolean(await AgentModel.exists({ agentId, status: 'active' }).maxTimeMS(2_500));
+    },
+    async consumeQuota(kind, userId, signal) {
+      if (!await rateLimiter.allow(`skills-${kind}-user`, userId, kind === 'import' ? 4 : 20, 60_000, signal)) return 60;
+      if (kind === 'import' && !await rateLimiter.allow('skills-import-global', 'github', githubToken ? 100 : 16, 3_600_000, signal)) return 3_600;
+      return null;
+    },
+    importGitHub: createGitHubImporter({ token: githubToken }),
+    store: skillStore,
+    publish: (event) => io.to(skillChannel(event.roomId)).emit('agent:skills-updated', event),
+  }));
   app.use(express.json({ limit: '16kb' }));
 
   app.get('/health', async (_req: Request, res: Response) => {
@@ -822,6 +855,17 @@ export async function bootWoraServer(app: Express, port = DEFAULT_PORT) {
     connectionCount++;
     const userId = socket.data['userId'] as string;
     const privateRoomId = `wora-${userId}`;
+    const skillRoom = skillChannel(privateRoomId);
+    const expiresAt = Number(socket.data['sessionExpiresAt'] ?? 0);
+    const canReadSkills = () => expiresAt > Date.now();
+    let skillExpiry: NodeJS.Timeout | undefined;
+    function expireSkillAccess() {
+      if (!canReadSkills()) { void socket.leave(skillRoom); return; }
+      skillExpiry = setTimeout(expireSkillAccess, Math.min(expiresAt - Date.now(), 2_147_483_647));
+      skillExpiry.unref();
+    }
+    if (canReadSkills()) expireSkillAccess();
+    socket.once('disconnect', () => clearTimeout(skillExpiry));
 
     socket.on('room:join', async (raw: unknown) => {
       const parsed = RoomJoinSchema.safeParse(raw ?? {});
@@ -831,13 +875,13 @@ export async function bootWoraServer(app: Express, port = DEFAULT_PORT) {
       }
 
       try {
-        await socket.join(privateRoomId);
+        await socket.join(canReadSkills() ? [privateRoomId, skillRoom] : privateRoomId);
         socket.data['roomId'] = privateRoomId;
 
         const pos = parsed.data.position ?? { x: 0, y: 0, z: 2 };
         const nowIso = new Date().toISOString();
 
-        const [, agents, brainOverrides, recentMessages, workspaces] = await Promise.all([
+        const [, agents, brainOverrides, recentMessages, workspaces, skillIndex] = await Promise.all([
           presence.set(privateRoomId, userId, {
             participantId: userId,
             roomId:        privateRoomId,
@@ -851,11 +895,16 @@ export async function bootWoraServer(app: Express, port = DEFAULT_PORT) {
             EXAMPLE_ZONES.map((z) => z.id),
             privateRoomId,
           ),
+          canReadSkills() && isMongoReady() ? skillStore.getIndex(privateRoomId).catch(() => null) : null,
         ]);
 
-        const participants = agents.map((a) =>
-          mapAgentToParticipant(a, privateRoomId, brainOverrides[a.agentId]),
-        );
+        const signals = await runtime.snapshot(privateRoomId, agents.map((agent) => agent.agentId)).catch(() => null);
+        const participants = agents.map((a) => {
+          const signal = signals?.get(a.agentId);
+          return { ...mapAgentToParticipant(a, privateRoomId, brainOverrides[a.agentId]),
+            ...(skillIndex && canReadSkills() ? { skillSnapshot: skillIndex[a.agentId] ?? { revision: 0, activeNames: [] } } : {}),
+            ...(signal ? { lifecycleRevision: signal.revision, lifecycleState: signal.state, avatarState: lifecycleToAvatarState(signal.state) } : {}) };
+        });
 
         socket.emit('room:state', {
           room: {
@@ -882,6 +931,7 @@ export async function bootWoraServer(app: Express, port = DEFAULT_PORT) {
     socket.on('room:leave', async () => {
       try {
         await socket.leave(privateRoomId);
+        await socket.leave(skillRoom);
         // Only clear presence if user has no remaining active sockets in this room
         const remaining = await io.in(privateRoomId).fetchSockets();
         if (remaining.length === 0) {
@@ -1008,11 +1058,6 @@ export async function bootWoraServer(app: Express, port = DEFAULT_PORT) {
             senderId:             userId,
           });
 
-          io.to(privateRoomId).emit('agent:lifecycle', {
-            agentId:     agent.agentId,
-            state:       AgentLifecycleState.Thinking,
-            avatarState: AvatarAnimState.Thinking,
-          });
         }
       } catch (err) {
         logger.error({ err, userId }, 'message:send processing error');

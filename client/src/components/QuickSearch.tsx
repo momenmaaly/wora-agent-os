@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { ArrowDown, ArrowUp, CornerDownLeft, Folder, Search, UsersRound, type LucideIcon } from 'lucide-react';
 import { useProjectStore } from '../store/useProjectStore.js';
 import { useWoraStore } from '../store/useWoraStore.js';
-import { OFFICE_ROOMS } from '../office/layout.js';
+import { CHANNELS } from '../office/channels.js';
 import { ROOM_DISPLAY } from '../office/presentation.js';
 import { DIRECTOR_ROOM_ID } from '../office/work.js';
 import { NAV_ITEMS, SETTINGS_ITEMS, type PageId } from '../pages.js';
@@ -23,7 +23,7 @@ export function QuickSearch({ onClose, onNavigate, onAgent, onRoom }: { onClose:
   const all: Result[] = [
     ...NAV_ITEMS.map((item) => ({ key: item.id, title: item.label, context: 'صفحة', icon: item.icon, activate: () => onNavigate(item.id) })),
     ...SETTINGS_ITEMS.map((item) => ({ key: item.id, title: item.label, context: 'الإعدادات', icon: item.icon, activate: () => onNavigate(item.id) })),
-    ...OFFICE_ROOMS.filter((room) => room.id !== DIRECTOR_ROOM_ID).map((room) => ({ key: room.id, title: room.nameAr, context: `قسم · ${ROOM_DISPLAY[room.id]!.label}`, icon: ROOM_DISPLAY[room.id]!.icon, activate: () => onRoom(room.id) })),
+    ...CHANNELS.filter((room) => room.id !== DIRECTOR_ROOM_ID).map((room) => ({ key: room.id, title: room.nameAr, context: 'قناة عمل', icon: ROOM_DISPLAY[room.id]!.icon, activate: () => onRoom(room.id) })),
     ...Object.values(agents).map((agent) => ({ key: agent.id, title: agent.displayName, context: agent.profile.customRole, icon: UsersRound, activate: () => onAgent(agent.id) })),
     ...projects.map((project) => ({ key: project.id, title: project.name, context: 'مشروع', icon: Folder, activate: () => { setProject(project.id); onNavigate('projects'); } })),
   ];

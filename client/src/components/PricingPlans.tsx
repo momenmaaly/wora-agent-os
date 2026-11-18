@@ -1,12 +1,12 @@
 import { ArrowLeft, Building2, Check, CreditCard, Sparkles, Zap } from 'lucide-react';
 import { PLANS, PRO_ROOM_IDS } from '../billing/plans.js';
 import { useBillingStore } from '../store/useBillingStore.js';
-import { ROOM_BY_ID } from '../office/layout.js';
+import { CHANNEL_BY_ID } from '../office/channels.js';
 import { IconTile, Notice, PageHeader } from './ui.js';
 
 const FEATURES = {
-  free: ['زيارة الأقسام العشرة والمقر التفاعلي', 'إدارة مشروعين ومهام الفريق', 'لوحة المنتجات وبنك الأفكار', 'محادثة الفريق وتجربة التكاملات'],
-  pro: ['كل مميزات الخطة المجانية', 'مساحة أكبر للمشاريع والمهام والمنتجات', 'استوديو المنتج لإنشاء مسودات محلية', 'إسناد المهام في مكتب المدير والتصميم والبيانات'],
+  free: ['عشر قنوات عمل وشبكة وكلاء', 'إدارة مشروعين ومهام الفريق', 'لوحة المنتجات وبنك الأفكار', 'محادثة الفريق وتجربة التكاملات'],
+  pro: ['كل مميزات الخطة المجانية', 'مساحة أكبر للمشاريع والمهام والمنتجات', 'استوديو المنتج لإنشاء مسودات محلية', 'إسناد المهام في لوحة المدير والتصميم والبيانات'],
 };
 
 export function PricingPlans({ onStudio }: { onStudio: () => void }) {
@@ -22,7 +22,7 @@ export function PricingPlans({ onStudio }: { onStudio: () => void }) {
           const pro = id === 'pro';
           const current = plan === id;
           return <section className={`panel price-card${pro ? ' is-pro' : ''}`} key={id}>
-            <div className="price-head"><IconTile icon={pro ? Sparkles : Zap} tone={pro ? 'violet' : 'cyan'} /><div><h2><bdi>{config.nameEn}</bdi></h2><p>{pro ? 'لأكثر من مشروع ولتجربة استوديو المنتج' : 'للتعرّف على المقر وتنظيم أول مشروع'}</p></div>{current && <span className="badge tint tone-mint"><Check size={13} />الخطة الحالية</span>}</div>
+            <div className="price-head"><IconTile icon={pro ? Sparkles : Zap} tone={pro ? 'violet' : 'cyan'} /><div><h2><bdi>{config.nameEn}</bdi></h2><p>{pro ? 'لأكثر من مشروع ولتجربة استوديو المنتج' : 'لتنظيم أول مشروع وتجربة شبكة القيادة'}</p></div>{current && <span className="badge tint tone-mint"><Check size={13} />الخطة الحالية</span>}</div>
             <div className="price-value">{pro ? <><strong>{config.priceSAR}</strong><span>ر.س / شهرياً<br /><small>السعر المقترح</small></span></> : <strong>مجاناً</strong>}</div>
             <ul className="price-features">{FEATURES[id].map((feature) => <li key={feature}><Check size={16} />{feature}</li>)}</ul>
             {current && pro ? <button type="button" className="button primary" onClick={onStudio}>افتح استوديو المنتج <ArrowLeft size={16} /></button> : <button type="button" className={`button ${pro ? 'primary' : ''}`} disabled={current} onClick={() => setPlan(id)}>{current ? 'مفعّلة في المعاينة' : pro ? 'جرّب Wora Pro' : 'العودة للخطة المجانية'}</button>}
@@ -31,7 +31,7 @@ export function PricingPlans({ onStudio }: { onStudio: () => void }) {
       </div>
       <section className="panel panel-pad premium-rooms">
         <div className="section-bar"><div><h2>مهام إضافية مع <bdi>Pro</bdi></h2><p>زيارة الغرف متاحة للجميع. مع Pro يمكنك أيضاً إسناد المهام في هذه الأقسام.</p></div></div>
-        <div className="catalog-grid">{PRO_ROOM_IDS.map((id) => <article className="catalog-card" key={id}><div className="catalog-head"><IconTile icon={Building2} /><div><h3>{ROOM_BY_ID[id]?.nameAr}</h3><p>{ROOM_BY_ID[id]?.subtitleAr}</p></div></div></article>)}</div>
+        <div className="catalog-grid">{PRO_ROOM_IDS.map((id) => <article className="catalog-card" key={id}><div className="catalog-head"><IconTile icon={Building2} /><div><h3>{CHANNEL_BY_ID[id]?.nameAr}</h3><p>{CHANNEL_BY_ID[id]?.subtitleAr}</p></div></div></article>)}</div>
       </section>
     </>
   );

@@ -1,10 +1,10 @@
 import { useMemo, useRef, useState } from 'react';
-import { Check, ClipboardList, Clock3, LockKeyhole, MapPin, Plus } from 'lucide-react';
+import { Check, ClipboardList, Clock3, LockKeyhole, Radio, Plus } from 'lucide-react';
 import { isRoomLockedForPlan } from '../billing/plans.js';
 import { useBillingStore } from '../store/useBillingStore.js';
 import { useWoraStore } from '../store/useWoraStore.js';
 import { useSocket } from '../hooks/useSocket.js';
-import { OFFICE_ROOMS, ROOM_BY_ID } from '../office/layout.js';
+import { CHANNELS, CHANNEL_BY_ID } from '../office/channels.js';
 import { orderedAgents, ROOM_DISPLAY } from '../office/presentation.js';
 import { canTakeTask, isFinished, isRecorded, taskExecutionNote, taskSourceLabel, taskStage } from '../office/work.js';
 import { Dialog, EmptyState } from './ui.js';
@@ -31,10 +31,10 @@ function WorkspacePanel({ onClose }: { onClose: () => void }) {
   const sorted = [...entries].sort((a, b) => Number(b.id === focusedId) - Number(a.id === focusedId) || b.updatedAt.localeCompare(a.updatedAt));
   const local = !connected || !zones.some((item) => item.id === zoneId) || assignee?.id.startsWith('agent-custom-');
 
-  return <Dialog icon={ClipboardList} title="مهام الأقسام" variant="drawer" onClose={onClose}>
+  return <Dialog icon={ClipboardList} title="مهام القنوات" variant="hud" className="command-hud task-drawer" onClose={onClose}>
     <div className="field-stack">
-      <label className="label"><span className="label-icon"><MapPin size={15} aria-hidden="true" />القسم</span><select className="field" value={zoneId} disabled={saving} onChange={(event) => { setZone(event.target.value); setError(''); }}>
-        <option value="">كل الأقسام</option>{OFFICE_ROOMS.map((room) => <option key={room.id} value={room.id}>{room.nameAr} ({workspaces[room.id]?.entries.length ?? 0})</option>)}
+      <label className="label"><span className="label-icon"><Radio size={15} aria-hidden="true" />القسم</span><select className="field" value={zoneId} disabled={saving} onChange={(event) => { setZone(event.target.value); setError(''); }}>
+        <option value="">كل القنوات</option>{CHANNELS.map((room) => <option key={room.id} value={room.id}>{room.nameAr} ({workspaces[room.id]?.entries.length ?? 0})</option>)}
       </select></label>
       <section className="task-entries" aria-label="المهام المسجلة">
         <h3>المهام المسجلة <span className="badge">{entries.length}</span></h3>
@@ -47,7 +47,7 @@ function WorkspacePanel({ onClose }: { onClose: () => void }) {
           const executionNote = taskExecutionNote(entry);
           const focused = entry.id === focusedId;
           return <li key={entry.id} className={`task-entry${focused ? ' is-focused' : ''}`} tabIndex={focused ? -1 : undefined} data-initial-focus={focused ? '' : undefined}>
-            <div><strong dir="auto">{entry.title}</strong><span className="badge">{ROOM_DISPLAY[entry.zoneId]?.label ?? ROOM_BY_ID[entry.zoneId]?.nameAr}</span></div>
+            <div><strong dir="auto">{entry.title}</strong><span className="badge">{ROOM_DISPLAY[entry.zoneId]?.label ?? CHANNEL_BY_ID[entry.zoneId]?.nameAr}</span></div>
             <div><span className={`badge tint ${done ? 'tone-mint' : 'tone-gold'}`}>{done ? <Check size={13} aria-hidden="true" /> : <Clock3 size={13} aria-hidden="true" />}{taskStage(entry)}</span><small>{[assigneeName, source].filter(Boolean).join(' · ') || 'بدون مسؤول'}</small></div>
             {executionNote && typeof response !== 'string' && <p className="field-note">{executionNote}</p>}
             {typeof response === 'string' && <details className="task-brief" open={focused || undefined}><summary>ردّ الوكيل</summary><p dir="auto">{response}</p></details>}
@@ -83,7 +83,7 @@ function WorkspacePanel({ onClose }: { onClose: () => void }) {
   </Dialog>;
 }
 
-export function WorkspaceBoard() {
+export function SharedWorkspaceHUD() {
   const open = useWoraStore((s) => s.ui.showWorkspaceHUD);
   const toggle = useWoraStore((s) => s.toggleWorkspaceHUD);
   return open ? <WorkspacePanel onClose={() => toggle(false)} /> : null;

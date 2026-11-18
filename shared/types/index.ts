@@ -226,6 +226,32 @@ export interface SpatialPosition {
   rotationY?: number;
 }
 
+/** Declarative GitHub metadata; enabling a skill never installs or runs repository code. */
+export interface ImportedSkill {
+  id: string;
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown> | null;
+  source: { repository: string; url: string; kind: 'skill.json' | 'readme'; path: string; sha: string };
+  active: boolean;
+  importedAt: string;
+}
+
+export interface AgentSkillCatalog {
+  revision: number;
+  skills: ImportedSkill[];
+}
+
+export interface AgentSkillSnapshot {
+  revision: number;
+  activeNames: string[];
+}
+
+export interface AgentSkillUpdate extends AgentSkillSnapshot {
+  roomId: string;
+  agentId: string;
+}
+
 export interface AgentProfile {
   customRole:        string;
   tone:              AgentTone;
@@ -278,8 +304,10 @@ export interface AgentParticipant {
   modelId:         string;
   activeTasks:     number;
   brainConfig:     PublicBrainConfig;
+  skillSnapshot?:  AgentSkillSnapshot;
   avatarGlb?:      string;
   avatarState:     AvatarAnimState;
+  lifecycleRevision?: number;
   locale:          SupportedLocale;
   createdAt:       string;
   lastSeenAt:      string;

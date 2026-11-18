@@ -7,7 +7,7 @@ export function safeEqual(a: string, b: string): boolean {
 }
 
 /** Verify the workspace's two-part HMAC tokens or HS256 JWTs. */
-export function verifySessionToken(token: string, secret: string, requireExpiry = false): { userId: string; displayName?: string } | null {
+export function verifySessionToken(token: string, secret: string, requireExpiry = false): { userId: string; displayName?: string; expiresAt?: number } | null {
   if (!secret || token.length > 4_096) return null;
   const parts = token.split('.');
   if ((parts.length !== 2 && parts.length !== 3) || parts.some((part) => !/^[\w-]+$/.test(part))) return null;
@@ -27,7 +27,8 @@ export function verifySessionToken(token: string, secret: string, requireExpiry 
     if (payload.nbf !== undefined && (typeof payload.nbf !== 'number' || !Number.isSafeInteger(payload.nbf) || payload.nbf > now)) return null;
     const userId = payload.sub ?? payload.userId;
     if (typeof userId !== 'string' || !/^[a-zA-Z0-9_-]{3,64}$/.test(userId)) return null;
-    return { userId, displayName: typeof payload.name === 'string' ? payload.name : undefined };
+    return { userId, displayName: typeof payload.name === 'string' ? payload.name : undefined,
+      ...(typeof payload.exp === 'number' ? { expiresAt: payload.exp * 1_000 } : {}) };
   } catch {
     return null;
   }

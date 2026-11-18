@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { ArrowRight, BriefcaseBusiness, Check, ClipboardList, LockKeyhole, Send, TextQuote } from 'lucide-react';
 import { isRoomLockedForPlan } from '../billing/plans.js';
 import { useSocket, type AssignmentResult } from '../hooks/useSocket.js';
-import { ROOM_BY_ID } from '../office/layout.js';
+import { CHANNEL_BY_ID } from '../office/channels.js';
 import { ROOM_DISPLAY } from '../office/presentation.js';
 import {
   asksForReport, bestSkillMatch, briefTitle, canTakeTask, isInProgress, isOpenTask, localTime, officeReport, officeTasks,
@@ -11,7 +11,8 @@ import {
 import { useBillingStore } from '../store/useBillingStore.js';
 import { useWoraStore } from '../store/useWoraStore.js';
 import type { AgentParticipant, SharedWorkspaceEntry } from '../types.js';
-import { AgentAvatar, ConnectionBadge } from './OfficePeople.js';
+import { AgentAvatar } from './AgentAvatar.js';
+import { ConnectionBadge } from './AgentSidebar.js';
 import { IconButton } from './ui.js';
 
 type Proposal = { id: number; brief: string; candidate: Candidate; source: 'model' | 'local' };
@@ -111,7 +112,7 @@ export function DirectorOffice({ focusInput, onCampus, onUpgrade }: { focusInput
     if (prompt.length < 5) { setError('اكتب وصفًا مختصرًا للمهمة.'); return; }
     const state = useWoraStore.getState();
     const isLocked = (zoneId: string) => isRoomLockedForPlan(zoneId, useBillingStore.getState().plan);
-    const ranked = rankCandidates(prompt, Object.values(state.agents).filter((agent) => agent.zoneId && Object.hasOwn(ROOM_BY_ID, agent.zoneId)),
+    const ranked = rankCandidates(prompt, Object.values(state.agents).filter((agent) => agent.zoneId && Object.hasOwn(CHANNEL_BY_ID, agent.zoneId)),
       officeTasks(state.workspaces), isLocked);
     if (!ranked.length) { setError('لا يوجد وكيل متاح للإسناد الآن.'); return; }
 
@@ -169,8 +170,8 @@ export function DirectorOffice({ focusInput, onCampus, onUpgrade }: { focusInput
 
   return <div className="director-office">
     <header className="workbench-header">
-      <div className="workbench-title"><h1>مكتب المدير</h1><ConnectionBadge /></div>
-      <button type="button" className="button ghost" onClick={onCampus}><ArrowRight size={16} aria-hidden="true" />ساحة العمل</button>
+      <div className="workbench-title"><h1>لوحة المدير</h1><ConnectionBadge /></div>
+      <button type="button" className="button ghost" onClick={onCampus}><ArrowRight size={16} aria-hidden="true" />شبكة القيادة</button>
     </header>
     <div className="director-grid">
       <section className="panel director-assistant" aria-labelledby="director-assistant-title">
