@@ -1,0 +1,42 @@
+.map-canvas { --map-bg: #25343d; --map-grid: #9fb5b91b; --map-fg: #e8e4fc; --map-subtle: #a9a1c5; --map-room-line: #566d78; --map-room-bg: #344650; --map-panel: #263740; --map-tint: #b2c8e0; --map-cyan: #85c9ff; --map-mint: #8bdfc2; --map-gold: #e6be87; --map-pink: #e4aadc; position: relative; display: flex; align-items: center; justify-content: center; min-height: 200px; overflow: hidden; border: 1px solid #393150; border-radius: 12px; background: radial-gradient(ellipse at 60% 47%, #42566160 0%, transparent 70%), linear-gradient(var(--map-grid) 1px, transparent 1px), linear-gradient(90deg, var(--map-grid) 1px, transparent 1px), var(--map-bg); background-size: auto, 21px 21px, 21px 21px, auto; color: var(--map-fg); padding: 20px 39px 12px; }
+.map-diagram { width: 100%; height: auto; aspect-ratio: 1.96; display: block; user-select: none; }
+.map-controls { position: absolute; display: grid; gap: 4px; z-index: 1; top: 9px; right: 8px; }
+.map-controls .icon-button { width: 28px; height: 29px; min-width: 0; min-height: 0; background: #25353f; color: #d3c7ed; border-color: var(--map-room-line); border-radius: 6px; }
+.map-controls .icon-button svg { width: 14px; height: 14px; }
+.map-controls .icon-button:hover { background: #334957; border-color: #9bb9c8; }
+.map-controls .icon-button:disabled { opacity: .5; }
+.map-corridors rect { fill: #796aae1d; }
+.map-lanes path { fill: none; stroke: #8c75b4; stroke-width: 3; stroke-opacity: .68; stroke-dasharray: 9 13; }
+.map-lanes circle { fill: #a88ee8; stroke: var(--map-bg); stroke-width: 5; }
+.map-room { --map-accent: var(--map-tint); cursor: pointer; outline: none; }
+.map-room.tone-cyan { --map-accent: var(--map-cyan); }
+.map-room.tone-mint { --map-accent: var(--map-mint); }
+.map-room.tone-gold { --map-accent: var(--map-gold); }
+.map-room.tone-pink { --map-accent: var(--map-pink); }
+.map-room .room-shadow { fill: #0d0a19; }
+.map-room .room-floor { fill: color-mix(in srgb, var(--map-accent) 9%, var(--map-room-bg)); stroke: color-mix(in srgb, var(--map-accent) 25%, var(--map-room-line)); stroke-width: 3; transition: fill 150ms, stroke 150ms; }
+.map-room:hover .room-floor, .map-room:focus-visible .room-floor, .map-room.is-chosen .room-floor { fill: color-mix(in srgb, var(--map-accent) 22%, var(--map-room-bg)); stroke: var(--map-accent); stroke-width: 5; }
+.map-room.is-locked .room-floor { stroke-dasharray: 12 8; }
+.room-icon-bg { fill: color-mix(in srgb, var(--map-accent) 22%, var(--map-room-bg)); }
+.room-icon { color: var(--map-accent); }
+.room-lock { color: var(--map-gold); opacity: .79; }
+.room-divider, .room-furniture { stroke: color-mix(in srgb, var(--map-accent) 48%, var(--map-room-line)); stroke-width: 3; opacity: .56; fill: none; }
+.room-furniture rect, .room-furniture circle { fill: color-mix(in srgb, var(--map-accent) 12%, var(--map-room-bg)); }
+.room-door { stroke: var(--map-accent); stroke-width: 5; stroke-linecap: round; opacity: .54; }
+.room-label { fill: var(--map-fg); font-size: 41px; font-weight: 650; }
+.room-code { fill: var(--map-subtle); opacity: .7; font: 600 25px var(--font-mono); }
+.agent-marker { cursor: pointer; outline: none; }
+.marker-halo { fill: color-mix(in srgb, var(--agent-color) 42%, transparent); }
+.marker-center { fill: color-mix(in srgb, var(--agent-color) 66%, #1f1631); stroke: color-mix(in srgb, var(--agent-color) 45%, #f5ebff); stroke-width: 3; }
+.marker-initials { fill: white; font-size: 22px; font-weight: 700; }
+.marker-name-bg { fill: var(--map-panel); stroke: color-mix(in srgb, var(--agent-color) 52%, var(--map-room-line)); stroke-width: 2; }
+.marker-name { fill: var(--map-fg); font-size: 24px; font-weight: 600; }
+.agent-marker:hover .marker-halo, .agent-marker:focus-visible .marker-halo, .agent-marker.marker-selected .marker-halo { stroke: #ded1fe; stroke-width: 4; }
+.map-route { fill: none; stroke: var(--map-tint); stroke-width: 5; stroke-dasharray: 10 14; opacity: .8; animation: route-dash 1.3s linear infinite; }
+@keyframes route-dash { to { stroke-dashoffset: -24; } }
+.player-route { stroke: #ffd295; pointer-events: none; }
+.player-marker { pointer-events: none; }
+.player-marker circle:first-child { fill: #ffd29535; stroke: #ffd295; stroke-width: 3; }
+.player-marker circle:nth-child(2) { fill: #ffd295; }
+.player-marker text { fill: #ffead1; font-size: 34px; font-weight: 700; }
+@media (max-width: 620px) { .map-canvas { padding: 7px 8px 40px; min-height: 0; } .map-controls { top: auto; left: 7px; right: auto; bottom: 6px; display: flex; } .map-controls .icon-button { width: 32px; height: 32px; } }

@@ -4,7 +4,7 @@
  * Core architecture & security guarantees:
  *  1. Fixed ESM relative imports (`../../shared/types/index.js`).
  *  2. Safe environment variable sanitization (preserves query strings in URIs).
- *  3. Strict CORS origin allowlist (`ALLOWED_ORIGINS`) + optional HMAC/API-key auth.
+ *  3. Strict CORS origin allowlist (`ALLOWED_ORIGINS`) + expiring signed production sessions.
  *  4. Full Zod validation on every REST route & Socket.IO event (400 on ZodError).
  *  5. Distributed Redis rate limiting across instances on all mutating socket events.
  *  6. Strict per-user room isolation (`wora-{userId}`):
@@ -18,7 +18,7 @@
 
 import express, { type Express, type Request, type Response, type NextFunction } from 'express';
 import { createServer } from 'node:http';
-import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { Server as SocketIOServer } from 'socket.io';
 import { createAdapter } from '@socket.io/redis-adapter';
 import { createClient as createRedis, type RedisClientType } from 'redis';
@@ -28,6 +28,8 @@ import { z, ZodError } from 'zod';
 
 import { AgentModel, type IAgentDocument } from './models/Agent.js';
 import { SharedWorkspaceManager } from './core/SharedWorkspaceManager.js';
+import { workspaceSignalSchema, type AssignmentAck, type ReplyToAssignment } from './core/taskSignal.js';
+import { chooseWithModel, createDirectorRecommender, type DirectorRecommendation } from './director/recommend.js';
 import {
   BrainAdapterFactory,
   isProviderConfigured,
@@ -36,8 +38,16 @@ import {
 } from './ai/BrainAdapter.js';
 import { AiQueue } from './queue/AiQueue.js';
 import { PresenceStore } from './store/PresenceStore.js';
+import { AgentRuntimeStore } from './store/AgentRuntimeStore.js';
 import { EXAMPLE_ZONES, VALID_ZONE_IDS } from './zones.js';
 import { logger } from './lib/logger.js';
+import { safeEqual, verifySessionToken } from './lib/session.js';
+import { configuredOrigins, isProductionEnv, productionConfigProblems, sanitizeEnv } from './lib/config.js';
+import { generateStudioPack, resolveStudioBrain } from './studio/drafts.js';
+import { createStudioRouter } from './studio/router.js';
+import { createGitHubImporter } from './skills/github.js';
+import { createSkillsRouter } from './skills/router.js';
+import { createMongoSkillStore } from './models/AgentSkills.js';
 
 import {
   AgentLifecycleState,
@@ -50,6 +60,7 @@ import {
   MessageType,
   ParticipantStatus,
   RoomAccessMode,
+  lifecycleToAvatarState,
 } from '../../shared/types/index.js';
 import type {
   AgentParticipant,
@@ -58,29 +69,8 @@ import type {
   PublicBrainConfig,
 } from '../../shared/types/index.js';
 
-/* ─── SAFE ENV SANITIZATION ─────────────────────────────── */
-/**
- * Cleans accidentally pasted `KEY=value` prefixes or wrapping quotes WITHOUT
- * truncating valid query parameters (e.g. `mongodb+srv://.../?replicaSet=rs0`).
- */
-export function sanitizeEnv(raw?: string): string | undefined {
-  if (!raw) return undefined;
-  let value = raw.trim();
-  const pastedAssignment = value.match(/^[A-Z][A-Z0-9_]{1,39}=(.*)$/s);
-  if (pastedAssignment?.[1] !== undefined) {
-    value = pastedAssignment[1].trim();
-  }
-  if (
-    (value.startsWith('"') && value.endsWith('"')) ||
-    (value.startsWith("'") && value.endsWith("'"))
-  ) {
-    value = value.slice(1, -1).trim();
-  }
-  return value || undefined;
-}
-
-const NODE_ENV       = sanitizeEnv(process.env['NODE_ENV']) ?? 'development';
-const IS_PRODUCTION  = NODE_ENV === 'production';
+const IS_PRODUCTION  = isProductionEnv(process.env);
+const NODE_ENV       = IS_PRODUCTION ? 'production' : 'development';
 const DEFAULT_PORT   = Number(process.env['PORT'] ?? 4000);
 const MONGO_URI      = sanitizeEnv(process.env['MONGO_URI']);
 const REDIS_URL      = sanitizeEnv(process.env['REDIS_URL']) ?? 'redis://localhost:6379';
@@ -89,6 +79,7 @@ const AUTH_SECRET    = sanitizeEnv(process.env['AUTH_SECRET']);
 const ADMIN_API_KEY  = sanitizeEnv(process.env['ADMIN_API_KEY']);
 
 const BRAIN_EVICT_CHANNEL   = 'wora:events:brain-evict';
+const skillChannel = (roomId: string) => `skills:${roomId}`;
 const ROOM_HISTORY_LIMIT    = 100;
 const AI_CONTEXT_TURNS      = 16;
 const ROOM_DATA_TTL_SECONDS = 86_400 * 7; // 7 days
@@ -96,96 +87,35 @@ const MAX_MENTIONS_PER_MSG  = 3;
 const AGENT_CACHE_TTL_MS    = 30_000;
 
 /* ─── CORS CONFIGURATION ────────────────────────────────── */
-function buildCorsOptions(): CorsOptions {
-  const rawOrigins = sanitizeEnv(process.env['ALLOWED_ORIGINS']);
-  const allowlist = new Set<string>(
-    rawOrigins
-      ? rawOrigins.split(',').map((o) => o.trim()).filter(Boolean)
-      : IS_PRODUCTION
-        ? []
-        : ['http://localhost:5173', 'http://127.0.0.1:5173', 'http://localhost:4173', 'http://localhost:3000'],
-  );
+const allowedOrigins = new Set(configuredOrigins(process.env['ALLOWED_ORIGINS']));
+function allowOrigin(origin?: string) {
+  // Non-browser requests still have to present a signed session for workspace access.
+  return !origin || allowedOrigins.has(origin) || (!IS_PRODUCTION && !allowedOrigins.size
+    && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin));
+}
 
+function buildCorsOptions(): CorsOptions {
   return {
-    origin(requestOrigin, callback) {
-      // Allow non-browser probes (healthchecks, server-to-server)
-      if (!requestOrigin) {
-        callback(null, true);
-        return;
-      }
-      if (allowlist.has(requestOrigin)) {
-        callback(null, true);
-        return;
-      }
-      if (!IS_PRODUCTION && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(requestOrigin)) {
-        callback(null, true);
-        return;
-      }
-      logger.warn({ origin: requestOrigin }, 'Blocked disallowed CORS origin');
-      callback(new Error('CORS_ORIGIN_DENIED'));
+    origin(origin, callback) {
+      if (allowOrigin(origin)) callback(null, true);
+      else callback(new Error('CORS_ORIGIN_DENIED'));
     },
-    methods:     ['GET', 'POST', 'PATCH', 'PUT', 'DELETE'],
+    methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE'],
     credentials: true,
-    maxAge:      86_400,
+    maxAge: 86_400,
   };
 }
 
+async function within<T>(pending: Promise<T>, milliseconds: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([pending, new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error('Operation timed out')), milliseconds);
+    })]);
+  } finally { clearTimeout(timer); }
+}
+
 /* ─── AUTH HELPERS ──────────────────────────────────────── */
-function safeEqual(a: string, b: string): boolean {
-  const bufA = Buffer.from(a, 'utf8');
-  const bufB = Buffer.from(b, 'utf8');
-  if (bufA.length !== bufB.length) return false;
-  return timingSafeEqual(bufA, bufB);
-}
-
-/**
- * Verifies an HMAC-SHA256 signed session token (`base64url(payload).base64url(sig)`)
- * when `AUTH_SECRET` is configured. Returns the verified userId or null.
- */
-function verifySessionToken(token: string, secret: string): { userId: string; displayName?: string } | null {
-  const parts = token.split('.');
-  // Support both 2-part HMAC tokens (`payload.sig`) and standard 3-part HS256 JWTs (`header.payload.sig`)
-  if (parts.length === 2) {
-    const [payloadB64, sigB64] = parts as [string, string];
-    const expected = createHmac('sha256', secret).update(payloadB64).digest('base64url');
-    if (!safeEqual(sigB64, expected)) return null;
-    try {
-      const payload = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf8')) as {
-        sub?: string; userId?: string; name?: string; exp?: number;
-      };
-      if (payload.exp && Date.now() >= payload.exp * 1_000) return null;
-      const uid = payload.sub ?? payload.userId;
-      if (!uid || !/^[a-zA-Z0-9_-]{3,64}$/.test(uid)) return null;
-      return { userId: uid, displayName: payload.name };
-    } catch {
-      return null;
-    }
-  }
-
-  if (parts.length === 3) {
-    const [headerB64, payloadB64, sigB64] = parts as [string, string, string];
-    try {
-      const header = JSON.parse(Buffer.from(headerB64, 'base64url').toString('utf8')) as { alg?: string };
-      if (header.alg !== 'HS256') return null;
-      const expected = createHmac('sha256', secret)
-        .update(`${headerB64}.${payloadB64}`)
-        .digest('base64url');
-      if (!safeEqual(sigB64, expected)) return null;
-      const payload = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf8')) as {
-        sub?: string; userId?: string; name?: string; exp?: number;
-      };
-      if (payload.exp && Date.now() >= payload.exp * 1_000) return null;
-      const uid = payload.sub ?? payload.userId;
-      if (!uid || !/^[a-zA-Z0-9_-]{3,64}$/.test(uid)) return null;
-      return { userId: uid, displayName: payload.name };
-    } catch {
-      return null;
-    }
-  }
-
-  return null;
-}
-
 function requireAdminKey(req: Request, res: Response, next: NextFunction): void {
   if (!ADMIN_API_KEY) {
     if (IS_PRODUCTION) {
@@ -204,8 +134,10 @@ function requireAdminKey(req: Request, res: Response, next: NextFunction): void 
 }
 
 function requireRoomAccess(req: Request, res: Response, next: NextFunction): void {
+  res.setHeader('Cache-Control', 'no-store');
   const roomId = req.params['roomId'] ?? '';
   if (!AUTH_SECRET) {
+    if (IS_PRODUCTION) { res.status(503).json({ code: 'AUTH_UNAVAILABLE' }); return; }
     next();
     return;
   }
@@ -214,7 +146,7 @@ function requireRoomAccess(req: Request, res: Response, next: NextFunction): voi
     next();
     return;
   }
-  const verified = bearer ? verifySessionToken(bearer, AUTH_SECRET) : null;
+  const verified = bearer ? verifySessionToken(bearer, AUTH_SECRET, IS_PRODUCTION) : null;
   if (!verified || roomId !== `wora-${verified.userId}`) {
     res.status(403).json({ error: 'Forbidden' });
     return;
@@ -234,7 +166,7 @@ const PositionSchema = z.object({
 
 const PublicBrainSchema = z
   .object({
-    provider:    z.nativeEnum(BrainProvider),
+    provider:    z.enum(BrainProvider),
     model:       z.string().trim().min(1).max(100),
     maxTokens:   z.number().int().min(64).max(16_384).optional(),
     temperature: z.number().min(0).max(2).optional(),
@@ -247,7 +179,7 @@ const PublicBrainSchema = z
 
 const RestBrainSwapSchema = z
   .object({
-    provider:    z.nativeEnum(BrainProvider),
+    provider:    z.enum(BrainProvider),
     model:       z.string().trim().min(1).max(100),
     maxTokens:   z.number().int().min(64).max(16_384).optional(),
     temperature: z.number().min(0).max(2).optional(),
@@ -298,13 +230,6 @@ const WorkspaceWriteSchema = z.object({
   expiresInMs:   z.number().int().min(5_000).max(86_400_000 * 7).optional(),
 });
 
-const WorkspaceSignalSchema = z.object({
-  zoneId:  SafeIdSchema.refine((id) => VALID_ZONE_IDS.has(id), 'Unknown zoneId'),
-  agentId: SafeIdSchema,
-  title:   z.string().trim().min(1).max(200),
-  data:    z.record(z.string().max(64), z.unknown()).default({}),
-});
-
 /* ─── DISTRIBUTED REDIS RATE LIMITER ────────────────────── */
 const RATE_LIMIT_LUA = `
 local current = redis.call('INCR', KEYS[1])
@@ -317,18 +242,21 @@ return current
 class RedisRateLimiter {
   constructor(private readonly redis: RedisClientType) {}
 
-  async allow(bucket: string, subject: string, limit: number, windowMs: number): Promise<boolean> {
+  async allow(bucket: string, subject: string, limit: number, windowMs: number, quotaSignal?: AbortSignal): Promise<boolean> {
     const key = `wora:rl:${bucket}:${subject}`;
     try {
+      const client = quotaSignal ? this.redis.withCommandOptions({ abortSignal: quotaSignal, timeout: 1_500 }) : this.redis;
+      if (quotaSignal && !this.redis.isReady) throw new Error('Quota storage unavailable');
       const count = Number(
-        await this.redis.eval(RATE_LIMIT_LUA, {
+        await client.eval(RATE_LIMIT_LUA, {
           keys:      [key],
           arguments: [String(windowMs)],
         }),
       );
       return count <= limit;
-    } catch {
-      // Fail open on transient Redis hiccup to preserve availability
+    } catch (error) {
+      // Interactive actions preserve availability; metered provider calls fail closed.
+      if (quotaSignal) throw error;
       return true;
     }
   }
@@ -517,6 +445,8 @@ function mapAgentToParticipant(
 
 /* ─── BOOT SERVER ───────────────────────────────────────── */
 export async function bootWoraServer(app: Express, port = DEFAULT_PORT) {
+  const problems = productionConfigProblems(process.env);
+  if (problems.length) throw new Error(`Missing or invalid production configuration: ${problems.join(', ')}`);
   const httpServer = createServer(app);
   const corsOptions = buildCorsOptions();
 
@@ -525,13 +455,13 @@ export async function bootWoraServer(app: Express, port = DEFAULT_PORT) {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('X-Frame-Options', 'DENY');
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    if (!allowOrigin(_req.get('Origin'))) { res.status(403).json({ code: 'CORS_ORIGIN_DENIED' }); return; }
     next();
   });
   app.use(cors(corsOptions));
-  app.use(express.json({ limit: '16kb' }));
 
   /* ── Redis clients (pub + sub + app events) ── */
-  const pubClient = createRedis({ url: REDIS_URL }) as RedisClientType;
+  const pubClient = createRedis({ url: REDIS_URL, disableOfflineQueue: true }) as RedisClientType;
   const subClient = pubClient.duplicate() as RedisClientType;
   const eventSub  = pubClient.duplicate() as RedisClientType;
 
@@ -539,7 +469,7 @@ export async function bootWoraServer(app: Express, port = DEFAULT_PORT) {
   subClient.on('error', (err: Error) => logger.error({ err: err.message }, 'Redis subClient error'));
   eventSub.on('error',  (err: Error) => logger.error({ err: err.message }, 'Redis eventSub error'));
 
-  await Promise.all([pubClient.connect(), subClient.connect(), eventSub.connect()]);
+  await within(Promise.all([pubClient.connect(), subClient.connect(), eventSub.connect()]), 10_000);
   logger.info('Redis clients connected');
 
   // Cross-instance BrainAdapterFactory cache invalidation
@@ -554,11 +484,13 @@ export async function bootWoraServer(app: Express, port = DEFAULT_PORT) {
   });
 
   const presence = new PresenceStore(pubClient);
+  const runtime = new AgentRuntimeStore(pubClient);
   const rateLimiter = new RedisRateLimiter(pubClient);
 
   /* ── Socket.IO with Redis adapter ── */
   const io = new SocketIOServer(httpServer, {
     cors:            corsOptions,
+    allowRequest:    (req, done) => done(null, allowOrigin(req.headers.origin)),
     transports:      ['websocket', 'polling'],
     pingInterval:    25_000,
     pingTimeout:     60_000,
@@ -598,13 +530,26 @@ export async function bootWoraServer(app: Express, port = DEFAULT_PORT) {
     if (agentsCache && now < agentsCache.expiresAt) {
       return agentsCache.data;
     }
-    const docs = await AgentModel.find({ status: 'active' }).lean<CachedAgent[]>();
-    agentsCache = { data: docs, expiresAt: now + AGENT_CACHE_TTL_MS };
+    const docs = await AgentModel.find({ status: 'active' }, null, { maxTimeMS: 2_500 }).lean<CachedAgent[]>();
+    if (docs.length) agentsCache = { data: docs, expiresAt: now + AGENT_CACHE_TTL_MS };
     return docs;
   }
 
   /* ── AI Queue (BullMQ) with reply persistence ── */
   const aiQueue = new AiQueue(io, REDIS_URL, {
+    onLifecycle(job, state, ttl) {
+      void runtime.report(job.roomId, job.agentId, job.messageId, state, ttl)
+        .then((event) => io.to(event.roomId).emit('agent:lifecycle', event))
+        .catch(() => logger.warn('Agent runtime signal could not be saved'));
+    },
+    async onWorkspaceProgress(job, progress) {
+      if (!job.workspaceTask) return false;
+      const { zoneId, entryId } = job.workspaceTask;
+      const status = progress.state === 'started' ? 'in_progress' : progress.state === 'response' ? 'review_pending' : 'open';
+      const payload = progress.state === 'response' ? { directorExecution: 'ready', directorResponse: progress.text }
+        : progress.state === 'failed' ? { directorExecution: 'failed' } : undefined;
+      return Boolean(await workspaceMgr.updateStatus(zoneId, job.roomId, entryId, status, payload));
+    },
     onReplyPersisted: async (roomId, replyMsg, agentId) => {
       await appendRoomMessage(pubClient, roomId, replyMsg);
       if (isMongoReady()) {
@@ -633,18 +578,20 @@ export async function bootWoraServer(app: Express, port = DEFAULT_PORT) {
         next(new Error('AUTH_REQUIRED'));
         return;
       }
-      const verified = verifySessionToken(rawToken, AUTH_SECRET);
+      const verified = verifySessionToken(rawToken, AUTH_SECRET, IS_PRODUCTION);
       if (!verified) {
         next(new Error('AUTH_INVALID'));
         return;
       }
       socket.data['userId']      = verified.userId;
       socket.data['displayName'] = verified.displayName ?? 'User';
+      socket.data['sessionExpiresAt'] = verified.expiresAt;
       next();
       return;
     }
 
-    // Open/workspace mode (when AUTH_SECRET is unset): strictly validate client ID format
+    if (IS_PRODUCTION) { next(new Error('AUTH_UNAVAILABLE')); return; }
+    // Unsigned identities are supported only in explicitly enabled local development.
     const rawUserId = typeof auth?.['userId'] === 'string' ? auth['userId'].trim() : '';
     const safeUserId = /^[a-zA-Z0-9_-]{4,64}$/.test(rawUserId)
       ? rawUserId
@@ -657,36 +604,99 @@ export async function bootWoraServer(app: Express, port = DEFAULT_PORT) {
   });
 
   /* ─── REST API ROUTES ──────────────────────────────────── */
+  const studioSecret = AUTH_SECRET;
+  const studioProvider = sanitizeEnv(process.env['STUDIO_PROVIDER']);
+  const studioBrain = studioSecret ? resolveStudioBrain(studioProvider, sanitizeEnv(process.env['STUDIO_MODEL'])) : null;
+  if (studioProvider && !studioBrain) {
+    logger.warn('Live Studio is disabled: check session authentication and the Studio provider/model settings');
+  }
+  app.use('/api/studio', createStudioRouter(studioSecret && studioBrain ? {
+    authenticate(authorization) {
+      const token = authorization?.match(/^Bearer\s+(\S+)$/i)?.[1];
+      return token ? verifySessionToken(token, studioSecret, true)?.userId ?? null : null;
+    },
+    async consumeQuota(userId, signal) {
+      if (!await rateLimiter.allow('studio-user', userId, 4, 60_000, signal)) return 60;
+      if (!await rateLimiter.allow('studio-global', 'workspace', 60, 3_600_000, signal)) return 3_600;
+      return null;
+    },
+    generate: (brief, signal) => generateStudioPack(studioBrain, brief, signal),
+  } : undefined));
+  const recommendDirector = studioSecret && studioBrain ? createDirectorRecommender({
+    getAgents: loadActiveAgents,
+    async consumeQuota(userId, signal) {
+      return await rateLimiter.allow('director-user', userId, 6, 60_000, signal)
+        && await rateLimiter.allow('director-global', 'workspace', 90, 3_600_000, signal);
+    },
+    choose: (brief, candidates, signal) => chooseWithModel(studioBrain, brief, candidates, signal),
+  }) : null;
+  const skillStore = createMongoSkillStore();
+  const githubToken = sanitizeEnv(process.env['GITHUB_SKILLS_TOKEN']);
+  app.use('/api/agents/:agentId/skills', createSkillsRouter({
+    available: () => Boolean(AUTH_SECRET && isMongoReady()),
+    authenticate(token) {
+      const session = AUTH_SECRET && verifySessionToken(token, AUTH_SECRET, true);
+      return session ? { userId: session.userId, roomId: `wora-${session.userId}` } : null;
+    },
+    async hasAgent(_roomId, agentId) {
+      return Boolean(await AgentModel.exists({ agentId, status: 'active' }).maxTimeMS(2_500));
+    },
+    async consumeQuota(kind, userId, signal) {
+      if (!await rateLimiter.allow(`skills-${kind}-user`, userId, kind === 'import' ? 4 : 20, 60_000, signal)) return 60;
+      if (kind === 'import' && !await rateLimiter.allow('skills-import-global', 'github', githubToken ? 100 : 16, 3_600_000, signal)) return 3_600;
+      return null;
+    },
+    importGitHub: createGitHubImporter({ token: githubToken }),
+    store: skillStore,
+    publish: (event) => io.to(skillChannel(event.roomId)).emit('agent:skills-updated', event),
+  }));
+  app.use(express.json({ limit: '16kb' }));
+
+  const serverMode = IS_PRODUCTION ? 'production' : 'development';
+  async function redisResponds() {
+    if (!pubClient.isReady) return false;
+    try { return await pubClient.withCommandOptions({ abortSignal: AbortSignal.timeout(1_200) }).ping() === 'PONG'; }
+    catch { return false; }
+  }
+
   app.get('/health', async (_req: Request, res: Response) => {
-    let redisOk = false;
-    try {
-      redisOk = (await pubClient.ping()) === 'PONG';
-    } catch {
-      redisOk = false;
-    }
-
-    const mongoStatus = !MONGO_URI
-      ? 'not_configured'
-      : isMongoReady()
-        ? 'connected'
-        : 'disconnected';
-
-    const queueStats = redisOk
-      ? await aiQueue.getStats().catch(() => null)
-      : null;
-
-    const healthy = redisOk && (mongoStatus === 'connected' || mongoStatus === 'not_configured');
-
+    const redisOk = await redisResponds();
+    const mongoStatus = !MONGO_URI ? 'not_configured' : isMongoReady() ? 'connected' : 'disconnected';
+    const healthy = redisOk && (mongoStatus === 'connected' || (!IS_PRODUCTION && mongoStatus === 'not_configured'));
+    res.setHeader('Cache-Control', 'no-store');
     res.status(healthy ? 200 : 503).json({
-      status:      healthy ? 'ok' : 'degraded',
-      version:     'v4.1-scaled',
-      connections: connectionCount,
-      maxSockets:  MAX_SOCKETS,
-      mongodb:     mongoStatus,
-      redis:       redisOk ? 'connected' : 'disconnected',
-      queue:       queueStats,
-      timestamp:   new Date().toISOString(),
+      status: healthy ? 'ok' : 'degraded', mode: serverMode, version: 'v4.1-scaled',
+      connections: connectionCount, maxSockets: MAX_SOCKETS,
+      mongodb: mongoStatus, redis: redisOk ? 'connected' : 'disconnected',
+      queue: redisOk ? await within(aiQueue.getStats(), 1_200).catch(() => null) : null,
+      timestamp: new Date().toISOString(),
     });
+  });
+
+  app.get('/ready', async (_req: Request, res: Response) => {
+    const redisOk = await redisResponds();
+    const mongoOk = isMongoReady();
+    const agents = mongoOk ? await within(loadActiveAgents(), 2_600).catch(() => null) : null;
+    const ready = redisOk && mongoOk && Boolean(AUTH_SECRET && agents?.length);
+    const hasProvider = agents?.some((agent) => isProviderConfigured(agent.brainConfig ?? { provider: BrainProvider.Google }));
+    res.setHeader('Cache-Control', 'no-store');
+    res.status(ready ? 200 : 503).json({
+      status: ready ? 'ready' : 'not_ready', mode: serverMode,
+      redis: redisOk ? 'connected' : 'disconnected', mongodb: mongoOk ? 'connected' : 'disconnected',
+      sessions: AUTH_SECRET ? 'signed' : 'unconfigured',
+      roster: agents === null ? 'unavailable' : agents.length ? 'seeded' : 'unseeded',
+      ai: hasProvider ? 'configured' : 'unconfigured',
+    });
+  });
+
+  app.get('/api/session', (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!AUTH_SECRET) { res.status(404).json({ code: 'AUTH_UNAVAILABLE' }); return; }
+    const token = req.header('authorization')?.match(/^Bearer\s+(\S+)$/i)?.[1];
+    if (!token) { res.status(401).json({ code: 'AUTH_REQUIRED' }); return; }
+    const session = verifySessionToken(token, AUTH_SECRET, true);
+    if (!session) { res.status(401).json({ code: 'AUTH_INVALID' }); return; }
+    res.json({ userId: session.userId, expiresAt: session.expiresAt });
   });
 
   app.get('/api/agents', async (_req: Request, res: Response) => {
@@ -780,7 +790,7 @@ export async function bootWoraServer(app: Express, port = DEFAULT_PORT) {
       res.json(broadcast);
     } catch (err) {
       if (err instanceof ZodError) {
-        res.status(400).json({ error: 'Validation failed', details: err.flatten().fieldErrors });
+        res.status(400).json({ error: 'Validation failed', details: z.flattenError(err).fieldErrors });
         return;
       }
       logger.error({ err }, 'Failed to swap global agent brain');
@@ -814,7 +824,7 @@ export async function bootWoraServer(app: Express, port = DEFAULT_PORT) {
       res.status(201).json(entry);
     } catch (err) {
       if (err instanceof ZodError) {
-        res.status(400).json({ error: 'Validation failed', details: err.flatten().fieldErrors });
+        res.status(400).json({ error: 'Validation failed', details: z.flattenError(err).fieldErrors });
         return;
       }
       logger.error({ err }, 'Failed to write workspace entry');
@@ -841,6 +851,27 @@ export async function bootWoraServer(app: Express, port = DEFAULT_PORT) {
     connectionCount++;
     const userId = socket.data['userId'] as string;
     const privateRoomId = `wora-${userId}`;
+    const skillRoom = skillChannel(privateRoomId);
+    const expiresAt = Number(socket.data['sessionExpiresAt'] ?? 0);
+    const hasActiveSession = () => expiresAt > Date.now();
+    let sessionExpiry: NodeJS.Timeout | undefined;
+    function expireSession() {
+      if (!socket.connected) return;
+      socket.emit('session:expired');
+      socket.disconnect(true);
+    }
+    function enforceSessionDeadline() {
+      const remaining = expiresAt - Date.now();
+      if (remaining <= 0) { expireSession(); return; }
+      sessionExpiry = setTimeout(enforceSessionDeadline, Math.min(remaining, 2_147_483_647));
+      sessionExpiry.unref();
+    }
+    if (expiresAt) enforceSessionDeadline();
+    socket.once('disconnect', () => clearTimeout(sessionExpiry));
+    socket.use((_packet, next) => {
+      if (expiresAt && !hasActiveSession()) { expireSession(); return; }
+      next();
+    });
 
     socket.on('room:join', async (raw: unknown) => {
       const parsed = RoomJoinSchema.safeParse(raw ?? {});
@@ -850,13 +881,13 @@ export async function bootWoraServer(app: Express, port = DEFAULT_PORT) {
       }
 
       try {
-        await socket.join(privateRoomId);
+        await socket.join(hasActiveSession() ? [privateRoomId, skillRoom] : privateRoomId);
         socket.data['roomId'] = privateRoomId;
 
         const pos = parsed.data.position ?? { x: 0, y: 0, z: 2 };
         const nowIso = new Date().toISOString();
 
-        const [, agents, brainOverrides, recentMessages, workspaces] = await Promise.all([
+        const [, agents, brainOverrides, recentMessages, workspaces, skillIndex] = await Promise.all([
           presence.set(privateRoomId, userId, {
             participantId: userId,
             roomId:        privateRoomId,
@@ -870,12 +901,24 @@ export async function bootWoraServer(app: Express, port = DEFAULT_PORT) {
             EXAMPLE_ZONES.map((z) => z.id),
             privateRoomId,
           ),
+          hasActiveSession() && isMongoReady() ? skillStore.getIndex(privateRoomId).catch(() => null) : null,
         ]);
 
-        const participants = agents.map((a) =>
-          mapAgentToParticipant(a, privateRoomId, brainOverrides[a.agentId]),
-        );
+        if (IS_PRODUCTION && agents.length === 0) {
+          await socket.leave(privateRoomId);
+          await socket.leave(skillRoom);
+          socket.emit('error', { code: 'ROSTER_UNAVAILABLE', message: 'فريق الخادم غير جاهز بعد. جرّب إعادة الاتصال بعد إعداده.' });
+          return;
+        }
+        const signals = await runtime.snapshot(privateRoomId, agents.map((agent) => agent.agentId)).catch(() => null);
+        const participants = agents.map((a) => {
+          const signal = signals?.get(a.agentId);
+          return { ...mapAgentToParticipant(a, privateRoomId, brainOverrides[a.agentId]),
+            ...(skillIndex && hasActiveSession() ? { skillSnapshot: skillIndex[a.agentId] ?? { revision: 0, activeNames: [] } } : {}),
+            ...(signal ? { lifecycleRevision: signal.revision, lifecycleState: signal.state, avatarState: lifecycleToAvatarState(signal.state) } : {}) };
+        });
 
+        if (!socket.connected || (expiresAt && !hasActiveSession())) return;
         socket.emit('room:state', {
           room: {
             id:               privateRoomId,
@@ -894,13 +937,14 @@ export async function bootWoraServer(app: Express, port = DEFAULT_PORT) {
         });
       } catch (err) {
         logger.error({ err, userId }, 'room:join failed');
-        socket.emit('error', { code: 'JOIN_ERROR', message: 'Could not join workspace room' });
+        socket.emit('error', { code: 'JOIN_ERROR', message: 'تعذّر فتح مساحة العمل. أعد الاتصال بعد قليل.' });
       }
     });
 
     socket.on('room:leave', async () => {
       try {
         await socket.leave(privateRoomId);
+        await socket.leave(skillRoom);
         // Only clear presence if user has no remaining active sockets in this room
         const remaining = await io.in(privateRoomId).fetchSockets();
         if (remaining.length === 0) {
@@ -922,11 +966,12 @@ export async function bootWoraServer(app: Express, port = DEFAULT_PORT) {
     });
 
     socket.on('message:send', async (raw: unknown) => {
+      if (!socket.rooms.has(privateRoomId)) return;
       const allowed = await rateLimiter.allow('msg', userId, 20, 60_000);
       if (!allowed) {
         socket.emit('error', {
           code:    'RATE_LIMITED',
-          message: 'Rate limit reached (20 messages/min). Please wait a moment.',
+          message: 'وصلت للحدّ المسموح من الرسائل في الدقيقة. جرّب بعد قليل.',
         });
         return;
       }
@@ -960,8 +1005,9 @@ export async function bootWoraServer(app: Express, port = DEFAULT_PORT) {
           }
         }
 
-        if (targetMap.size === 0 && targetAgentId) {
-          const direct = agents.find((a) => a.agentId === targetAgentId);
+        if (targetMap.size === 0) {
+          const direct = targetAgentId ? agents.find((a) => a.agentId === targetAgentId)
+            : parsedMentions.length ? undefined : agents.find((a) => a.agentId === 'agent-planner-01') ?? agents[0];
           if (direct) targetMap.set(direct.agentId, direct);
         }
 
@@ -985,7 +1031,10 @@ export async function bootWoraServer(app: Express, port = DEFAULT_PORT) {
         await appendRoomMessage(pubClient, privateRoomId, userMsg);
         io.to(privateRoomId).emit('message:received', { message: userMsg });
 
-        if (targetMap.size === 0) return;
+        if (targetMap.size === 0) {
+          socket.emit('error', { code: 'AGENT_UNAVAILABLE', message: 'اتحفظت الرسالة، لكن مفيش وكيل متاح للرد. اختار وكيل من الفريق.' });
+          return;
+        }
 
         const history: ConversationTurn[] = priorMessages
           .filter((m) => m.type === MessageType.Text || m.type === MessageType.Mention)
@@ -1003,11 +1052,19 @@ export async function bootWoraServer(app: Express, port = DEFAULT_PORT) {
             const label = BRAIN_PROVIDER_LABELS[keyCheckTarget.provider] ?? keyCheckTarget.provider;
             socket.emit('error', {
               code:    'MISSING_API_KEY',
-              message: `${agent.displayName} uses ${label}, which has no API key configured on the server.`,
+              message: `اتحفظت الرسالة. الردّ من ${agent.displayName} محتاج تفعيل ${label} على الخادم.`,
             });
             continue;
           }
 
+          const signal = AbortSignal.timeout(2_500);
+          const metered = await rateLimiter.allow('chat-job-user', userId, 20, 60_000, signal)
+            && await rateLimiter.allow('chat-job-global', 'workspace', 360, 3_600_000, signal);
+          if (!metered) {
+            socket.emit('error', { code: 'RATE_LIMITED', message: 'اتحفظت الرسالة، لكن تم بلوغ حدّ الردود التلقائية. جرّب لاحقًا.' });
+            break;
+          }
+          if (!socket.connected || (expiresAt && !hasActiveSession())) return;
           await aiQueue.enqueue({
             messageId:            randomUUID(),
             agentId:              agent.agentId,
@@ -1027,15 +1084,10 @@ export async function bootWoraServer(app: Express, port = DEFAULT_PORT) {
             senderId:             userId,
           });
 
-          io.to(privateRoomId).emit('agent:lifecycle', {
-            agentId:     agent.agentId,
-            state:       AgentLifecycleState.Thinking,
-            avatarState: AvatarAnimState.Thinking,
-          });
         }
       } catch (err) {
         logger.error({ err, userId }, 'message:send processing error');
-        socket.emit('error', { code: 'MESSAGE_ERROR', message: 'Failed to process message' });
+        socket.emit('error', { code: 'MESSAGE_ERROR', message: 'تعذّر تأكيد معالجة الرسالة. تحقّق من المحادثة قبل إعادة الإرسال.' });
       }
     });
 
@@ -1087,31 +1139,72 @@ export async function bootWoraServer(app: Express, port = DEFAULT_PORT) {
       }
     });
 
-    socket.on('workspace:signal', async (raw: unknown) => {
-      const allowed = await rateLimiter.allow('ws-signal', userId, 30, 60_000);
-      if (!allowed) {
-        socket.emit('error', { code: 'RATE_LIMITED', message: 'Too many workspace updates.' });
-        return;
-      }
+    function hasLiveSession() {
+      const token = socket.handshake.auth?.['token'];
+      return Boolean(AUTH_SECRET && typeof token === 'string' && verifySessionToken(token.trim(), AUTH_SECRET, true)?.userId === userId);
+    }
 
-      const parsed = WorkspaceSignalSchema.safeParse(raw);
-      if (!parsed.success) {
-        socket.emit('error', { code: 'INVALID_SIGNAL', message: 'Invalid workspace signal payload' });
-        return;
-      }
-
+    // Only authenticated, metered users with a configured agent may start a text reply.
+    // Failure to prepare the reply must not prevent saving the assigned task.
+    async function directorExecutionBrain(agent: CachedAgent) {
+      if (!hasLiveSession()) return null;
+      const signal = AbortSignal.timeout(2_000);
       try {
-        await workspaceMgr.write({
-          zoneId:        parsed.data.zoneId,
-          roomId:        privateRoomId,
-          type:          'signal',
-          authorAgentId: parsed.data.agentId,
-          title:         parsed.data.title,
-          payload:       parsed.data.data,
-        });
-      } catch (err) {
-        logger.error({ err, userId }, 'workspace:signal failed');
-        socket.emit('error', { code: 'WORKSPACE_ERROR', message: 'Failed to write workspace signal' });
+        const command = pubClient.withCommandOptions({ abortSignal: signal, timeout: 1_500 });
+        const json = pubClient.isReady ? await command.hGet(roomBrainsKey(privateRoomId), agent.agentId) : null;
+        const override = json ? PublicBrainSchema.safeParse(JSON.parse(json)) : null;
+        const brain = override?.success ? override.data : toPublicBrain(agent.brainConfig, agent.modelId);
+        if (!isSupportedModel(brain.provider, brain.model) || !isProviderConfigured(brain)) return null;
+        if (!await rateLimiter.allow('director-run-user', userId, 6, 60_000, signal)
+          || !await rateLimiter.allow('director-run-global', 'workspace', 90, 3_600_000, signal)) return null;
+        return brain;
+      } catch { return null; }
+    }
+
+    socket.on('director:recommend', async (raw: unknown, ack: (result: DirectorRecommendation) => void) => {
+      if (typeof ack !== 'function') return;
+      if (!recommendDirector || !hasLiveSession() || !socket.rooms.has(privateRoomId)) { ack({ ok: false }); return; }
+      const disconnected = new AbortController();
+      const abort = () => disconnected.abort();
+      socket.once('disconnect', abort);
+      try { ack(await recommendDirector(userId, raw, disconnected.signal)); }
+      finally { socket.off('disconnect', abort); }
+    });
+
+    socket.on('workspace:signal', async (raw: unknown, ack?: ReplyToAssignment) => {
+      function reply(result: AssignmentAck) {
+        if (typeof ack === 'function') ack(result);
+        else if (!result.ok) socket.emit('error', { code: result.code, message: 'تعذّر حفظ المهمة.' });
+      }
+      const parsed = workspaceSignalSchema.safeParse(raw);
+      if (!parsed.success || !socket.rooms.has(privateRoomId)) { reply({ ok: false, code: 'INVALID_SIGNAL' }); return; }
+      try {
+        if (!await rateLimiter.allow('ws-signal', userId, 30, 60_000)) { reply({ ok: false, code: 'RATE_LIMITED' }); return; }
+        const { zoneId, agentId, title, data } = parsed.data;
+        const agent = (await loadActiveAgents()).find((item) => item.agentId === agentId);
+        const fromDirector = data.source === 'director';
+        if (!agent || (fromDirector && agent.zoneId !== zoneId)) { reply({ ok: false, code: 'AGENT_UNAVAILABLE' }); return; }
+        const brain = fromDirector ? await directorExecutionBrain(agent) : null;
+        if (!socket.rooms.has(privateRoomId)) return;
+        const entry = await workspaceMgr.write({ zoneId, roomId: privateRoomId, type: 'task', authorAgentId: userId, targetAgentId: agentId, title,
+          payload: fromDirector ? { ...data, directorExecution: brain ? 'pending' : 'unavailable' } : data });
+        reply({ ok: true, entry });
+        if (brain && data.brief) {
+          // The target comes only from the validated assignment, never from @mentions in the brief.
+          void aiQueue.enqueue({
+            messageId: entry.id, workspaceTask: { zoneId, entryId: entry.id }, roomId: privateRoomId, senderId: userId,
+            agentId: agent.agentId, displayName: agent.displayName, locale: agent.locale ?? 'en',
+            customRole: agent.profile.customRole ?? 'AI Agent', tone: agent.profile.tone ?? 'Analytical',
+            tagline: agent.profile.tagline ?? '', specialty: agent.profile.specialty, skills: agent.profile.skills ?? [],
+            boundaries: agent.profile.boundaries ?? [], brainOverride: brain, history: [], userMessage: data.brief,
+          }).catch(async () => {
+            try { await workspaceMgr.updateStatus(zoneId, privateRoomId, entry.id, 'open', { directorExecution: 'failed' }); }
+            catch { logger.warn({ entryId: entry.id }, 'Could not record director queue failure'); }
+          });
+        }
+      } catch {
+        logger.error({ userId }, 'workspace:signal write failed');
+        reply({ ok: false, code: 'WORKSPACE_UNCONFIRMED' });
       }
     });
 
@@ -1130,7 +1223,7 @@ export async function bootWoraServer(app: Express, port = DEFAULT_PORT) {
 
   /* ─── START & GRACEFUL SHUTDOWN ────────────────────────── */
   await new Promise<void>((resolve) => {
-    httpServer.listen(port, '0.0.0.0', () => {
+    httpServer.listen(port, IS_PRODUCTION ? '0.0.0.0' : '127.0.0.1', () => {
       logger.info({ port, maxSockets: MAX_SOCKETS, env: NODE_ENV }, 'Wora Agent OS v4.1 listening');
       resolve();
     });

@@ -22,19 +22,21 @@ export default defineConfig({
   },
   server: {
     host: '0.0.0.0',
-    allowedHosts: true,
+    allowedHosts: ['.e2b.app'],
     proxy: {
       '/api':       { target: 'http://127.0.0.1:4000', changeOrigin: true },
       '/health':    { target: 'http://127.0.0.1:4000', changeOrigin: true },
+      '/ready':     { target: 'http://127.0.0.1:4000', changeOrigin: true },
       '/socket.io': { target: 'http://127.0.0.1:4000', ws: true },
     },
   },
   preview: {
     host: '0.0.0.0',
-    allowedHosts: true,
+    allowedHosts: ['.e2b.app'],
     proxy: {
       '/api':       { target: 'http://127.0.0.1:4000', changeOrigin: true },
       '/health':    { target: 'http://127.0.0.1:4000', changeOrigin: true },
+      '/ready':     { target: 'http://127.0.0.1:4000', changeOrigin: true },
       '/socket.io': { target: 'http://127.0.0.1:4000', ws: true },
     },
   },

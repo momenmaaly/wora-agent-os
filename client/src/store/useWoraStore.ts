@@ -1,5 +1,8 @@
 import { create } from 'zustand';
 import { devtools, subscribeWithSelector } from 'zustand/middleware';
+import { isRoomLockedForPlan } from '../billing/plans.js';
+import { RECEPTION_POINT } from '../office/visits.js';
+import { useBillingStore } from './useBillingStore.js';
 import {
   AgentLifecycleState,
   AgentOrigin,
@@ -9,6 +12,7 @@ import {
 } from '../types.js';
 import type {
   AgentParticipant,
+  AgentSkillUpdate,
   BrainProvider,
   Message,
   PublicBrainConfig,
@@ -17,12 +21,13 @@ import type {
 } from '../types.js';
 import {
   AGENT_ROLE_AR,
-  buildDefaultWorkspaces,
   DEFAULT_COMPANY_AGENTS,
   DEFAULT_COMPANY_ZONES,
   OFFICE_ROOMS,
   ROOM_BY_ID,
 } from '../office/layout.js';
+
+import { isLocalTask, type ServerMode, type TaskScope } from '../office/work.js';
 
 export interface PresenceEntry {
   participantId: string;
@@ -71,7 +76,7 @@ export interface AgentLocationSnapshot {
 export interface ActivityFeedItem {
   id:        string;
   text:      string;
-  color:     string;
+  scope:     TaskScope | 'session';
   timestamp: string;
 }
 
@@ -97,6 +102,7 @@ export interface HireAgentInput {
 export interface WoraState {
   roomId:            string;
   connected:         boolean;
+  serverMode:        ServerMode | null;
   demoMode:          boolean;
   connectionError:   string | null;
   agents:            Record<string, AgentParticipant>;
@@ -111,24 +117,30 @@ export interface WoraState {
   selectedAgentId:   string | null;
   followAgentId:     string | null;
   localUserId:       string;
+  workspaceUserId:   string;
   localPosition:     { x: number; y: number; z: number };
   officeCommand:     OfficeCommand | null;
   ui: {
     theme:            'light' | 'dark';
-    showSidebar:      boolean;
     showWorkspaceHUD: boolean;
+    workspaceZoneId:  string | null;
+    workspaceEntryId: string | null;
     showChat:         boolean;
     autoRoam:         boolean;
     modelSwapAgentId: string | null;
+    skillsAgentId:    string | null;
     showHireModal:    boolean;
   };
 
   setRoomId:              (id: string) => void;
   setConnected:           (v: boolean) => void;
   setDemoMode:            (v: boolean) => void;
+  expireWorkspaceSession: () => void;
   setConnectionError:     (e: string | null) => void;
   setRoomState:           (state: {
     roomId?:        string;
+    userId?:        string;
+    mode:           ServerMode;
     participants:   AgentParticipant[];
     presence:       PresenceEntry[];
     zones:          WorkspaceZone[];
@@ -138,10 +150,11 @@ export interface WoraState {
   upsertAgent:            (agent: AgentParticipant) => void;
   hireAgent:              (input: HireAgentInput) => AgentParticipant;
   removeCustomAgent:      (agentId: string) => void;
-  updateAgentLifecycle:   (agentId: string, state: AgentLifecycleState, avatarState: AvatarAnimState) => void;
+  updateAgentLifecycle:   (agentId: string, state: AgentLifecycleState, avatarState: AvatarAnimState, revision?: number) => void;
+  updateAgentSkills:      (event: AgentSkillUpdate) => void;
   updateAgentBrain:       (agentId: string, brain: PublicBrainConfig) => void;
   setAgentLocation:       (agentId: string, loc: AgentLocationSnapshot) => void;
-  pushActivity:           (text: string, color?: string) => void;
+  pushActivity:           (text: string, scope: TaskScope) => void;
   upsertPresence:         (entry: PresenceEntry) => void;
   removePresence:         (participantId: string) => void;
   addMessage:             (msg: Message) => void;
@@ -151,11 +164,11 @@ export interface WoraState {
   setFollowAgent:         (id: string | null) => void;
   setLocalPosition:       (pos: { x: number; y: number; z: number }) => void;
   toggleTheme:            () => void;
-  toggleSidebar:          () => void;
-  toggleWorkspaceHUD:     () => void;
+  toggleWorkspaceHUD:     (force?: boolean, zoneId?: string | null, entryId?: string) => void;
   toggleChat:             (force?: boolean) => void;
   toggleAutoRoam:         () => void;
   openModelSwap:          (agentId: string | null) => void;
+  openAgentSkills:        (agentId: string | null) => void;
   setShowHireModal:       (open: boolean) => void;
   dispatchAgentToRoom:    (agentId: string, roomId: string, reasonAr?: string) => void;
   callTeamStandup:        () => void;
@@ -201,7 +214,9 @@ function readInitialTheme(): 'light' | 'dark' {
 
 function applyDomTheme(theme: 'light' | 'dark'): void {
   if (typeof document === 'undefined') return;
+  document.documentElement.dataset.theme = theme;
   document.documentElement.classList.toggle('dark', theme === 'dark');
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'dark' ? '#17202a' : '#f2f4f5');
   try {
     window.localStorage.setItem(THEME_STORAGE_KEY, theme);
   } catch {
@@ -234,12 +249,12 @@ function buildInitialLocations(agents: Record<string, AgentParticipant>): Record
   return out;
 }
 
-function makeActivityItem(text: string, color = '#3b82f6'): ActivityFeedItem {
+function makeActivityItem(text: string, scope: ActivityFeedItem['scope'] = 'session'): ActivityFeedItem {
   return {
     id:        `act-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
     text,
-    color,
-    timestamp: new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }),
+    scope,
+    timestamp: new Date().toISOString(),
   };
 }
 
@@ -256,6 +271,7 @@ export const useWoraStore = create<WoraState>()(
       return {
         roomId,
         connected:        false,
+        serverMode:       null,
         demoMode:         false,
         connectionError:  null,
         agents:           initialAgents,
@@ -263,76 +279,88 @@ export const useWoraStore = create<WoraState>()(
         lastSwappedAgent: null,
         zones:            DEFAULT_COMPANY_ZONES,
         presence:         {},
-        messages: [
-          {
-            id:        'welcome-hq-1',
-            roomId,
-            senderId:  'agent-planner-01',
-            type:      MessageType.Text,
-            content:
-              'أهلاً بك في مقر شركة Wora HQ! جميع الوكلاء موزّعون في غرف الأقسام ويتنقلون عبر الممرات. يمكنك النقر على أي وكيل لتوجيهه لأي غرفة، أو تبديل الموديل الخاص به فوراً، أو مراسلته مباشرة هنا.',
-            timestamp: new Date().toISOString(),
-            mentions:  [],
-          },
-        ],
-        workspaces:      buildDefaultWorkspaces(roomId),
-        activeStreams:   {},
-        activityLog: [
-          makeActivityItem('تم افتتاح مقر الشركة وتوزيع الوكلاء على غرف الأقسام', '#4f46e5'),
-        ],
+        messages:         [],
+        workspaces:       {},
+        activeStreams:    {},
+        activityLog:      [],
         selectedAgentId: null,
         followAgentId:   null,
         localUserId,
-        localPosition:   { x: 800, y: 0, z: 774 },
+        workspaceUserId:  localUserId,
+        localPosition:   { x: RECEPTION_POINT.x, y: 0, z: RECEPTION_POINT.y },
         officeCommand:   null,
         ui: {
           theme:            initialTheme,
-          showSidebar:      true,
           showWorkspaceHUD: false,
+          workspaceZoneId:  null,
+          workspaceEntryId: null,
           showChat:         false,
-          autoRoam:         true,
+          autoRoam:         false,
           modelSwapAgentId: null,
+          skillsAgentId:    null,
           showHireModal:    false,
         },
 
         setRoomId:          (id) => set({ roomId: id }),
-        setConnected:       (v)  => set({ connected: v, demoMode: v ? false : get().demoMode, connectionError: v ? null : get().connectionError }),
+        setConnected: (v) => set((state) => ({
+          connected: v,
+          demoMode: v ? false : state.demoMode,
+          connectionError: v ? null : state.connectionError,
+          ...(!v && state.serverMode ? { activeStreams: {} } : {}),
+        })),
         setDemoMode:        (v)  => set({ demoMode: v }),
         setConnectionError: (e)  => set({ connectionError: e }),
 
-        setRoomState: ({ roomId: nextRoomId, participants, presence, zones, recentMessages, workspaces }) => {
+        expireWorkspaceSession: () => set((state) => {
+          const agents = buildInitialAgents();
+          return {
+            roomId: `wora-${state.localUserId}`, workspaceUserId: state.localUserId,
+            connected: false, connectionError: 'SESSION_EXPIRED',
+            agents, agentLocations: buildInitialLocations(agents), zones: DEFAULT_COMPANY_ZONES,
+            messages: [], presence: {}, workspaces: {}, activityLog: [], activeStreams: {},
+            selectedAgentId: null, followAgentId: null, lastSwappedAgent: null,
+            ui: { ...state.ui, skillsAgentId: null, modelSwapAgentId: null, showWorkspaceHUD: false, workspaceZoneId: null, workspaceEntryId: null },
+          };
+        }),
+
+        setRoomState: ({ roomId: nextRoomId, userId, mode, participants, presence, zones, recentMessages, workspaces }) => {
           const state = get();
+          const roomId = nextRoomId ?? state.roomId;
+          const sameRoom = roomId === state.roomId;
           const serverAgents = participants.filter((p) => p.isAgent);
 
-          // Preserve custom locally-hired agents and fall back to default roster if backend DB is empty
-          const nextAgents: Record<string, AgentParticipant> = {};
-          if (serverAgents.length > 0) {
-            for (const p of serverAgents) {
-              const roleAr = AGENT_ROLE_AR[p.id];
-              nextAgents[p.id] = roleAr
-                ? { ...p, profile: { ...p.profile, customRole: roleAr } }
-                : p;
-            }
-            for (const existing of Object.values(state.agents)) {
-              if (existing.id.startsWith('agent-custom-') && !(existing.id in nextAgents)) {
-                nextAgents[existing.id] = existing;
-              }
-            }
-          } else {
-            Object.assign(nextAgents, state.agents);
+          // A connected snapshot is authoritative, including empty lists. Keep only
+          // explicit session-local additions from the standalone preview.
+          const nextAgents = Object.create(null) as Record<string, AgentParticipant>;
+          for (const p of serverAgents) {
+            const previous = sameRoom ? state.agents[p.id] : undefined;
+            const skills = previous?.skillSnapshot;
+            const lifecycle = previous?.lifecycleRevision !== undefined && p.lifecycleRevision !== undefined
+              && previous.lifecycleRevision > p.lifecycleRevision ? previous : p;
+            const roleAr = AGENT_ROLE_AR[p.id];
+            nextAgents[p.id] = {
+              ...p,
+              profile: roleAr ? { ...p.profile, customRole: roleAr } : p.profile,
+              skillSnapshot: skills && skills.revision > (p.skillSnapshot?.revision ?? 0) ? skills : p.skillSnapshot,
+              lifecycleRevision: lifecycle.lifecycleRevision,
+              lifecycleState: lifecycle.lifecycleState,
+              avatarState: lifecycle.avatarState,
+            };
+          }
+          for (const agent of Object.values(state.agents)) {
+            if (sameRoom && agent.id.startsWith('agent-custom-') && !(agent.id in nextAgents)) nextAgents[agent.id] = agent;
           }
 
           const presenceMap: Record<string, PresenceEntry> = {};
           for (const p of presence) presenceMap[p.participantId] = p;
 
-          const wsMap: Record<string, SharedWorkspaceState> = { ...state.workspaces };
-          for (const ws of workspaces) {
-            if (ws.entries.length > 0 || !(ws.zoneId in wsMap)) {
-              wsMap[ws.zoneId] = ws;
-            }
+          const wsMap: Record<string, SharedWorkspaceState> = Object.fromEntries(workspaces.filter((ws) => ws.roomId === roomId && Object.hasOwn(ROOM_BY_ID, ws.zoneId)).map((ws) => [ws.zoneId, ws]));
+          for (const local of sameRoom ? Object.values(state.workspaces) : []) {
+            const additions = local.entries.filter(isLocalTask);
+            if (additions.length) wsMap[local.zoneId] = { ...local, ...wsMap[local.zoneId], entries: [...(wsMap[local.zoneId]?.entries ?? []), ...additions] };
           }
 
-          const nextLocations = { ...state.agentLocations };
+          const nextLocations = Object.fromEntries(Object.entries(state.agentLocations).filter(([id]) => sameRoom && Object.hasOwn(nextAgents, id)));
           for (const ag of Object.values(nextAgents)) {
             if (!nextLocations[ag.id]) {
               const room = (ag.zoneId ? ROOM_BY_ID[ag.zoneId] : undefined) ?? OFFICE_ROOMS[0]!;
@@ -349,13 +377,23 @@ export const useWoraStore = create<WoraState>()(
           }
 
           set({
-            roomId:         nextRoomId ?? state.roomId,
+            roomId,
+            workspaceUserId: userId ?? state.localUserId,
+            ui: sameRoom && state.ui.skillsAgentId && Object.hasOwn(nextAgents, state.ui.skillsAgentId)
+              ? state.ui : { ...state.ui, skillsAgentId: null },
+            connected:      true,
+            serverMode:     mode,
+            demoMode:       false,
+            connectionError: null,
             agents:         nextAgents,
             agentLocations: nextLocations,
-            zones:          zones.length > 0 ? zones : state.zones,
+            zones,
             presence:       presenceMap,
-            messages:       recentMessages.length > 0 ? recentMessages.slice(-MAX_MESSAGES) : state.messages,
+            messages:       recentMessages.filter((message) => message.roomId === roomId).slice(-MAX_MESSAGES),
+            activityLog:    sameRoom ? state.activityLog : [],
             workspaces:     wsMap,
+            selectedAgentId: state.selectedAgentId && nextAgents[state.selectedAgentId] ? state.selectedAgentId : null,
+            followAgentId:   state.followAgentId && nextAgents[state.followAgentId] ? state.followAgentId : null,
             activeStreams:  {},
           });
         },
@@ -425,7 +463,6 @@ export const useWoraStore = create<WoraState>()(
             activityLog: [
               makeActivityItem(
                 `انضم ${newAgent.displayName} (${input.model}) ويتجه من الاستقبال إلى ${room.nameAr}`,
-                input.avatarColor,
               ),
               ...s.activityLog,
             ].slice(0, MAX_ACTIVITY),
@@ -448,21 +485,23 @@ export const useWoraStore = create<WoraState>()(
               selectedAgentId: s.selectedAgentId === agentId ? null : s.selectedAgentId,
               followAgentId:   s.followAgentId === agentId ? null : s.followAgentId,
               activityLog: removed
-                ? [makeActivityItem(`غادر ${removed.displayName} مقر الشركة`, '#64748b'), ...s.activityLog].slice(0, MAX_ACTIVITY)
+                ? [makeActivityItem(`غادر ${removed.displayName} مقر الشركة`), ...s.activityLog].slice(0, MAX_ACTIVITY)
                 : s.activityLog,
             };
           }),
 
-        updateAgentLifecycle: (agentId, state, avatarState) =>
+        updateAgentLifecycle: (agentId, state, avatarState, revision) =>
           set((s) => {
-            const ag = s.agents[agentId];
-            if (!ag) return s;
-            return {
-              agents: {
-                ...s.agents,
-                [agentId]: { ...ag, lifecycleState: state, avatarState },
-              },
-            };
+            const agent = Object.hasOwn(s.agents, agentId) ? s.agents[agentId] : undefined;
+            if (!agent || (revision !== undefined && (agent.lifecycleRevision ?? -1) >= revision)) return s;
+            return { agents: { ...s.agents, [agentId]: { ...agent, lifecycleState: state, avatarState, lifecycleRevision: revision } } };
+          }),
+
+        updateAgentSkills: ({ roomId, agentId, revision, activeNames }) =>
+          set((s) => {
+            const agent = Object.hasOwn(s.agents, agentId) ? s.agents[agentId] : undefined;
+            if (s.roomId !== roomId || !agent || (agent.skillSnapshot?.revision ?? -1) >= revision) return s;
+            return { agents: { ...s.agents, [agentId]: { ...agent, skillSnapshot: { revision, activeNames } } } };
           }),
 
         updateAgentBrain: (agentId, brain) =>
@@ -480,7 +519,6 @@ export const useWoraStore = create<WoraState>()(
                 ? [
                     makeActivityItem(
                       `تم تحديث موديل ${ag.displayName} إلى ${brain.model}`,
-                      ag.profile.avatarColor ?? '#3b82f6',
                     ),
                     ...s.activityLog,
                   ].slice(0, MAX_ACTIVITY)
@@ -506,9 +544,9 @@ export const useWoraStore = create<WoraState>()(
             };
           }),
 
-        pushActivity: (text, color = '#3b82f6') =>
+        pushActivity: (text, scope) =>
           set((s) => ({
-            activityLog: [makeActivityItem(text, color), ...s.activityLog].slice(0, MAX_ACTIVITY),
+            activityLog: [makeActivityItem(text, scope), ...s.activityLog].slice(0, MAX_ACTIVITY),
           })),
 
         upsertPresence: (entry) =>
@@ -572,7 +610,7 @@ export const useWoraStore = create<WoraState>()(
         upsertWorkspace: (ws) =>
           set((s) => ({ workspaces: { ...s.workspaces, [ws.zoneId]: ws } })),
 
-        selectAgent:      (id)  => set((s) => ({ selectedAgentId: id, followAgentId: id === null ? null : s.followAgentId })),
+        selectAgent:      (id)  => set((s) => ({ selectedAgentId: id, followAgentId: id === s.followAgentId ? s.followAgentId : null })),
         setFollowAgent:   (id)  => set({ followAgentId: id, selectedAgentId: id ?? get().selectedAgentId }),
         setLocalPosition: (pos) => set({ localPosition: pos }),
 
@@ -583,18 +621,23 @@ export const useWoraStore = create<WoraState>()(
             return { ui: { ...s.ui, theme: next } };
           }),
 
-        toggleSidebar:      () => set((s) => ({ ui: { ...s.ui, showSidebar: !s.ui.showSidebar } })),
-        toggleWorkspaceHUD: () => set((s) => ({ ui: { ...s.ui, showWorkspaceHUD: !s.ui.showWorkspaceHUD } })),
-        toggleChat:         (force) =>
-          set((s) => ({ ui: { ...s.ui, showChat: force !== undefined ? force : !s.ui.showChat } })),
+        toggleWorkspaceHUD: (force, zoneId, entryId) => set((s) => {
+          const show = force ?? !s.ui.showWorkspaceHUD;
+          return { ui: { ...s.ui, showWorkspaceHUD: show, workspaceZoneId: show ? zoneId ?? null : null, workspaceEntryId: show ? entryId ?? null : null, showChat: show ? false : s.ui.showChat } };
+        }),
+        toggleChat: (force) => set((s) => {
+          const show = force ?? !s.ui.showChat;
+          return { ui: { ...s.ui, showChat: show, showWorkspaceHUD: show ? false : s.ui.showWorkspaceHUD } };
+        }),
         toggleAutoRoam:     () => set((s) => ({ ui: { ...s.ui, autoRoam: !s.ui.autoRoam } })),
         openModelSwap:      (agentId) => set((s) => ({ ui: { ...s.ui, modelSwapAgentId: agentId } })),
+        openAgentSkills:    (agentId) => set((s) => ({ ui: { ...s.ui, skillsAgentId: agentId } })),
         setShowHireModal:   (open) => set((s) => ({ ui: { ...s.ui, showHireModal: open } })),
 
         dispatchAgentToRoom: (agentId, roomId, reasonAr) => {
           const ag = get().agents[agentId];
-          const room = ROOM_BY_ID[roomId];
-          if (!ag || !room) return;
+          const room = Object.hasOwn(ROOM_BY_ID, roomId) ? ROOM_BY_ID[roomId] : undefined;
+          if (!ag || !room || isRoomLockedForPlan(roomId, useBillingStore.getState().plan)) return;
           set((s) => ({
             officeCommand: {
               seq:      ++cmdSeq,
@@ -606,7 +649,6 @@ export const useWoraStore = create<WoraState>()(
             activityLog: [
               makeActivityItem(
                 `${ag.displayName} يتحرك عبر الممرات نحو ${room.nameAr}`,
-                ag.profile.avatarColor ?? room.accent,
               ),
               ...s.activityLog,
             ].slice(0, MAX_ACTIVITY),
@@ -617,7 +659,7 @@ export const useWoraStore = create<WoraState>()(
           set((s) => ({
             officeCommand: { seq: ++cmdSeq, kind: 'standup' },
             activityLog: [
-              makeActivityItem('دعوة اجتماع عام — جميع الوكلاء يتجهون إلى قاعة الاجتماعات التنفيذية', '#7c3aed'),
+              makeActivityItem('دعوة اجتماع عام — الوكلاء يتجهون إلى مساحة الاجتماع'),
               ...s.activityLog,
             ].slice(0, MAX_ACTIVITY),
           })),
@@ -626,7 +668,7 @@ export const useWoraStore = create<WoraState>()(
           set((s) => ({
             officeCommand: { seq: ++cmdSeq, kind: 'return-desks' },
             activityLog: [
-              makeActivityItem('عودة جميع الوكلاء عبر الممرات إلى مكاتبهم الأساسية', '#0284c7'),
+              makeActivityItem('عودة جميع الوكلاء عبر الممرات إلى مكاتبهم الأساسية'),
               ...s.activityLog,
             ].slice(0, MAX_ACTIVITY),
           })),
@@ -637,7 +679,7 @@ export const useWoraStore = create<WoraState>()(
           })),
 
         focusRoomCamera:  (roomId)  => set({ followAgentId: null, officeCommand: { seq: ++cmdSeq, kind: 'focus-room', roomId } }),
-        focusAgentCamera: (agentId) => set({ selectedAgentId: agentId, officeCommand: { seq: ++cmdSeq, kind: 'focus-agent', agentId } }),
+        focusAgentCamera: (agentId) => set({ selectedAgentId: agentId, followAgentId: null, officeCommand: { seq: ++cmdSeq, kind: 'focus-agent', agentId } }),
         resetCamera:      ()        => set({ followAgentId: null, officeCommand: { seq: ++cmdSeq, kind: 'reset-camera' } }),
       };
     }),

@@ -137,9 +137,7 @@ export class SharedWorkspaceManager {
       chainIds,
       createdAt:     nowIso,
       updatedAt:     nowIso,
-      expiresAt:     params.expiresInMs
-        ? new Date(nowMs + params.expiresInMs).toISOString()
-        : undefined,
+      expiresAt:     new Date(nowMs + Math.min(params.expiresInMs ?? Infinity, ttlSeconds * 1_000)).toISOString(),
     };
 
     const eKey = this.entryKey(params.roomId, params.zoneId, entry.id);
@@ -207,7 +205,8 @@ export class SharedWorkspaceManager {
       entry.payload = { ...entry.payload, ...extraPayload };
     }
 
-    await this.redis.set(eKey, JSON.stringify(entry), { KEEPTTL: true });
+    const saved = await this.redis.set(eKey, JSON.stringify(entry), { KEEPTTL: true, condition: 'XX' });
+    if (!saved) return null;
 
     if (mongoose.connection.readyState === 1) {
       WorkspaceEntryModel.updateOne(
