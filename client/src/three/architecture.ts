@@ -1,4 +1,4 @@
-import { OrthographicCamera, Vector3 } from 'three';
+import { OrthographicCamera, Vector3, type Camera } from 'three';
 import { OFFICE_WORLD, ROOM_3D_LAYOUTS, type Room3DLayout } from './layout.ts';
 
 /**
@@ -160,7 +160,7 @@ export function rectanglesOverlap(a: ViewportRect, b: ViewportRect, margin = 0):
     && a.bottom + margin > b.top;
 }
 
-export function projectToViewport(point: Vector3, camera: OrthographicCamera, width: number, height: number): Vector3 {
+export function projectToViewport(point: Vector3, camera: Camera, width: number, height: number): Vector3 {
   const projected = point.clone().project(camera);
   return new Vector3((projected.x + 1) * width / 2, (1 - projected.y) * height / 2, projected.z);
 }

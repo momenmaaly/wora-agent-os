@@ -4,74 +4,55 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { Vector3 } from 'three';
 import {
-  ARCHITECTURAL_OFFSET, ROOM_ARCHITECTURE_LABELS, computeArchitecturalFrame, makeArchitecturalCamera,
-  projectToViewport, rectanglesOverlap, roomArchitectureLabel, roomLabelAnchor, roomLabelSpan,
-} from '../src/three/architecture.ts';
-import { OFFICE_WORLD, ROOM_3D_LAYOUTS } from '../src/three/layout.ts';
+  REFERENCE_CAMERA_OFFSET, REFERENCE_CAMERA_POSITION, REFERENCE_CAMERA_TARGET, REFERENCE_ROOMS,
+  REFERENCE_ROBOT_POINTS, REFERENCE_VIEWPORT, buildReferenceRooms, makeReferenceCamera,
+  screenToLabel, visualRoomForLogical,
+} from '../src/three/referenceLayout.ts';
+import { projectToViewport, rectanglesOverlap } from '../src/three/architecture.ts';
 
 const read = (relative) => readFileSync(fileURLToPath(new URL(`../src/${relative}`, import.meta.url)), 'utf8');
 
-function cssBlock(css, selector) {
-  const start = css.indexOf(selector);
-  ok(start >= 0, `${selector} exists`);
-  const end = css.indexOf('}', start);
-  return css.slice(start, end + 1);
-}
-
-function relativeLuminance(hex) {
-  const value = hex.replace('#', '');
-  const full = value.length === 3 ? value.split('').map((char) => char + char).join('') : value;
-  const channels = [0, 2, 4].map((index) => {
-    const channel = parseInt(full.slice(index, index + 2), 16) / 255;
-    return channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
-  });
-  return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
-}
-
-function contrastRatio(a, b) {
-  const first = relativeLuminance(a);
-  const second = relativeLuminance(b);
-  return (Math.max(first, second) + 0.05) / (Math.min(first, second) + 0.05);
-}
-
-function desktopLabelRects(width, height, camera) {
-  return ROOM_3D_LAYOUTS.map((room) => {
-    const anchor = projectToViewport(roomLabelAnchor(room), camera, width, height);
-    const span = roomLabelSpan(room);
-    const left = projectToViewport(span.left, camera, width, height);
-    const right = projectToViewport(span.right, camera, width, height);
-    const projectedWidth = Math.max(1, Math.abs(right.x - left.x));
-    const labelWidth = Math.max(150, Math.min(160, projectedWidth * 0.92));
+function labelRects(width, height, camera) {
+  return buildReferenceRooms(camera, width, height).map((room) => {
+    const anchor = projectToViewport(room.labelPoint, camera, width, height);
     return {
-      id: room.id,
-      left: anchor.x - labelWidth / 2,
-      right: anchor.x + labelWidth / 2,
-      top: anchor.y - 38,
-      bottom: anchor.y,
+      id: room.definition.id,
+      left: anchor.x - room.definition.labelWidth / 2,
+      right: anchor.x + room.definition.labelWidth / 2,
+      top: anchor.y - 46,
+      bottom: anchor.y + 4,
     };
   });
 }
 
-test('the fixed architectural camera replaces orbit, pan, zoom, dragging and the old floating slab', () => {
+test('the exact seven-room reference composition replaces the ten-label diamond office', () => {
+  const rooms = REFERENCE_ROOMS;
+  equal(rooms.length, 7);
+  equal(new Set(rooms.map((room) => room.id)).size, 7);
+  equal(new Set(rooms.map((room) => room.label)).size, 7);
+  for (const name of ['Marketing', 'Executive Office', 'Engineering', 'Creative Studio', 'Management', 'Research', 'QA & Testing']) {
+    ok(rooms.some((room) => room.label === name), `${name} is present`);
+  }
+  equal(visualRoomForLogical('zone-product'), 'management');
+  equal(visualRoomForLogical('zone-analytics'), 'research');
+  equal(visualRoomForLogical('zone-review'), 'qa');
+  ok(Object.values(REFERENCE_ROBOT_POINTS).reduce((sum, points) => sum + points.length, 0) >= 30);
+
   const scene = read('three/officeScene.ts');
   const ui = read('components/Office3D.tsx');
   const campus = read('components/Campus.tsx');
-  const workbench = read('styles/workbench.css');
-
   for (const forbidden of [
     'OrbitControls', 'enablePan', 'enableRotate', 'enableZoom', 'listenToKeyEvents',
-    'DEFAULT_OFFSET', 'controls.update()', 'billboards', 'outdoorGround', 'createSlab',
-    'slabThickness', 'floorEdge', 'dashedCorridorPath', 'perimeter',
+    'DEFAULT_OFFSET', 'controls.update()', 'outdoorGround', 'createSlab', 'slabThickness',
+    'dashedCorridorPath', 'Product Lab', 'Analytics',
   ]) ok(!scene.includes(forbidden), `no ${forbidden}`);
-
-  match(scene, /ARCHITECTURAL_OFFSET/);
-  match(scene, /camera\.position\.copy\(target\)\.add\(ARCHITECTURAL_OFFSET\)/);
-  match(scene, /cameraFrame\.roomZoom/);
-  match(scene, /duration:\s*760/);
-  match(scene, /function createGround\(\): void \{[\s\S]*cache\.plane\(80, 60\)/);
-  match(scene, /function glassWall\([\s\S]*palette\.glass/);
-  match(scene, /function createCorridors\(\): void/);
-
+  match(scene, /REFERENCE_CAMERA_TARGET/);
+  match(scene, /applyReferenceCamera\(camera, cameraTarget, cameraScale\)/);
+  match(scene, /duration: 760/);
+  match(scene, /function createGround\(\)/);
+  match(scene, /function glassEdge\(/);
+  match(scene, /function createCorridors\(\)/);
+  match(scene, /const referenceRooms = buildReferenceRooms/);
   for (const forbidden of ['Drag to rotate', 'Scroll or pinch to zoom', 'RotateCcw']) {
     ok(!ui.includes(forbidden), `UI does not advertise ${forbidden}`);
   }
@@ -79,121 +60,110 @@ test('the fixed architectural camera replaces orbit, pan, zoom, dragging and the
   match(ui, /aria-label="Return to full office view"/);
   match(ui, /callbacks\.current\.onRoom\(null\)/);
   match(ui, /useWoraStore\.getState\(\)\.selectAgent\(null\)/);
+  match(ui, /<ReferenceChrome/);
+  match(ui, /office3d-live-summary/);
+  match(ui, /Recorded workspace totals/);
   match(campus, /const chooseRoom = useCallback\(\(id: string \| null\)/);
   match(campus, /onVisit\(null\)/);
-  match(workbench, /\.campus-stage:has\(\.office3d-shell\) \{ border: 0; border-radius: 0; background: #dfe6e7; \}/);
 });
 
-test('real DOM nameplates replace baked text and remain high-contrast and sharp', () => {
+test('real DOM nameplates, WORA medallion text and high-resolution materials replace baked signs', () => {
   const scene = read('three/officeScene.ts');
   const materials = read('three/materials.ts');
   const css = read('styles/company-frame.css');
 
   match(scene, /labelLayer\.className = 'office3d-labels'/);
   match(scene, /document\.createElement\('button'\)/);
-  match(scene, /title\.textContent = display\.en/);
-  match(scene, /subtitle\.textContent = display\.ar/);
+  match(scene, /title\.textContent = definition\.label/);
+  match(scene, /subtitle\.textContent = definition\.labelAr/);
   match(scene, /container\.appendChild\(labelLayer\)/);
-  match(scene, /focusRoom\(room\.id\);\s*onRoom\(room\.id\);/);
-  match(scene, /const overlapsRoomLabel = visibleRects\.some/);
-  match(scene, /rectanglesOverlap\(lobbyRect, rect, 4\)/);
-
+  match(scene, /iconSvg\(definition\.icon\)/);
+  match(scene, /medallionLabel\.innerHTML/);
+  match(scene, /<strong>WORA<\/strong>/);
+  match(scene, /focusRoom\(definition\.primaryLogicalRoomId\);\s*onRoom\(definition\.primaryLogicalRoomId\);/);
+  match(scene, /rectanglesOverlap\(medallionRect, rect, 3\)/);
   for (const forbidden of ['makeSignTexture', 'makeLogoTexture', 'signMaterial', 'logoMaterial', 'fillText', 'ctx.font']) {
     ok(!materials.includes(forbidden), `no baked text path ${forbidden}`);
   }
-  ok(!scene.includes('palette.signMaterial') && !scene.includes('palette.logoMaterial'));
-  match(materials, /texture\.anisotropy = 8/);
-  match(materials, /ctx\.scale\(2, 2\)/);
-
-  const label = cssBlock(css, '.office3d-room-label {');
-  const strong = cssBlock(css, '.office3d-room-label strong {');
-  const small = cssBlock(css, '.office3d-room-label small {');
-  const layer = cssBlock(css, '.office3d-labels {');
-  match(label, /background: #173440/);
-  match(label, /color: #fff/);
-  match(label, /pointer-events: auto/);
-  match(strong, /font-size: 12px/);
-  match(strong, /font-weight: 760/);
-  match(small, /font-size: 9px/);
-  match(layer, /-webkit-font-smoothing: antialiased/);
-  match(css, /\.office3d-room-label\[hidden\], \.office3d-lobby-label\[hidden\] \{ display: none !important; \}/);
-  ok(contrastRatio('#ffffff', '#173440') > 7, 'primary label contrast exceeds WCAG AAA');
-  ok(contrastRatio('#d1eef2', '#173440') > 7, 'secondary label contrast exceeds WCAG AAA');
-
-  equal(Object.keys(ROOM_ARCHITECTURE_LABELS).length, ROOM_3D_LAYOUTS.length);
-  const labels = ROOM_3D_LAYOUTS.map((room) => roomArchitectureLabel(room));
-  for (const name of ['Executive Office', 'Marketing', 'Engineering', 'Creative Studio', 'Meeting Room', 'Operations']) {
-    ok(labels.some((label) => label.en === name), `${name} is present`);
-  }
-  ok(labels.some((label) => label.en.includes('Research')), 'Research is present');
-  for (const label of labels) {
-    ok(label.en.length >= 8 && label.ar.length > 0, 'every room has readable English and Arabic text');
-  }
+  match(materials, /texture\.anisotropy = 16/);
+  match(materials, /new MeshPhysicalMaterial\(\{\s*map: marbleTexture/s);
+  match(css, /\.reference-sidebar \{/);
+  match(css, /\.office3d-medallion-label \{/);
+  match(css, /\.office3d-shell \.office3d-room-label/);
+  match(css, /\.office3d-medallion-label\[hidden\] \{ display: none !important; \}/);
+  match(css, /rotate\(var\(--label-rotation, 0deg\)\)/);
+  ok(scene.includes('rotate(${label.definition.labelRotation}deg)'));
+  match(scene, /viewportScale = width < 1600/);
+  match(scene, /sidebarSafe = width <= 1500/);
+  match(css, /@media \(max-width: 1500px\)/);
 });
 
-test('high-quality rendering, larger detailed robots and connected architectural furniture are retained', () => {
+test('high-quality rendering, reference robots and connected architectural furniture are retained', () => {
   const scene = read('three/officeScene.ts');
   const robot = read('three/robot.ts');
 
   match(scene, /antialias: quality === 'high'/);
   match(scene, /setPixelRatio\(Math\.min\(window\.devicePixelRatio \|\| 1, quality === 'high' \? 2 : 1\.25\)\)/);
   match(scene, /PCFSoftShadowMap/);
-  match(scene, /factory\.create\(agent, state, spot\.point\.x, spot\.point\.z, facing\)/);
+  match(scene, /factory\.create\(/);
   match(scene, /non-pickable-glass-partitions/);
   match(scene, /if \(isIgnoredForPicking\(hit\.object\)\) continue;/);
-  for (const feature of ['function desk(', 'function chair(', 'function executiveDesk(', 'function lounge(', 'palette.screenMaterial', 'palette.glass']) {
-    ok(scene.includes(feature), `${feature} is present`);
-  }
-  match(robot, /export const ROBOT_SCALE = 1\.38;/);
-  match(robot, /group\.scale\.setScalar\(ROBOT_SCALE\)/);
-  match(robot, /baseScale: ROBOT_SCALE/);
+  for (const feature of [
+    'function desk(', 'function chair(', 'function executiveDesk(', 'function conferenceTable(',
+    'function screenBoard(', 'function shelf(', 'function serverRack(', 'palette.screenMaterial', 'palette.glass',
+  ]) ok(scene.includes(feature), `${feature} is present`);
+  match(robot, /export const ROBOT_SCALE = 0\.72;/);
+  match(robot, /group\.scale\.setScalar\(scale\)/);
+  match(robot, /baseScale: scale/);
   match(robot, /new SphereGeometry\(0\.062, 22, 16\)/);
+  match(robot, /\['offline', 'blocked', 'waiting', 'idle', 'completed'\]\.includes\(state\)/);
 });
 
-test('the fixed frame tightly fits desktop viewports and room nameplates do not overlap', () => {
-  const viewports = [[1440, 900], [1280, 720], [1024, 768]];
+test('the fixed reference camera projects the seven plaques and workspace without overlap', () => {
+  const viewports = [
+    [REFERENCE_VIEWPORT.width, REFERENCE_VIEWPORT.height],
+    [1440, 900], [1280, 720],
+  ];
   for (const [width, height] of viewports) {
-    const frame = computeArchitecturalFrame(width / height);
-    const camera = makeArchitecturalCamera(frame);
-    const actualOffset = frame.position.clone().sub(frame.target);
-    ok(actualOffset.distanceTo(ARCHITECTURAL_OFFSET) < 1e-8, `${width}x${height}: fixed angle`);
-    ok(frame.zoom > 0.6, `${width}x${height}: readable default zoom`);
-    ok(frame.roomZoom > frame.zoom * 1.8, `${width}x${height}: detailed room transition`);
-    ok(frame.agentZoom > frame.roomZoom, `${width}x${height}: detailed employee transition`);
+    const camera = makeReferenceCamera(width / height);
+    const actualOffset = camera.position.clone().sub(REFERENCE_CAMERA_TARGET);
+    ok(actualOffset.distanceTo(REFERENCE_CAMERA_OFFSET) < 1e-8, `${width}x${height}: fixed angle`);
+    ok(camera.position.distanceTo(REFERENCE_CAMERA_POSITION) < 1e-8, `${width}x${height}: fixed position`);
 
-    const floorCorners = [];
-    for (const x of [-OFFICE_WORLD.slabWidth / 2, OFFICE_WORLD.slabWidth / 2]) {
-      for (const z of [-OFFICE_WORLD.slabDepth / 2, OFFICE_WORLD.slabDepth / 2]) {
-        floorCorners.push(projectToViewport(new Vector3(x, 0, z), camera, width, height));
-      }
+    const rooms = buildReferenceRooms(camera, width, height);
+    equal(rooms.length, 7);
+    for (const room of rooms) {
+      ok(room.width > 1 && room.depth > 1, `${width}x${height}: ${room.definition.id} has real floor area`);
+      const label = projectToViewport(room.labelPoint, camera, width, height);
+      ok(label.x > -20 && label.x < width + 20 && label.y > -20 && label.y < height + 20,
+        `${width}x${height}: ${room.definition.id} plaque is in the viewport`);
     }
-    const xs = floorCorners.map((point) => point.x);
-    const ys = floorCorners.map((point) => point.y);
-    const minX = Math.min(...xs);
-    const maxX = Math.max(...xs);
-    const minY = Math.min(...ys);
-    const maxY = Math.max(...ys);
-    ok(minX >= 0 && maxX <= width && minY >= 0 && maxY <= height, `${width}x${height}: office fits viewport`);
-    ok((maxX - minX) / width >= 0.65, `${width}x${height}: office fills horizontal workspace`);
-    ok((maxY - minY) / height >= 0.75, `${width}x${height}: office fills vertical workspace`);
-
-    const rects = desktopLabelRects(width, height, camera);
-    for (const rect of rects) {
-      ok(rect.left >= 0 && rect.right <= width && rect.top >= 20 && rect.bottom <= height,
-        `${width}x${height}: ${rect.id} nameplate is inside safe viewport bounds`);
-    }
+    const rects = labelRects(width, height, camera);
     for (let i = 0; i < rects.length; i += 1) {
       for (let j = i + 1; j < rects.length; j += 1) {
         ok(!rectanglesOverlap(rects[i], rects[j], 2),
-          `${width}x${height}: ${rects[i].id} and ${rects[j].id} nameplates do not overlap`);
+          `${width}x${height}: ${rects[i].id} and ${rects[j].id} plaques do not overlap`);
       }
     }
   }
 
-  const collisionFrame = computeArchitecturalFrame(1280 / 720);
-  const collisionCamera = makeArchitecturalCamera(collisionFrame);
-  const lobby = projectToViewport(new Vector3(-1.7, 1.15, -1.35), collisionCamera, 1280, 720);
-  const lobbyRect = { left: lobby.x - 60, right: lobby.x + 60, top: lobby.y - 11, bottom: lobby.y + 11 };
-  ok(desktopLabelRects(1280, 720, collisionCamera).some((rect) => rectanglesOverlap(lobbyRect, rect, 4)),
-    'the runtime lobby-label collision guard is exercised at a real desktop size');
+  const camera = makeReferenceCamera(REFERENCE_VIEWPORT.width / REFERENCE_VIEWPORT.height);
+  for (const definition of REFERENCE_ROOMS) {
+    const labelPoint = screenToLabel(
+      definition.screenLabel, camera, REFERENCE_VIEWPORT.width, REFERENCE_VIEWPORT.height,
+    );
+    const projected = projectToViewport(labelPoint, camera, REFERENCE_VIEWPORT.width, REFERENCE_VIEWPORT.height);
+    ok(Math.abs(projected.x - definition.screenLabel[0]) < 0.01, `${definition.id}: exact label x`);
+    ok(Math.abs(projected.y - definition.screenLabel[1]) < 0.01, `${definition.id}: exact label y`);
+  }
+  const floorCorners = [
+    screenToLabel([300, 0], camera, REFERENCE_VIEWPORT.width, REFERENCE_VIEWPORT.height),
+    screenToLabel([1400, 0], camera, REFERENCE_VIEWPORT.width, REFERENCE_VIEWPORT.height),
+    screenToLabel([1600, 900], camera, REFERENCE_VIEWPORT.width, REFERENCE_VIEWPORT.height),
+    screenToLabel([300, 900], camera, REFERENCE_VIEWPORT.width, REFERENCE_VIEWPORT.height),
+  ];
+  const xs = floorCorners.map((point) => projectToViewport(point, camera, REFERENCE_VIEWPORT.width, REFERENCE_VIEWPORT.height).x);
+  const ys = floorCorners.map((point) => projectToViewport(point, camera, REFERENCE_VIEWPORT.width, REFERENCE_VIEWPORT.height).y);
+  ok(Math.max(...xs) - Math.min(...xs) > REFERENCE_VIEWPORT.width * 0.7, 'grounded office fills the horizontal viewport');
+  ok(Math.max(...ys) - Math.min(...ys) > REFERENCE_VIEWPORT.height * 0.7, 'grounded office fills the vertical viewport');
 });

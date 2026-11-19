@@ -1,25 +1,30 @@
 import {
-  ACESFilmicToneMapping, AmbientLight, BoxGeometry, CircleGeometry, Color, CylinderGeometry,
-  DirectionalLight, DoubleSide, Group, HemisphereLight, IcosahedronGeometry, MathUtils,
-  Mesh, MeshBasicMaterial, MeshStandardMaterial, Object3D, OrthographicCamera, PCFSoftShadowMap,
-  PlaneGeometry, PointLight, Raycaster, Scene, SphereGeometry,
-  SRGBColorSpace, TorusGeometry, Vector2, Vector3, WebGLRenderer,
-  type BufferGeometry, type Material,
+  ACESFilmicToneMapping, AmbientLight, BoxGeometry, BufferGeometry, CircleGeometry, Color,
+  CylinderGeometry, DirectionalLight, DoubleSide, Float32BufferAttribute, Group, HemisphereLight,
+  IcosahedronGeometry, MathUtils, Mesh, MeshBasicMaterial, MeshPhysicalMaterial, MeshStandardMaterial,
+  Object3D, PCFSoftShadowMap, PerspectiveCamera, PlaneGeometry, PointLight, Raycaster, Scene,
+  SphereGeometry, SRGBColorSpace, TorusGeometry, Vector2, Vector3, WebGLRenderer,
+  type Material, type Texture,
 } from 'three';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 import type { AgentParticipant, SharedWorkspaceEntry } from '../types.js';
 import {
-  OFFICE_WORLD, ROOM_3D_BY_ID, ROOM_3D_LAYOUTS, ROOM_SPOTS, agentSpot, agentVisualState,
-  roomSpots, spotToWorld, type AgentMotionSnapshot, type Room3DLayout, type WorldPoint,
+  ROOM_3D_BY_ID, ROOM_3D_LAYOUTS, ROOM_SPOTS, agentVisualState,
+  type AgentMotionSnapshot, type WorldPoint,
 } from './layout.js';
 import { createOfficePalette, type OfficePalette, type ScreenVariant } from './materials.js';
 import { createRobotFactory, type RobotRecord } from './robot.js';
 import {
-  ARCHITECTURAL_OFFSET, applyArchitecturalFrame, computeArchitecturalFrame, projectToViewport,
-  rectanglesOverlap, roomArchitectureLabel, roomLabelAnchor, roomLabelSpan,
-} from './architecture.js';
+  REFERENCE_CAMERA_TARGET, REFERENCE_DESK_POINTS, REFERENCE_DISPLAY_POINTS, REFERENCE_FEATURE_POINTS,
+  REFERENCE_PLANT_POINTS, REFERENCE_RAIL_POINTS, REFERENCE_ROBOT_POINTS, REFERENCE_ROOMS,
+  REFERENCE_VIEWPORT, REFERENCE_FLOOR_Y, REFERENCE_LABEL_HEIGHT,
+  applyReferenceCamera, buildReferenceRooms, logicalRoomsForVisual, makeReferenceCamera,
+  screenToFloor, updateReferenceCameraFov, visualRoomForLogical, worldUnitsPerPixel,
+  type ReferenceIcon, type ReferenceRoomWorld, type ScreenPoint,
+} from './referenceLayout.js';
+import { projectToViewport, rectanglesOverlap } from './architecture.js';
 
-const FLOOR_Y = 0.25;
+const FLOOR_Y = REFERENCE_FLOOR_Y;
 
 interface Placement {
   x?: number; y?: number; z?: number;
@@ -50,7 +55,7 @@ class GeometryCache {
   ico(r: number, detail = 1) { return this.get(`i:${r}:${detail}`, () => new IcosahedronGeometry(r, detail)); }
   torus(r: number, tube: number, arc = Math.PI * 2) { return this.get(`t:${r}:${tube}:${arc}`, () => new TorusGeometry(r, tube, 10, 48, arc)); }
   plane(w: number, h: number) { return this.get(`p:${w}:${h}`, () => new PlaneGeometry(w, h)); }
-  circle(r: number) { return this.get(`ci:${r}`, () => new CircleGeometry(r, 48)); }
+  circle(r: number) { return this.get(`ci:${r}`, () => new CircleGeometry(r, 64)); }
   dispose() { for (const geometry of this.geometries.values()) geometry.dispose(); this.geometries.clear(); }
 }
 
@@ -71,13 +76,22 @@ function add(
   return mesh;
 }
 
-function screenVariantFor(room: Room3DLayout): ScreenVariant {
-  if (room.id === 'zone-engineering' || room.id === 'zone-product') return 'code';
-  if (room.id === 'zone-planning' || room.id === 'zone-boardroom') return 'plan';
-  if (room.id === 'zone-design' || room.id === 'zone-marketing') return 'creative';
-  if (room.id === 'zone-review') return 'qa';
-  if (room.id === 'zone-analytics') return 'analytics';
-  return 'ops';
+function iconSvg(icon: ReferenceIcon): SVGSVGElement {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.setAttribute('class', 'office3d-label-icon');
+  const paths: Record<ReferenceIcon, string> = {
+    megaphone: '<path d="M3 11v2a2 2 0 0 0 2 2h2l7 4V5L7 9H5a2 2 0 0 0-2 2Z" fill="currentColor"/><path d="m16 9 4-2v10l-4-2" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M7 15v4h3v-2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>',
+    crown: '<path d="m3 8 4 4 5-7 5 7 4-4-2 10H5L3 8Z" fill="currentColor"/><rect x="5" y="19" width="14" height="2" rx="1" fill="currentColor"/>',
+    code: '<path d="m9 7-5 5 5 5M15 7l5 5-5 5M13 5l-2 14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>',
+    palette: '<path d="M12 3a9 9 0 0 0 0 18h1.5a2 2 0 0 0 1.4-3.4 1.6 1.6 0 0 1 1.2-2.6H18a3 3 0 0 0 3-3A9 9 0 0 0 12 3Z" fill="currentColor"/><circle cx="7.5" cy="11" r="1.4" fill="#173440"/><circle cx="10" cy="7.5" r="1.4" fill="#173440"/><circle cx="15" cy="8" r="1.4" fill="#173440"/><circle cx="17" cy="12" r="1.4" fill="#173440"/>',
+    flask: '<path d="M9 3h6M10 3v6L5 19a1 1 0 0 0 .9 1.5h12.2a1 1 0 0 0 .9-1.5L14 9V3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M7.5 15h9l1.5 3.5a1 1 0 0 1-.9 1.5H7a1 1 0 0 1-.9-1.5L7.5 15Z" fill="currentColor"/>',
+    bars: '<rect x="3" y="14" width="4" height="7" rx="1" fill="currentColor"/><rect x="10" y="9" width="4" height="12" rx="1" fill="currentColor"/><rect x="17" y="4" width="4" height="17" rx="1" fill="currentColor"/>',
+    shield: '<path d="M12 2 4 5v6c0 5 3.4 9 8 11 4.6-2 8-6 8-11V5l-8-3Z" fill="currentColor"/><path d="m8.5 12 2.5 2.5 5-5.5" fill="none" stroke="#173440" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
+  };
+  svg.innerHTML = paths[icon];
+  return svg;
 }
 
 export interface OfficeSceneOptions {
@@ -115,19 +129,55 @@ export interface OfficeSceneController {
 interface CameraTween {
   fromTarget: Vector3;
   toTarget: Vector3;
-  fromZoom: number;
-  toZoom: number;
+  fromScale: number;
+  toScale: number;
   startedAt: number;
   duration: number;
 }
 
 interface RoomLabel {
-  room: Room3DLayout;
+  visualId: string;
+  logicalRoomId: string;
+  definition: (typeof REFERENCE_ROOMS)[number];
   element: HTMLButtonElement;
   anchor: Vector3;
-  left: Vector3;
-  right: Vector3;
   onSelect: () => void;
+}
+
+interface RobotVisual {
+  visualId: string;
+  agentId: string;
+  record: RobotRecord;
+  logicalRoomId: string;
+}
+
+interface RobotPoint {
+  visualId: string;
+  logicalRoomId: string;
+  screen: ScreenPoint;
+  index: number;
+}
+
+function makeFloorGeometry(room: ReferenceRoomWorld): BufferGeometry {
+  const local = room.points.map((point) => {
+    const delta = point.clone().sub(room.center);
+    return { u: delta.dot(room.right), v: delta.dot(room.forward) };
+  });
+  const vertices: number[] = [];
+  const normals: number[] = [];
+  const uvs: number[] = [];
+  for (const index of [0, 1, 2, 0, 2, 3]) {
+    const point = local[index]!;
+    vertices.push(point.u, 0, point.v);
+    normals.push(0, 1, 0);
+    uvs.push(point.u / Math.max(room.width, 0.001) + 0.5, point.v / Math.max(room.depth, 0.001) + 0.5);
+  }
+  const geometry = new BufferGeometry();
+  geometry.setAttribute('position', new Float32BufferAttribute(vertices, 3));
+  geometry.setAttribute('normal', new Float32BufferAttribute(normals, 3));
+  geometry.setAttribute('uv', new Float32BufferAttribute(uvs, 2));
+  geometry.computeBoundingSphere();
+  return geometry;
 }
 
 export function createOfficeScene(options: OfficeSceneOptions): OfficeSceneController {
@@ -136,124 +186,207 @@ export function createOfficeScene(options: OfficeSceneOptions): OfficeSceneContr
     onInspect = () => {},
   } = options;
   const cache = new GeometryCache();
+  const customGeometries: BufferGeometry[] = [];
   const palette: OfficePalette = createOfficePalette();
   const extraMaterials: Material[] = [];
+  const extraTextures: Texture[] = [];
   const extraMaterial = <T extends Material>(material: T): T => { extraMaterials.push(material); return material; };
-  const warmStrip = extraMaterial(new MeshBasicMaterial({ color: '#f3c987' }));
-  const groundMaterial = extraMaterial(new MeshStandardMaterial({ color: '#dfe6e7', roughness: 0.94 }));
-  const corridorFloor = extraMaterial(new MeshStandardMaterial({ color: '#dfe5e3', roughness: 0.52, metalness: 0.03 }));
+  const warmStrip = extraMaterial(new MeshBasicMaterial({ color: '#ffe4ae', toneMapped: false }));
   const corridorLine = extraMaterial(new MeshStandardMaterial({ color: '#8fa9ad', roughness: 0.6, metalness: 0.15 }));
   const selectionRingMaterial = extraMaterial(new MeshBasicMaterial({ color: '#7eeaff', transparent: true, opacity: 0.86, side: DoubleSide, depthWrite: false }));
+  const railMaterial = extraMaterial(new MeshStandardMaterial({ color: '#718a96', roughness: 0.25, metalness: 0.82 }));
+  const groundMap = palette.marble.map?.clone();
+  if (groundMap) {
+    groundMap.repeat.set(8, 8);
+    groundMap.needsUpdate = true;
+    extraTextures.push(groundMap);
+  }
+  const groundMaterial = extraMaterial(new MeshPhysicalMaterial({
+    map: groundMap, color: '#d3c4c7', roughness: 0.3, metalness: 0.02, clearcoat: 0.7, clearcoatRoughness: 0.2,
+  }));
+  const roomMap = groundMap?.clone();
+  if (roomMap) {
+    roomMap.repeat.set(3, 3);
+    roomMap.needsUpdate = true;
+    extraTextures.push(roomMap);
+  }
+  const roomMarbleMaterial = extraMaterial(new MeshPhysicalMaterial({
+    map: roomMap, color: '#c8b8bd', roughness: 0.32, metalness: 0.02, clearcoat: 0.62, clearcoatRoughness: 0.22,
+  }));
+  const lowerWallMaterial = extraMaterial(new MeshStandardMaterial({ color: '#c8c8c9', roughness: 0.68, metalness: 0.02 }));
+  const accentWallMaterial = extraMaterial(new MeshStandardMaterial({ color: '#60717e', roughness: 0.5, metalness: 0.16 }));
+  const displayWallMaterial = extraMaterial(new MeshStandardMaterial({ color: '#27394d', roughness: 0.48, metalness: 0.2 }));
+  const glassBaseMaterial = extraMaterial(new MeshStandardMaterial({
+    color: '#8da5b0', transparent: true, opacity: 0.24, roughness: 0.55, side: DoubleSide, depthWrite: false,
+  }));
+  const contactShadow = extraMaterial(new MeshBasicMaterial({
+    color: '#26313a', transparent: true, opacity: 0.11, side: DoubleSide, depthWrite: false,
+  }));
+  const medallionGlow = extraMaterial(new MeshBasicMaterial({
+    color: '#fff1d2', transparent: true, opacity: 0.92, toneMapped: false,
+  }));
 
   const renderer = new WebGLRenderer({ antialias: quality === 'high', alpha: false, powerPreference: 'high-performance' });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, quality === 'high' ? 2 : 1.25));
-  renderer.setClearColor(new Color('#dfe6e7'), 1);
+  renderer.setClearColor(new Color('#d9e2e6'), 1);
   renderer.outputColorSpace = SRGBColorSpace;
   renderer.toneMapping = ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.18;
+  renderer.toneMappingExposure = 1.16;
   renderer.shadowMap.enabled = quality === 'high';
   renderer.shadowMap.type = PCFSoftShadowMap;
   renderer.domElement.style.display = 'block';
   renderer.domElement.style.width = '100%';
   renderer.domElement.style.height = '100%';
-  renderer.domElement.style.touchAction = 'manipulation';
+  renderer.domElement.style.touchAction = 'none';
   renderer.domElement.tabIndex = 0;
   renderer.domElement.setAttribute('role', 'application');
-  renderer.domElement.setAttribute('aria-label', 'WORA interactive 3D company office');
+  renderer.domElement.setAttribute('aria-label', 'WORA exact-reference interactive 3D company office');
   container.appendChild(renderer.domElement);
 
   const scene = new Scene();
-  scene.background = new Color('#dfe6e7');
+  scene.background = new Color('#d9e2e6');
 
-  const initialAspect = Math.max(1, container.clientWidth) / Math.max(1, container.clientHeight);
-  let cameraFrame = computeArchitecturalFrame(initialAspect);
-  let cameraTarget = cameraFrame.target.clone();
+  const initialWidth = Math.max(1, container.clientWidth);
+  const initialHeight = Math.max(1, container.clientHeight);
+  const initialAspect = initialWidth / initialHeight;
+  const camera = makeReferenceCamera(initialAspect);
+  const worldPerPixel = worldUnitsPerPixel(camera, initialWidth, initialHeight);
+  const unit = (pixels: number): number => pixels * worldPerPixel;
+  const wallHeight = unit(104);
+  const robotScale = unit(74) / 1.78;
+  const deskScale = unit(76) / 1.42;
+  const plantScale = unit(46) / 2;
+  const screenWidth = unit(124);
+  const screenHeight = unit(70);
+
+  let cameraTarget = REFERENCE_CAMERA_TARGET.clone();
+  let cameraScale = 1;
   let viewMode: 'full' | 'room' | 'agent' | 'spot' = 'full';
-  const camera = new OrthographicCamera(cameraFrame.left, cameraFrame.right, cameraFrame.top, cameraFrame.bottom, 0.1, 160);
-  applyArchitecturalFrame(camera, cameraFrame);
-
-  function setCamera(target: Vector3, zoom: number): void {
+  function setCamera(target: Vector3, scale: number): void {
     cameraTarget.copy(target);
-    camera.position.copy(target).add(ARCHITECTURAL_OFFSET);
-    camera.lookAt(target);
-    camera.zoom = zoom;
-    camera.updateProjectionMatrix();
-    camera.updateMatrixWorld();
+    cameraScale = MathUtils.clamp(scale, 0.36, 1.18);
+    applyReferenceCamera(camera, cameraTarget, cameraScale);
   }
 
   const labelLayer = document.createElement('div');
   labelLayer.className = 'office3d-labels';
-  labelLayer.setAttribute('aria-label', 'Architectural office room labels');
-  const lobbyLabel = document.createElement('div');
-  lobbyLabel.className = 'office3d-lobby-label';
-  lobbyLabel.dir = 'ltr';
-  lobbyLabel.setAttribute('aria-hidden', 'true');
-  lobbyLabel.textContent = 'WORA · AGENT OS';
-  labelLayer.appendChild(lobbyLabel);
+  labelLayer.setAttribute('aria-label', 'Exact-reference office room labels');
+  const medallionLabel = document.createElement('div');
+  medallionLabel.className = 'office3d-medallion-label';
+  medallionLabel.dir = 'ltr';
+  medallionLabel.setAttribute('aria-hidden', 'true');
+  medallionLabel.innerHTML = '<svg viewBox="0 0 120 58" aria-hidden="true"><path d="M8 17c17-18 35-16 48 0 11-10 22-10 31 0 8 9 5 22-5 28-12 7-24 1-33-8-10 11-23 15-35 7-10-7-13-20-6-27Z" fill="#1fc3e0"/><path d="M60 17c-13-16-31-18-48 0-7 8-4 20 6 27 12 8 25 4 35-7 9 9 21 15 33 8 10-6 13-19 5-28-9-10-20-10-31 0Z" fill="#168bd7" opacity=".42"/></svg><strong>WORA</strong>';
+  labelLayer.appendChild(medallionLabel);
 
-  const roomLabels: RoomLabel[] = ROOM_3D_LAYOUTS.map((room) => {
-    const display = roomArchitectureLabel(room);
+  const referenceRooms = buildReferenceRooms(camera, initialWidth, initialHeight);
+  const visualRooms = new Map(referenceRooms.map((room) => [room.definition.id, room] as const));
+  const roomLabels: RoomLabel[] = referenceRooms.map((room) => {
+    const definition = room.definition;
     const element = document.createElement('button');
     element.type = 'button';
     element.className = 'office3d-room-label';
-    element.dataset.roomId = room.id;
+    element.dataset.roomId = definition.id;
+    element.dataset.logicalRoomId = definition.primaryLogicalRoomId;
     element.dir = 'ltr';
-    element.setAttribute('aria-label', `${display.en} — ${display.ar}`);
+    element.style.width = `${definition.labelWidth}px`;
+    element.style.setProperty('--label-rotation', `${definition.labelRotation}deg`);
+    element.setAttribute('aria-label', `${definition.label} — ${definition.labelAr}`);
     const title = document.createElement('strong');
-    title.textContent = display.en;
+    title.textContent = definition.label;
     const subtitle = document.createElement('small');
     subtitle.dir = 'rtl';
-    subtitle.textContent = display.ar;
-    element.append(title, subtitle);
-    const span = roomLabelSpan(room);
+    subtitle.setAttribute('aria-hidden', 'true');
+    subtitle.textContent = definition.labelAr;
+    element.append(iconSvg(definition.icon), title, subtitle);
     const onSelect = () => {
-      focusRoom(room.id);
-      onRoom(room.id);
-      if (room.id === 'zone-lounge') {
-        onInspect({ kind: 'meeting', id: `${room.id}-meeting`, roomId: room.id, label: display.en });
-      } else {
-        onInspect({ kind: 'department', id: room.id, roomId: room.id, label: display.en });
-      }
+      focusRoom(definition.primaryLogicalRoomId);
+      onRoom(definition.primaryLogicalRoomId);
+      onInspect({
+        kind: 'department', id: definition.primaryLogicalRoomId,
+        roomId: definition.primaryLogicalRoomId, label: definition.label,
+      });
     };
     element.addEventListener('click', onSelect);
     labelLayer.appendChild(element);
-    return { room, element, anchor: roomLabelAnchor(room), left: span.left, right: span.right, onSelect };
+    return {
+      visualId: definition.id,
+      logicalRoomId: definition.primaryLogicalRoomId,
+      definition,
+      element,
+      anchor: room.labelPoint,
+      onSelect,
+    };
   });
   container.appendChild(labelLayer);
 
+  const environmentLayer = new Group();
   const roomLayer = new Group();
   const robotLayer = new Group();
-  scene.add(roomLayer, robotLayer);
+  environmentLayer.name = 'grounded-reference-environment';
+  environmentLayer.userData.ignoreRaycast = true;
+  scene.add(environmentLayer, roomLayer, robotLayer);
 
   const roomHighlights = new Map<string, Mesh>();
-  const robots = new Map<string, RobotRecord>();
+  const spotPositions = new Map<string, Vector3>();
+  const spotRoomIds = new Map<string, string>();
+  const robots = new Map<string, RobotVisual>();
+  const primaryRobots = new Map<string, RobotRecord>();
   const robotAgents = new Map<string, AgentParticipant>();
+  const visualAgentIds = new Map<string, string>();
+  const visualRecordsByAgent = new Map<string, string[]>();
   const robotLocations = new Map<string, AgentMotionSnapshot>();
   const manualPositions = new Map<string, WorldPoint>();
   const manualRotations = new Map<string, number>();
   const factory = createRobotFactory(palette);
   let selectedRoomId: string | null = options.selectedRoomId;
+  let selectedVisualRoomId: string | null = null;
   let selectedAgentId: string | null = options.focusedAgentId;
   let currentAgents = options.agents;
   let currentTasks = options.tasks;
   let currentCommandAgentIds: ReadonlySet<string> = options.commandAgentIds ?? new Set<string>();
   let movementActiveIds: ReadonlySet<string> = new Set<string>();
+  let agentSignature = '';
   let tween: CameraTween | null = null;
   let destroyed = false;
 
-  function plant(parent: Object3D, x: number, z: number, scale = 1): void {
+  function atScreen(point: ScreenPoint): Vector3 {
+    return screenToFloor(point, camera, initialWidth, initialHeight);
+  }
+  function facingCamera(point: Vector3): number {
+    return Math.atan2(camera.position.x - point.x, camera.position.z - point.z);
+  }
+  function edgePlacement(a: Vector3, b: Vector3): { x: number; z: number; length: number; ry: number; direction: Vector3 } {
+    const delta = b.clone().sub(a);
+    return {
+      x: (a.x + b.x) / 2,
+      z: (a.z + b.z) / 2,
+      length: Math.max(0.001, Math.hypot(delta.x, delta.z)),
+      ry: Math.atan2(-delta.z, delta.x),
+      direction: delta.setY(0).normalize(),
+    };
+  }
+  function edgeBox(
+    parent: Object3D, a: Vector3, b: Vector3, width: number, height: number, depth: number,
+    material: Material, yOffset: number, shadows = true,
+  ): Mesh {
+    const edge = edgePlacement(a, b);
+    return add(parent, cache.box(edge.length * width, height, depth), material, {
+      x: edge.x, y: FLOOR_Y + yOffset, z: edge.z, ry: edge.ry,
+    }, shadows);
+  }
+
+  function plant(parent: Object3D, point: Vector3, scale = plantScale): void {
     const group = new Group();
-    group.position.set(x, FLOOR_Y, z);
+    group.position.set(point.x, FLOOR_Y, point.z);
     group.scale.setScalar(scale);
     add(group, cache.cylinder(0.31, 0.39, 0.42, 20), palette.woodDark, { y: 0.21 });
     add(group, cache.circle(0.3), palette.soil, { y: 0.425, rx: -Math.PI / 2, cast: false });
     add(group, cache.cylinder(0.055, 0.085, 1.05, 10), palette.woodDark, { y: 0.92 });
-    for (let i = 0; i < 7; i += 1) {
-      const angle = (i / 7) * Math.PI * 2;
-      const leaf = add(
-        group, cache.ico(0.42, 1), i % 2 ? palette.leaf : palette.leafDark,
-        { x: Math.cos(angle) * 0.38, y: 1.35 + (i % 3) * 0.18, z: Math.sin(angle) * 0.38 },
-      );
+    for (let i = 0; i < 8; i += 1) {
+      const angle = (i / 8) * Math.PI * 2;
+      const leaf = add(group, cache.ico(0.42, 1), i % 2 ? palette.leaf : palette.leafDark, {
+        x: Math.cos(angle) * 0.38, y: 1.35 + (i % 3) * 0.18, z: Math.sin(angle) * 0.38,
+      });
       leaf.scale.set(1, 0.78, 1);
     }
     add(group, cache.ico(0.52, 1), palette.leaf, { y: 1.78 }).scale.set(1.1, 0.9, 1.1);
@@ -263,390 +396,459 @@ export function createOfficeScene(options: OfficeSceneOptions): OfficeSceneContr
   function chair(parent: Object3D, x: number, z: number): void {
     const group = new Group();
     group.position.set(x, 0, z);
-    add(group, cache.rounded(0.48, 0.1, 0.48, 0.05), palette.dark, { y: 0.52 });
-    const back = add(group, cache.rounded(0.46, 0.62, 0.09, 0.07), palette.dark, { y: 0.86, z: 0.24 });
+    add(group, cache.rounded(0.48, 0.1, 0.48, 0.05), palette.robotDark, { y: 0.52 });
+    const back = add(group, cache.rounded(0.46, 0.62, 0.09, 0.07), palette.robotDark, { y: 0.86, z: 0.24 });
     back.rotation.x = -0.12;
     add(group, cache.cylinder(0.055, 0.07, 0.35, 12), palette.metal, { y: 0.26 });
     for (let i = 0; i < 5; i += 1) {
       const angle = (i / 5) * Math.PI * 2;
-      const spoke = add(group, cache.box(0.34, 0.035, 0.035), palette.metal, {
-        x: Math.cos(angle) * 0.16, y: 0.1, z: Math.sin(angle) * 0.16, ry: -angle, rz: Math.PI / 2,
+      add(group, cache.box(0.34, 0.035, 0.035), palette.metal, {
+        x: Math.cos(angle) * 0.16, y: 0.1, z: Math.sin(angle) * 0.16, ry: -angle, rz: Math.PI / 2, cast: false,
       });
-      spoke.castShadow = quality === 'high';
-      add(group, cache.sphere(0.045, 10), palette.dark, { x: Math.cos(angle) * 0.34, y: 0.055, z: Math.sin(angle) * 0.34 });
+      add(group, cache.sphere(0.045, 10), palette.robotDark, { x: Math.cos(angle) * 0.34, y: 0.055, z: Math.sin(angle) * 0.34 });
     }
     parent.add(group);
   }
 
+  function monitor(group: Group, x: number, z: number, variant: ScreenVariant, workstationId: string, index: number): void {
+    const screen = new Group();
+    screen.position.set(x, 0, z);
+    screen.userData.workstationId = workstationId;
+    screen.userData.roomId = group.userData.roomId ?? '';
+    add(screen, cache.box(0.5, 0.05, 0.36), palette.screenFrame, { y: 1.15, z: -0.26 });
+    add(screen, cache.box(0.07, 0.22, 0.07), palette.metal, { y: 0.9, z: -0.26 });
+    const display = add(screen, cache.plane(0.68, 0.42), palette.screenMaterial(variant), {
+      y: 1.15, z: -0.22, cast: false, receive: false, renderOrder: 1,
+    });
+    display.userData.screenId = `${workstationId}-screen-${index}`;
+    display.userData.screenLabel = `${String(group.userData.workstationLabel ?? 'Workstation')} display`;
+    screen.userData.screenId = display.userData.screenId;
+    screen.userData.screenLabel = display.userData.screenLabel;
+    group.add(screen);
+  }
+
   function desk(
     parent: Object3D,
-    room: Room3DLayout,
-    x: number,
-    z: number,
+    point: Vector3,
     rotation: number,
-    scale: number,
     variant: ScreenVariant,
     workstationId: string,
     workstationLabel: string,
+    logicalRoomId: string,
   ): void {
     const group = new Group();
-    group.position.set(x, FLOOR_Y, z);
+    group.position.set(point.x, FLOOR_Y, point.z);
     group.rotation.y = rotation;
-    group.scale.setScalar(scale);
+    group.scale.setScalar(deskScale);
     group.userData.workstationId = workstationId;
     group.userData.workstationLabel = workstationLabel;
-    group.userData.roomId = room.id;
+    group.userData.roomId = logicalRoomId;
+    group.userData.visualRoomId = visualRoomForLogical(logicalRoomId) ?? '';
+    const shadowDisc = add(group, cache.circle(1.05), contactShadow, {
+      y: 0.012, rx: -Math.PI / 2, cast: false, receive: false, renderOrder: 1,
+    });
+    shadowDisc.scale.set(1.15, 0.82, 1);
     add(group, cache.rounded(1.42, 0.09, 0.72, 0.05), palette.wood, { y: 0.72 });
     for (const dx of [-0.61, 0.61]) for (const dz of [-0.27, 0.27]) {
       add(group, cache.box(0.055, 0.68, 0.055), palette.metal, { x: dx, y: 0.36, z: dz });
     }
     add(group, cache.rounded(0.34, 0.48, 0.52, 0.04), palette.white, { x: 0.52, y: 0.45, z: 0.04 });
     add(group, cache.box(0.3, 0.025, 0.02), palette.metal, { x: 0.52, y: 0.62, z: -0.23 });
-    add(group, cache.box(0.5, 0.05, 0.36), palette.screenFrame, { y: 1.15, z: -0.26 });
-    add(group, cache.box(0.07, 0.22, 0.07), palette.metal, { y: 0.9, z: -0.26 });
-    const screen = add(group, cache.plane(0.68, 0.42), palette.screenMaterial(variant), {
-      y: 1.15, z: -0.22, cast: false, receive: false, renderOrder: 1,
-    });
-    screen.userData.screenId = `${workstationId}-screen`;
-    screen.userData.screenLabel = `${workstationLabel} display`;
-    add(group, cache.rounded(0.48, 0.025, 0.14, 0.02), palette.dark, { y: 0.775, z: 0.12 });
-    add(group, cache.rounded(0.08, 0.035, 0.12, 0.03), palette.dark, { x: 0.36, y: 0.78, z: 0.12 });
+    monitor(group, -0.22, -0.14, variant, workstationId, 1);
+    monitor(group, 0.24, -0.12, variant, workstationId, 2);
+    add(group, cache.rounded(0.48, 0.025, 0.14, 0.02), palette.robotDark, { y: 0.775, z: 0.12 });
+    add(group, cache.rounded(0.08, 0.035, 0.12, 0.03), palette.robotDark, { x: 0.36, y: 0.78, z: 0.12 });
     add(group, cache.cylinder(0.055, 0.045, 0.1, 14), palette.white, { x: -0.49, y: 0.82, z: 0.15 });
     add(group, cache.rounded(0.22, 0.012, 0.3, 0.01), palette.paper, { x: -0.4, y: 0.775, z: -0.1, rz: 0.08 });
     chair(group, 0, 0.74);
     parent.add(group);
+    spotPositions.set(workstationId, point.clone());
+    spotRoomIds.set(workstationId, logicalRoomId);
   }
 
-  function shelf(parent: Object3D, room: Room3DLayout): void {
-    const backZ = room.row === 'north' ? -room.depth / 2 + 0.12 : room.depth / 2 - 0.12;
-    const face = room.row === 'north' ? 1 : -1;
-    add(parent, cache.box(room.width * 0.92, 1.85, 0.12), palette.woodDark, { y: FLOOR_Y + 1.15, z: backZ });
-    for (let i = 0; i < 13; i += 1) {
-      add(parent, cache.box(0.045, 1.75, 0.055), palette.wood, {
-        x: -room.width * 0.44 + i * (room.width * 0.88 / 12), y: FLOOR_Y + 1.15, z: backZ + face * 0.075,
+  function screenBoard(
+    parent: Object3D, point: Vector3, variant: ScreenVariant,
+    workstationId: string, logicalRoomId: string, width = screenWidth, height = screenHeight,
+  ): void {
+    const group = new Group();
+    group.position.set(point.x, FLOOR_Y + unit(58), point.z);
+    group.rotation.y = facingCamera(point);
+    group.userData.roomId = logicalRoomId;
+    group.userData.visualRoomId = visualRoomForLogical(logicalRoomId) ?? '';
+    add(group, cache.rounded(width + unit(8), height + unit(8), unit(4), unit(2)), palette.screenFrame, { z: -unit(2) });
+    const display = add(group, cache.plane(width, height), palette.screenMaterial(variant), {
+      z: unit(1), cast: false, receive: false, renderOrder: 2,
+    });
+    display.userData.screenId = `${workstationId}-screen`;
+    display.userData.screenLabel = `${workstationId} wall display`;
+    add(group, cache.box(width * 0.5, unit(3), unit(3)), palette.metal, { y: -height / 2 - unit(4) });
+    parent.add(group);
+    spotPositions.set(workstationId, point.clone());
+    spotRoomIds.set(workstationId, logicalRoomId);
+  }
+
+  function shelf(parent: Object3D, a: Vector3, b: Vector3): void {
+    const edge = edgePlacement(a, b);
+    const group = new Group();
+    group.position.set(edge.x, FLOOR_Y, edge.z);
+    group.rotation.y = edge.ry;
+    const width = Math.min(unit(78), edge.length * 0.52);
+    add(group, cache.box(width, unit(66), unit(4)), palette.woodDark, { y: unit(35) });
+    for (let level = 0; level < 3; level += 1) {
+      add(group, cache.box(width * 0.94, unit(2), unit(7)), palette.wood, { y: unit(20 + level * 20), z: unit(3) });
+      for (let i = 0; i < 7; i += 1) {
+        add(group, cache.box(unit(5), unit(15), unit(5)), i % 2 ? palette.paper : palette.white, {
+          x: -width * 0.4 + i * (width * 0.8 / 6), y: unit(27 + level * 20), z: unit(4),
+        });
+      }
+    }
+    parent.add(group);
+  }
+
+  function serverRack(parent: Object3D, point: Vector3, rotation: number): void {
+    const group = new Group();
+    group.position.set(point.x, FLOOR_Y, point.z);
+    group.rotation.y = rotation;
+    add(group, cache.rounded(unit(34), unit(100), unit(30), unit(3)), palette.robotDark, { y: unit(50) });
+    for (let i = 0; i < 9; i += 1) {
+      add(group, cache.box(unit(26), unit(5), unit(2)), palette.metal, { y: unit(14 + i * 9), z: unit(16), cast: false });
+      add(group, cache.box(unit(5), unit(2), unit(1)), palette.cyanGlow, { x: -unit(9), y: unit(14 + i * 9), z: unit(17), cast: false });
+    }
+    parent.add(group);
+  }
+
+  function conferenceTable(parent: Object3D, point: Vector3, rotation: number, logicalRoomId: string): void {
+    const group = new Group();
+    group.position.set(point.x, FLOOR_Y, point.z);
+    group.rotation.y = rotation;
+    group.userData.meetingId = `${logicalRoomId}-meeting`;
+    group.userData.meetingLabel = 'Management';
+    group.userData.roomId = logicalRoomId;
+    group.userData.visualRoomId = 'management';
+    add(group, cache.rounded(unit(185), unit(7), unit(76), unit(4)), palette.wood, { y: unit(42) });
+    for (const x of [-unit(70), unit(70)]) for (const z of [-unit(25), unit(25)]) {
+      add(group, cache.box(unit(4), unit(40), unit(4)), palette.metal, { x, y: unit(20), z });
+    }
+    for (const x of [-unit(60), -unit(20), unit(20), unit(60)]) {
+      for (const z of [-unit(58), unit(58)]) chair(group, x, z);
+      add(group, cache.rounded(unit(14), unit(2), unit(7), unit(1)), palette.paper, { x, y: unit(46), z: -unit(12) });
+    }
+    parent.add(group);
+    spotPositions.set(`${logicalRoomId}-meeting`, point.clone());
+    spotRoomIds.set(`${logicalRoomId}-meeting`, logicalRoomId);
+  }
+
+  function executiveDesk(parent: Object3D, point: Vector3, rotation: number, logicalRoomId: string): void {
+    const group = new Group();
+    group.position.set(point.x, FLOOR_Y, point.z);
+    group.rotation.y = rotation;
+    group.userData.meetingId = `${logicalRoomId}-meeting`;
+    group.userData.meetingLabel = 'Executive Office';
+    group.userData.roomId = logicalRoomId;
+    group.userData.visualRoomId = 'executive';
+    add(group, cache.rounded(unit(150), unit(9), unit(72), unit(5)), palette.wood, { y: unit(43) });
+    for (const x of [-unit(60), unit(60)]) for (const z of [-unit(26), unit(26)]) {
+      add(group, cache.box(unit(5), unit(40), unit(5)), palette.metal, { x, y: unit(20), z });
+    }
+    add(group, cache.circle(unit(95)), palette.rug, { y: unit(1), rx: -Math.PI / 2, cast: false });
+    add(group, cache.box(unit(46), unit(4), unit(30)), palette.screenFrame, { y: unit(70), z: -unit(18) });
+    add(group, cache.plane(unit(54), unit(34)), palette.screenMaterial('plan'), { y: unit(70), z: -unit(15), cast: false, receive: false });
+    chair(group, 0, unit(58));
+    for (const x of [-unit(62), unit(62)]) add(group, cache.rounded(unit(22), unit(34), unit(26), unit(3)), palette.sofa, { x, y: unit(26), z: unit(88) });
+    parent.add(group);
+    spotPositions.set(`${logicalRoomId}-meeting`, point.clone());
+    spotRoomIds.set(`${logicalRoomId}-meeting`, logicalRoomId);
+  }
+
+  function accentBackEdge(parent: Object3D, a: Vector3, b: Vector3, roomId: string): void {
+    const edge = edgePlacement(a, b);
+    const lowerHeight = wallHeight * 0.72;
+    const upperHeight = wallHeight * 0.28;
+    const wooden = roomId === 'executive';
+    const wallMaterial = wooden ? palette.woodSlat
+      : roomId === 'creative' || roomId === 'research' ? lowerWallMaterial
+        : roomId === 'qa' ? displayWallMaterial : accentWallMaterial;
+    add(parent, cache.box(edge.length, lowerHeight, unit(3)), wallMaterial, {
+      x: edge.x, y: FLOOR_Y + lowerHeight / 2, z: edge.z, ry: edge.ry, cast: false, receive: true,
+    });
+    add(parent, cache.box(edge.length, upperHeight, unit(2)), palette.glass, {
+      x: edge.x, y: FLOOR_Y + lowerHeight + upperHeight / 2, z: edge.z, ry: edge.ry,
+      cast: false, receive: false,
+    });
+    edgeBox(parent, a, b, 1, unit(1.5), unit(3), palette.frame, wallHeight, false);
+    edgeBox(parent, a, b, 1, unit(1.5), unit(3), palette.frame, lowerHeight, false);
+    edgeBox(parent, a, b, 1, unit(2.2), unit(4), warmStrip, unit(2), false);
+    for (let i = 1; i <= 3; i += 1) {
+      const t = i / 4;
+      const p = a.clone().lerp(b, t);
+      add(parent, cache.box(unit(1.5), lowerHeight * 0.82, unit(1.5)), warmStrip, {
+        x: p.x, y: FLOOR_Y + lowerHeight * 0.45, z: p.z, ry: edge.ry, cast: false, receive: false,
       });
     }
-    for (let level = 0; level < 3; level += 1) {
-      add(parent, cache.box(room.width * 0.88, 0.045, 0.22), palette.wood, { y: FLOOR_Y + 0.62 + level * 0.55, z: backZ + face * 0.14 });
-      for (let i = 0; i < 4; i += 1) {
-        add(parent, cache.box(0.1 + (i % 2) * 0.05, 0.28, 0.12), i % 2 ? palette.paper : palette.white, {
-          x: -room.width * 0.32 + i * 0.22, y: FLOOR_Y + 0.79 + level * 0.55, z: backZ + face * 0.14,
+    if (wooden) {
+      const slatCount = Math.max(6, Math.floor(edge.length / unit(18)));
+      for (let i = 1; i < slatCount; i += 1) {
+        const t = i / slatCount;
+        const p = a.clone().lerp(b, t);
+        add(parent, cache.box(unit(1.5), lowerHeight * 0.9, unit(2)), palette.wood, {
+          x: p.x, y: FLOOR_Y + lowerHeight * 0.45, z: p.z, ry: edge.ry,
         });
       }
     }
   }
 
-  function display(parent: Object3D, room: Room3DLayout, variant: ScreenVariant): void {
-    const backZ = room.row === 'north' ? -room.depth / 2 + 0.19 : room.depth / 2 - 0.19;
-    const face = room.row === 'north' ? 1 : -1;
-    const width = Math.min(2.1, room.width * 0.66);
-    add(parent, cache.rounded(width + 0.12, 1.02, 0.09, 0.05), palette.screenFrame, { y: FLOOR_Y + 1.48, z: backZ + face * 0.02 });
-    add(parent, cache.plane(width, 0.86), palette.screenMaterial(variant), {
-      y: FLOOR_Y + 1.48, z: backZ + face * 0.07, ry: room.row === 'north' ? 0 : Math.PI, cast: false, receive: false, renderOrder: 1,
-    });
-  }
-
-  function serverRack(parent: Object3D, room: Room3DLayout): void {
-    const x = room.width / 2 - 0.34;
-    add(parent, cache.rounded(0.48, 1.68, 0.48, 0.06), palette.dark, { x, y: FLOOR_Y + 0.84, z: 0 });
-    for (let i = 0; i < 7; i += 1) {
-      add(parent, cache.box(0.34, 0.12, 0.03), palette.metal, { x, y: FLOOR_Y + 0.36 + i * 0.2, z: 0.26 });
-      add(parent, cache.box(0.055, 0.035, 0.02), palette.cyanGlow, { x: x - 0.11, y: FLOOR_Y + 0.36 + i * 0.2, z: 0.285, cast: false });
+  function glassEdge(parent: Object3D, a: Vector3, b: Vector3, withDoor: boolean): void {
+    const edge = edgePlacement(a, b);
+    const gap = withDoor ? Math.min(unit(55), edge.length * 0.22) : 0;
+    const panelLength = (edge.length - gap) / 2;
+    const center = new Vector3(edge.x, 0, edge.z);
+    const direction = edge.direction;
+    for (const side of [-1, 1]) {
+      const panelCenter = center.clone().add(direction.clone().multiplyScalar(side * (gap / 2 + panelLength / 2)));
+      const panelA = panelCenter.clone().add(direction.clone().multiplyScalar(-panelLength / 2));
+      const panelB = panelCenter.clone().add(direction.clone().multiplyScalar(panelLength / 2));
+      edgeBox(parent, panelA, panelB, 1, wallHeight * 0.76, unit(2), palette.glass, wallHeight * 0.5, false);
+      edgeBox(parent, panelA, panelB, 1, unit(1.5), unit(3), palette.frame, wallHeight, false);
+      edgeBox(parent, panelA, panelB, 1, unit(1.5), unit(3), palette.frame, unit(3), false);
+      edgeBox(parent, panelA, panelB, 1, unit(1.2), unit(2), palette.frame, wallHeight * 0.5, false);
+      edgeBox(parent, panelA, panelB, 1, wallHeight * 0.12, unit(3), glassBaseMaterial, wallHeight * 0.06, false);
     }
-  }
-
-  function lounge(parent: Object3D, room: Room3DLayout): void {
-    const group = new Group();
-    group.userData.meetingId = `${room.id}-meeting`;
-    group.userData.meetingLabel = room.nameEn;
-    group.userData.roomId = room.id;
-    add(group, cache.cylinder(0.58, 0.58, 0.09, 32), palette.wood, { y: FLOOR_Y + 0.34, z: 0 });
-    for (let i = 0; i < 3; i += 1) {
-      const angle = (i / 3) * Math.PI * 2 + 0.3;
-      const arc = add(group, cache.torus(1.15, 0.19, Math.PI * 0.62), palette.sofa, {
-        x: Math.cos(angle) * 1.15, y: FLOOR_Y + 0.4, z: Math.sin(angle) * 1.15,
-        rx: Math.PI / 2, ry: -angle,
-      });
-      arc.castShadow = quality === 'high';
-      add(group, cache.rounded(0.34, 0.12, 0.22, 0.06), palette.paper, {
-        x: Math.cos(angle) * 1.75, y: FLOOR_Y + 0.48, z: Math.sin(angle) * 1.75, ry: -angle,
+    const posts = withDoor
+      ? [0, -gap / 2 - panelLength, gap / 2 + panelLength, edge.length / 2, -edge.length / 2]
+      : [-edge.length / 2, -edge.length / 4, 0, edge.length / 4, edge.length / 2];
+    for (const offset of posts) {
+      const p = center.clone().add(direction.clone().multiplyScalar(offset));
+      add(parent, cache.box(unit(1.5), wallHeight, unit(1.5)), palette.frame, {
+        x: p.x, y: FLOOR_Y + wallHeight / 2, z: p.z, ry: edge.ry, cast: false,
       });
     }
-    plant(group, -room.width / 2 + 0.55, -room.depth / 2 + 0.65, 0.8);
-    parent.add(group);
+    edgeBox(parent, a, b, 1, unit(2.2), unit(4), warmStrip, unit(1), false);
   }
 
-  function executiveDesk(parent: Object3D, room: Room3DLayout): void {
-    const group = new Group();
-    group.position.set(0, FLOOR_Y, room.row === 'north' ? -0.2 : 0.2);
-    group.rotation.y = room.row === 'north' ? 0 : Math.PI;
-    group.userData.meetingId = `${room.id}-meeting`;
-    group.userData.meetingLabel = room.nameEn;
-    group.userData.roomId = room.id;
-    add(group, cache.rounded(1.9, 0.12, 0.92, 0.07), palette.wood, { y: 0.74 });
-    for (const dx of [-0.82, 0.82]) for (const dz of [-0.36, 0.36]) add(group, cache.box(0.07, 0.7, 0.07), palette.metal, { x: dx, y: 0.36, z: dz });
-    add(group, cache.box(0.58, 0.05, 0.4), palette.screenFrame, { y: 1.2, z: -0.3 });
-    add(group, cache.plane(0.78, 0.48), palette.screenMaterial('plan'), { y: 1.2, z: -0.26, cast: false, receive: false });
-    add(group, cache.rounded(0.5, 0.03, 0.16, 0.02), palette.dark, { y: 0.8, z: 0.16 });
-    add(group, cache.cylinder(0.06, 0.05, 0.12, 14), palette.white, { x: -0.68, y: 0.86, z: 0.18 });
-    chair(group, 0, 0.86);
-    for (const x of [-0.85, -0.28, 0.28, 0.85]) add(group, cache.rounded(0.32, 0.5, 0.36, 0.07), palette.sofa, { x, y: 0.52, z: 1.18 });
-    parent.add(group);
-  }
-
-  function glassWall(parent: Object3D, room: Room3DLayout): void {
-    const walls = new Group();
-    walls.name = 'non-pickable-glass-partitions';
-    walls.userData.ignoreRaycast = true;
-    parent.add(walls);
-    const frontZ = room.row === 'north' ? room.depth / 2 : -room.depth / 2;
-    const backZ = -frontZ;
-    const face = room.row === 'north' ? 1 : -1;
-    const h = OFFICE_WORLD.glassHeight;
-    const door = Math.min(1.05, room.width * 0.28);
-    const panel = (room.width - door) / 2;
-
-    add(walls, cache.box(room.width, 0.82, 0.14), palette.white, { y: FLOOR_Y + 0.41, z: backZ });
-    add(walls, cache.box(room.width, h - 0.9, 0.055), palette.glass, {
-      y: FLOOR_Y + 0.86 + (h - 0.9) / 2, z: backZ, cast: false, receive: false,
-    });
-    add(walls, cache.box(room.width, 0.08, 0.18), palette.frame, { y: FLOOR_Y + h, z: backZ });
-    for (const x of [-room.width / 2, 0, room.width / 2]) {
-      add(walls, cache.box(0.06, h, 0.085), palette.frame, { x, y: FLOOR_Y + h / 2, z: backZ });
-    }
-    for (const side of [-1, 1]) {
-      const x = side * (door / 2 + panel / 2);
-      add(walls, cache.box(panel, h, 0.055), palette.glass, { x, y: FLOOR_Y + h / 2, z: frontZ, cast: false, receive: false });
-      add(walls, cache.box(panel, 0.055, 0.075), palette.frame, { x, y: FLOOR_Y + h, z: frontZ });
-      add(walls, cache.box(panel, 0.055, 0.075), palette.frame, { x, y: FLOOR_Y + 0.03, z: frontZ });
-      add(walls, cache.box(panel, 0.45, 0.085), palette.white, { x, y: FLOOR_Y + 0.24, z: frontZ });
-    }
-    for (const x of [-room.width / 2, -door / 2, door / 2, room.width / 2]) {
-      add(walls, cache.box(0.06, h, 0.085), palette.frame, { x, y: FLOOR_Y + h / 2, z: frontZ });
-    }
-    add(walls, cache.box(room.width, 0.06, 0.085), palette.frame, { y: FLOOR_Y + h, z: frontZ });
-    add(walls, cache.box(door, 0.035, 0.12), warmStrip, { y: FLOOR_Y + 0.03, z: frontZ + face * 0.03, cast: false });
-    for (const side of [-1, 1]) {
-      const x = side * room.width / 2;
-      add(walls, cache.box(0.09, h * 0.38, room.depth * 0.86), palette.white, { x, y: FLOOR_Y + h * 0.19, z: 0 });
-      add(walls, cache.box(0.055, h * 0.62, room.depth * 0.86), palette.glass, { x, y: FLOOR_Y + h * 0.69, z: 0, cast: false, receive: false });
-      for (const z of [-room.depth * 0.43, 0, room.depth * 0.43]) add(walls, cache.box(0.075, h, 0.06), palette.frame, { x, y: FLOOR_Y + h / 2, z });
-      add(walls, cache.box(0.075, 0.06, room.depth * 0.86), palette.frame, { x, y: FLOOR_Y + h, z: 0 });
-    }
-  }
-
-  function roomFloor(parent: Object3D, room: Room3DLayout): Mesh {
-    add(parent, cache.plane(room.width, room.depth), palette.roomFloor(room.accent), {
-      y: FLOOR_Y - 0.008, rx: -Math.PI / 2, cast: false, receive: true,
-    });
-    for (const x of [-room.width * 0.25, room.width * 0.25]) {
-      add(parent, cache.box(0.018, 0.012, room.depth * 0.9), palette.metal, { x, y: FLOOR_Y - 0.001, z: 0, cast: false });
-    }
-    const highlight = extraMaterial(new MeshBasicMaterial({ color: new Color(room.accent), transparent: true, opacity: 0.18, side: DoubleSide, depthWrite: false }));
-    const selection = add(parent, cache.plane(room.width * 0.98, room.depth * 0.96), highlight, {
-      y: FLOOR_Y + 0.055, rx: -Math.PI / 2, cast: false, receive: false, renderOrder: 2,
-    });
+  function roomFloor(parent: Group, room: ReferenceRoomWorld): Mesh {
+    const geometry = makeFloorGeometry(room);
+    customGeometries.push(geometry);
+    const material = room.definition.floor === 'wood' ? palette.floorWood : roomMarbleMaterial;
+    add(parent, geometry, material, { y: FLOOR_Y, cast: false, receive: true });
+    const highlightMaterial = extraMaterial(new MeshBasicMaterial({
+      color: new Color(room.definition.accent), transparent: true, opacity: 0.17, side: DoubleSide, depthWrite: false,
+    }));
+    const selection = add(parent, geometry, highlightMaterial, { y: FLOOR_Y + unit(2), cast: false, receive: false, renderOrder: 2 });
     selection.userData.ignoreRaycast = true;
     selection.visible = false;
+    roomHighlights.set(room.definition.id, selection);
     return selection;
   }
 
-  function createRoom(room: Room3DLayout): void {
+  function createRoom(room: ReferenceRoomWorld): void {
+    const definition = room.definition;
     const group = new Group();
-    group.name = `department-${room.id}`;
-    group.userData.roomId = room.id;
-    group.position.set(room.centerX, 0, room.centerZ);
+    group.name = `reference-room-${definition.id}`;
+    group.userData.roomId = definition.primaryLogicalRoomId;
+    group.userData.visualRoomId = definition.id;
+    group.position.copy(room.center);
+    group.rotation.set(0, room.rotation, 0);
     roomLayer.add(group);
-    roomHighlights.set(room.id, roomFloor(group, room));
-    glassWall(group, room);
-    shelf(group, room);
-    display(group, room, screenVariantFor(room));
-    if (room.id === 'zone-engineering') serverRack(group, room);
-    if (room.id === 'zone-lounge') lounge(group, room);
-    else if (room.id === 'zone-boardroom') executiveDesk(group, room);
-    else {
-      const scale = Math.min(1, room.width / 3.1);
-      const rotation = room.row === 'north' ? 0 : Math.PI;
-      const spots = roomSpots(room.id).filter((spot) => spot.role === 'desk' || spot.role === 'desk-alt' || spot.role === 'collab' || spot.role === 'board');
-      const first = spots[0];
-      const second = spots[1];
-      desk(group, room, -room.width * 0.23, -0.1, rotation, scale, screenVariantFor(room),
-        first?.id ?? `${room.id}-desk-1`, first?.labelAr ?? `${room.nameAr} workstation 1`);
-      desk(group, room, room.width * 0.23, -0.1, rotation, scale, screenVariantFor(room),
-        second?.id ?? `${room.id}-desk-2`, second?.labelAr ?? `${room.nameAr} workstation 2`);
+    roomFloor(group, room);
+
+    const [p0, p1, p2, p3] = room.points as [Vector3, Vector3, Vector3, Vector3];
+    const walls = new Group();
+    walls.name = 'non-pickable-glass-partitions';
+    walls.userData.ignoreRaycast = true;
+    roomLayer.add(walls);
+    accentBackEdge(walls, p0, p1, definition.id);
+    accentBackEdge(walls, p1, p2, definition.id);
+    glassEdge(walls, p2, p3, true);
+    glassEdge(walls, p3, p0, true);
+
+    const logicalRoomIds = logicalRoomsForVisual(definition.id);
+    const workstationSpots = ROOM_SPOTS.filter((spot) => logicalRoomIds.includes(spot.roomId));
+    const deskPoints = REFERENCE_DESK_POINTS[definition.id] ?? [];
+    if (definition.furniture === 'management') {
+      conferenceTable(roomLayer, atScreen(deskPoints[0] ?? [1480, 550]), room.rotation, definition.primaryLogicalRoomId);
+    } else if (definition.furniture === 'executive') {
+      executiveDesk(roomLayer, atScreen(deskPoints[0] ?? [870, 245]), room.rotation, definition.primaryLogicalRoomId);
+    } else {
+      deskPoints.forEach((screenPoint, index) => {
+        const spot = workstationSpots[index];
+        const workstationId = spot?.id ?? `${definition.id}-desk-${index + 1}`;
+        desk(
+          roomLayer, atScreen(screenPoint), room.rotation, definition.displayVariant,
+          workstationId, spot?.labelAr ?? `${definition.label} workstation ${index + 1}`,
+          spot?.roomId ?? definition.primaryLogicalRoomId,
+        );
+      });
     }
-    const frontZ = room.row === 'north' ? room.depth / 2 : -room.depth / 2;
-    const face = room.row === 'north' ? 1 : -1;
-    add(group, cache.rounded(Math.min(2.9, room.width * 0.82), 0.14, 0.1, 0.025), palette.frame, {
-      y: room.signY, z: frontZ + face * 0.11, cast: false, receive: false,
+    (REFERENCE_DISPLAY_POINTS[definition.id] ?? []).forEach((screenPoint, index) => {
+      const point = atScreen(screenPoint);
+      screenBoard(
+        roomLayer, point, index % 2 === 1 ? 'plan' : definition.displayVariant,
+        `${definition.id}-display-${index + 1}`, definition.primaryLogicalRoomId,
+        definition.furniture === 'executive' ? unit(70) : screenWidth,
+        definition.furniture === 'executive' ? unit(44) : screenHeight,
+      );
     });
-    plant(group, -room.width / 2 + 0.48, room.row === 'north' ? -room.depth / 2 + 0.58 : room.depth / 2 - 0.58, 0.72);
-    add(group, cache.box(room.width * 0.78, 0.025, 0.08), warmStrip, {
-      y: FLOOR_Y + 0.04, z: frontZ - face * 0.12, cast: false,
-    });
+    shelf(roomLayer, p0, p1);
+    if (definition.id === 'qa') {
+      const backCenter = p0.clone().lerp(p1, 0.5);
+      serverRack(roomLayer, p1.clone().lerp(p2, 0.22), room.rotation);
+      serverRack(roomLayer, p1.clone().lerp(p2, 0.72), room.rotation);
+      void backCenter;
+    }
+    if (definition.id === 'engineering') {
+      const backCenter = p1.clone().lerp(p2, 0.78);
+      serverRack(roomLayer, backCenter, room.rotation);
+    }
   }
 
+  /** Grounded full-bleed floor and perimeter glazing; the office is not a floating island. */
   function createGround(): void {
-    const environment = new Group();
-    environment.name = 'grounded-architectural-environment';
-    environment.userData.ignoreRaycast = true;
-    scene.add(environment);
-    const wallH = 3.35;
-    const halfWidth = OFFICE_WORLD.slabWidth / 2;
-    const halfDepth = OFFICE_WORLD.slabDepth / 2;
-    add(environment, cache.plane(80, 60), groundMaterial, { y: FLOOR_Y - 0.04, rx: -Math.PI / 2, cast: false, receive: true });
-    add(environment, cache.plane(OFFICE_WORLD.slabWidth, OFFICE_WORLD.slabDepth), palette.marble, {
-      y: FLOOR_Y - 0.025, rx: -Math.PI / 2, cast: false, receive: true,
+    add(environmentLayer, cache.plane(120, 120), groundMaterial, {
+      y: FLOOR_Y - unit(3), rx: -Math.PI / 2, cast: false, receive: true,
     });
-    add(environment, cache.box(OFFICE_WORLD.slabWidth, wallH, 0.18), palette.white, {
-      y: FLOOR_Y + wallH / 2, z: -halfDepth,
-    });
-    add(environment, cache.box(0.18, wallH, OFFICE_WORLD.slabDepth), palette.white, {
-      x: -halfWidth, y: FLOOR_Y + wallH / 2, z: 0,
-    });
-    add(environment, cache.box(OFFICE_WORLD.slabWidth, 0.08, 0.22), palette.frame, {
-      y: FLOOR_Y + wallH, z: -halfDepth,
-    });
-    add(environment, cache.box(0.22, 0.08, OFFICE_WORLD.slabDepth), palette.frame, {
-      x: -halfWidth, y: FLOOR_Y + wallH, z: 0,
-    });
-    for (let x = -halfWidth + 2; x < halfWidth; x += 4) {
-      add(environment, cache.box(0.035, wallH, 0.2), palette.frame, { x, y: FLOOR_Y + wallH / 2, z: -halfDepth });
+    // The floor and exterior planting continue beyond the frame; there is no floating island.
+    for (const point of [[280, 70], [420, 35], [1370, 70], [1510, 95], [280, 860], [1590, 850], [240, 750], [1640, 760]] as ScreenPoint[]) {
+      plant(environmentLayer, atScreen(point), plantScale * 1.25);
     }
   }
 
-  /** Continuous circulation spine; room doors open directly onto the shared floor. */
+  /** Continuous warm corridor edges and lobby railing from the reference. */
   function createCorridors(): void {
-    const group = new Group();
-    group.name = 'connected-corridors';
-    scene.add(group);
-    const corridorDepth = OFFICE_WORLD.corridorSouthZ - OFFICE_WORLD.corridorNorthZ + 0.42;
-    const corridorCenterZ = (OFFICE_WORLD.corridorNorthZ + OFFICE_WORLD.corridorSouthZ) / 2;
-    add(group, cache.box(OFFICE_WORLD.slabWidth - 0.65, 0.014, corridorDepth), corridorFloor, {
-      y: FLOOR_Y - 0.015, z: corridorCenterZ, cast: false, receive: true,
-    });
-    for (let x = -10; x <= 10; x += 4) {
-      add(group, cache.box(0.012, 0.008, corridorDepth - 0.15), corridorLine, {
-        x, y: FLOOR_Y - 0.002, z: corridorCenterZ, cast: false,
+    const railPoints = REFERENCE_RAIL_POINTS.map((point) => atScreen(point));
+    for (let i = 0; i < railPoints.length - 1; i += 1) {
+      const a = railPoints[i]!;
+      const b = railPoints[i + 1]!;
+      edgeBox(environmentLayer, a, b, 1, unit(1), unit(1), railMaterial, unit(34), false);
+      edgeBox(environmentLayer, a, b, 1, unit(1), unit(1), warmStrip, unit(2), false);
+      add(environmentLayer, cache.cylinder(unit(1.2), unit(1.2), unit(38), 10), railMaterial, {
+        x: a.x, y: FLOOR_Y + unit(19), z: a.z, cast: false,
       });
     }
-    for (const z of [OFFICE_WORLD.corridorNorthZ, 0, OFFICE_WORLD.corridorSouthZ]) {
-      add(group, cache.box(OFFICE_WORLD.slabWidth - 0.7, 0.008, 0.02), corridorLine, {
-        y: FLOOR_Y - 0.002, z, cast: false,
-      });
+    for (const room of referenceRooms) {
+      const a = room.points[3]!;
+      const b = room.points[2]!;
+      edgeBox(environmentLayer, a, b, 1, unit(2.6), unit(3), warmStrip, unit(1), false);
+      edgeBox(environmentLayer, a, b, 1, unit(1), unit(1), corridorLine, unit(3), false);
     }
-    add(group, cache.box(1.65, 0.01, corridorDepth - 0.2), corridorLine, {
-      y: FLOOR_Y - 0.003, z: corridorCenterZ, cast: false,
-    });
-    for (const room of ROOM_3D_LAYOUTS) {
-      const frontZ = room.row === 'north' ? room.centerZ + room.depth / 2 : room.centerZ - room.depth / 2;
-      const face = room.row === 'north' ? 1 : -1;
-      add(group, cache.box(1.08, 0.01, 0.14), warmStrip, {
-        x: room.centerX, y: FLOOR_Y - 0.001, z: frontZ + face * 0.16, cast: false,
-      });
-    }
-    for (const x of [-7.4, 7.4]) {
-      add(group, cache.rounded(1.25, 0.12, 0.34, 0.06), palette.sofa, {
-        x, y: FLOOR_Y + 0.28, z: -1.1,
-      });
-      add(group, cache.rounded(1.25, 0.12, 0.34, 0.06), palette.sofa, {
-        x, y: FLOOR_Y + 0.28, z: 1.1,
-      });
-    }
-    for (const [x, z] of [[-8.8, 0], [8.8, 0]] as const) plant(group, x, z, 0.72);
   }
 
   function createLobby(): void {
-    const group = new Group();
-    group.name = 'central-reception-and-shared-area';
-    group.position.y = FLOOR_Y;
-    scene.add(group);
-
-    add(group, cache.plane(5.8, 4.7), palette.roomFloor('#a9d5de'), {
-      y: 0.001, rx: -Math.PI / 2, cast: false, receive: true,
+    const medallion = atScreen(REFERENCE_FEATURE_POINTS.medallion);
+    medallion.y = FLOOR_Y + unit(1);
+    add(environmentLayer, cache.circle(unit(190)), roomMarbleMaterial, {
+      x: medallion.x, y: FLOOR_Y + unit(1), z: medallion.z, rx: -Math.PI / 2, cast: false, receive: true,
     });
-    add(group, cache.box(5.8, 0.012, 0.025), palette.metal, { y: 0.01, z: -2.35, cast: false });
-    add(group, cache.box(5.8, 0.012, 0.025), palette.metal, { y: 0.01, z: 2.35, cast: false });
-
-    const reception = new Group();
-    reception.position.set(-1.7, 0, -1.35);
-    add(reception, cache.rounded(2.3, 0.72, 0.52, 0.07), palette.white, { y: 0.39 });
-    add(reception, cache.rounded(2.42, 0.09, 0.62, 0.05), palette.wood, { y: 0.79 });
-    add(reception, cache.box(2.3, 0.22, 0.04), palette.frame, { y: 0.54, z: 0.28 });
-    add(reception, cache.box(0.62, 0.42, 0.055), palette.screenFrame, { x: -0.55, y: 1.08, z: -0.05 });
-    add(reception, cache.plane(0.56, 0.36), palette.screenMaterial('plan'), {
-      x: -0.55, y: 1.08, z: -0.019, cast: false, receive: false,
+    add(environmentLayer, cache.torus(unit(190), unit(6)), warmStrip, {
+      x: medallion.x, y: FLOOR_Y + unit(2), z: medallion.z, rx: Math.PI / 2, cast: false, receive: false,
     });
-    add(reception, cache.rounded(0.48, 0.025, 0.18, 0.02), palette.dark, { x: 0.3, y: 0.85, z: 0.12 });
-    add(reception, cache.cylinder(0.055, 0.045, 0.1, 14), palette.white, { x: 0.8, y: 0.89, z: -0.06 });
-    chair(reception, -0.5, -0.6);
-    group.add(reception);
+    add(environmentLayer, cache.torus(unit(197), unit(2)), medallionGlow, {
+      x: medallion.x, y: FLOOR_Y + unit(2.4), z: medallion.z, rx: Math.PI / 2, cast: false, receive: false,
+    });
+    add(environmentLayer, cache.torus(unit(180), unit(1)), palette.cyanGlow, {
+      x: medallion.x, y: FLOOR_Y + unit(2.2), z: medallion.z, rx: Math.PI / 2, cast: false, receive: false,
+    });
 
-    const lounge = new Group();
-    lounge.position.set(1.75, 0, 0.45);
-    add(lounge, cache.rounded(1.35, 0.34, 0.58, 0.07), palette.sofa, { y: 0.28, z: -1.18 });
-    add(lounge, cache.rounded(1.35, 0.56, 0.12, 0.05), palette.sofa, { y: 0.59, z: -1.48 });
-    add(lounge, cache.rounded(1.35, 0.34, 0.58, 0.07), palette.sofa, { y: 0.28, z: 1.18 });
-    add(lounge, cache.rounded(1.35, 0.56, 0.12, 0.05), palette.sofa, { y: 0.59, z: 1.48, ry: Math.PI });
-    for (const x of [-0.48, 0.48]) for (const z of [-0.24, 0.24]) {
-      add(lounge, cache.box(0.055, 0.34, 0.055), palette.metal, { x, y: 0.18, z });
+    const planter = atScreen(REFERENCE_FEATURE_POINTS.planter);
+    add(environmentLayer, cache.cylinder(unit(55), unit(58), unit(28), 40), palette.white, {
+      x: planter.x, y: FLOOR_Y + unit(14), z: planter.z,
+    });
+    add(environmentLayer, cache.circle(unit(53)), palette.leaf, {
+      x: planter.x, y: FLOOR_Y + unit(29), z: planter.z, rx: -Math.PI / 2, cast: false,
+    });
+    add(environmentLayer, cache.cylinder(unit(6), unit(9), unit(54), 12), palette.woodDark, {
+      x: planter.x, y: FLOOR_Y + unit(50), z: planter.z,
+    });
+    for (let i = 0; i < 10; i += 1) {
+      const angle = (i / 10) * Math.PI * 2;
+      add(environmentLayer, cache.ico(unit(5), 1), i % 2 ? palette.leaf : palette.leafDark, {
+        x: planter.x + Math.cos(angle) * unit(32),
+        y: FLOOR_Y + unit(31),
+        z: planter.z + Math.sin(angle) * unit(32),
+      });
     }
-    add(lounge, cache.rounded(1.1, 0.08, 0.62, 0.045), palette.wood, { y: 0.38 });
-    add(lounge, cache.rounded(0.34, 0.028, 0.24, 0.025), palette.paper, { x: -0.24, y: 0.44, z: 0.04, ry: 0.18 });
-    group.add(lounge);
+    for (let i = 0; i < 5; i += 1) {
+      const angle = (i / 5) * Math.PI * 2;
+      add(environmentLayer, cache.cylinder(unit(2), unit(4), unit(38), 8), palette.woodDark, {
+        x: planter.x + Math.cos(angle) * unit(16),
+        y: FLOOR_Y + unit(58),
+        z: planter.z + Math.sin(angle) * unit(16),
+        rz: Math.PI / 2,
+        ry: angle,
+      });
+    }
+    for (let i = 0; i < 18; i += 1) {
+      const angle = (i / 18) * Math.PI * 2;
+      const radius = unit(16 + (i % 5) * 13);
+      const leaf = add(environmentLayer, cache.ico(unit(17), 1), i % 4 === 0 ? palette.leafDark : palette.leaf, {
+        x: planter.x + Math.cos(angle) * radius,
+        y: FLOOR_Y + unit(62 + (i % 4) * 7),
+        z: planter.z + Math.sin(angle) * radius,
+      });
+      leaf.scale.set(1.4, 0.72, 1.4);
+    }
 
-    for (const [x, z] of [[-3.9, -1.85], [3.9, -1.85], [-3.9, 1.85], [3.9, 1.85]] as const) {
-      plant(group, x, z, 0.72);
+    for (const [screenPoint, arc] of [[REFERENCE_FEATURE_POINTS.sofaLeft, Math.PI * 1.15], [REFERENCE_FEATURE_POINTS.sofaRight, Math.PI * 1.1]] as const) {
+      const point = atScreen(screenPoint);
+      const sofa = add(environmentLayer, cache.torus(unit(58), unit(11), arc), screenPoint[0] === REFERENCE_FEATURE_POINTS.sofaLeft[0] ? palette.sofaBrown : palette.sofa, {
+        x: point.x, y: FLOOR_Y + unit(20), z: point.z, rx: Math.PI / 2, ry: facingCamera(point),
+      });
+      sofa.scale.set(1, 1, 0.62);
     }
+    const leftSofa = atScreen(REFERENCE_FEATURE_POINTS.sofaLeft);
+    add(environmentLayer, cache.circle(unit(52)), palette.sofa, {
+      x: leftSofa.x, y: FLOOR_Y + unit(1), z: leftSofa.z, rx: -Math.PI / 2, cast: false, receive: true,
+    }).scale.set(1.25, 0.72, 1);
+    for (const screenPoint of REFERENCE_PLANT_POINTS) plant(environmentLayer, atScreen(screenPoint), plantScale * 0.82);
   }
 
   function createLights(): void {
-    scene.add(new HemisphereLight(0xe8f6ff, 0x46595a, 1.35));
-    scene.add(new AmbientLight(0xffffff, 0.34));
-    const sun = new DirectionalLight(0xfff2dc, 2.25);
-    sun.position.set(-9, 19, 12);
+    scene.add(new HemisphereLight(0xe8f6ff, 0x46595a, 1.25));
+    scene.add(new AmbientLight(0xffffff, 0.42));
+    const sun = new DirectionalLight(0xfff2dc, 1.85);
+    sun.position.set(-16, 34, 22);
     sun.castShadow = quality === 'high';
     if (quality === 'high') {
       sun.shadow.mapSize.set(2048, 2048);
-      sun.shadow.camera.left = -18;
-      sun.shadow.camera.right = 18;
-      sun.shadow.camera.top = 16;
-      sun.shadow.camera.bottom = -16;
+      sun.shadow.camera.left = -38;
+      sun.shadow.camera.right = 38;
+      sun.shadow.camera.top = 34;
+      sun.shadow.camera.bottom = -34;
       sun.shadow.camera.near = 1;
-      sun.shadow.camera.far = 55;
+      sun.shadow.camera.far = 100;
       sun.shadow.bias = -0.0004;
     }
     scene.add(sun);
-    for (const [x, z] of [[-9, -6], [9, -6], [-9, 6], [9, 6]] as const) {
-      const light = new PointLight(0xffca83, 8, 11, 2);
-      light.position.set(x, 3.2, z);
+    for (const [x, z] of [[-18, -16], [12, -20], [-18, 10], [18, 6]] as const) {
+      const light = new PointLight(0xffca83, 7, 18, 2);
+      light.position.set(x, unit(150), z);
       scene.add(light);
     }
-    const lobbyLight = new PointLight(0x6bdcf2, 6, 9, 2);
-    lobbyLight.position.set(0, 3.6, 0);
+    const lobbyLight = new PointLight(0x6bdcf2, 6, 18, 2);
+    lobbyLight.position.set(0, unit(160), 0);
     scene.add(lobbyLight);
   }
 
   createGround();
   createCorridors();
   createLobby();
-  for (const room of ROOM_3D_LAYOUTS) createRoom(room);
+  for (const room of referenceRooms) createRoom(room);
   createLights();
 
-  const agentRing = add(scene, cache.torus(0.46, 0.025, Math.PI * 2), selectionRingMaterial, {
-    y: FLOOR_Y + 0.055, rx: Math.PI / 2, cast: false, receive: false, renderOrder: 5,
+  const agentRing = add(scene, cache.torus(unit(22), unit(2)), selectionRingMaterial, {
+    y: FLOOR_Y + unit(2), rx: Math.PI / 2, cast: false, receive: false, renderOrder: 5,
   });
   agentRing.visible = false;
 
   function setSelectedAgent(agentId: string | null): void {
-    selectedAgentId = agentId && robots.has(agentId) ? agentId : null;
+    selectedAgentId = agentId && primaryRobots.has(agentId) ? agentId : null;
     agentRing.visible = Boolean(selectedAgentId);
   }
 
   function setSelectedRoom(roomId: string | null): void {
-    selectedRoomId = roomId && roomHighlights.has(roomId) ? roomId : null;
-    for (const [id, highlight] of roomHighlights) highlight.visible = id === selectedRoomId;
-    for (const label of roomLabels) label.element.classList.toggle('is-selected', label.room.id === selectedRoomId);
+    selectedRoomId = roomId;
+    selectedVisualRoomId = visualRoomForLogical(roomId);
+    for (const [id, highlight] of roomHighlights) highlight.visible = id === selectedVisualRoomId;
+    for (const label of roomLabels) label.element.classList.toggle('is-selected', label.visualId === selectedVisualRoomId);
   }
 
   function updateLabels(): void {
@@ -654,65 +856,67 @@ export function createOfficeScene(options: OfficeSceneOptions): OfficeSceneContr
     const height = Math.max(1, container.clientHeight);
     const visibleRects: { left: number; right: number; top: number; bottom: number }[] = [];
     camera.updateMatrixWorld();
+    const viewportScale = width < 1600 ? MathUtils.clamp(width / REFERENCE_VIEWPORT.width, 0.76, 1) : 1;
+    const labelScale = MathUtils.clamp(viewportScale / cameraScale, 0.76, 1.65);
+    const sidebarSafe = width <= 1500 ? 190 : 217;
     for (const label of roomLabels) {
       const anchor = projectToViewport(label.anchor, camera, width, height);
-      const left = projectToViewport(label.left, camera, width, height);
-      const right = projectToViewport(label.right, camera, width, height);
-      const projectedWidth = Math.max(1, Math.abs(right.x - left.x));
-      const labelWidth = Math.max(150, Math.min(160, projectedWidth * 0.92));
-      const labelHeight = label.element.offsetHeight || 34;
+      const labelWidth = label.definition.labelWidth * labelScale;
+      const labelHeight = (label.element.offsetHeight || 44) * labelScale;
+      const displayX = width < 1600
+        ? MathUtils.clamp(anchor.x, sidebarSafe + labelWidth / 2 + 4, width - 12 - labelWidth / 2)
+        : anchor.x;
+      const displayY = width < 1600 ? MathUtils.clamp(anchor.y, 145, height - 100) : anchor.y;
       const inView = anchor.z >= -1 && anchor.z <= 1
-        && anchor.x >= -50 && anchor.x <= width + 50
-        && anchor.y >= 20 && anchor.y <= height + 20;
-      const hiddenByFocus = viewMode !== 'full' && Boolean(selectedRoomId) && label.room.id !== selectedRoomId;
+        && anchor.x >= -80 && anchor.x <= width + 80
+        && anchor.y >= 15 && anchor.y <= height + 80;
+      const hiddenByFocus = viewMode !== 'full' && Boolean(selectedVisualRoomId) && label.visualId !== selectedVisualRoomId;
       label.element.hidden = !inView || hiddenByFocus;
-      label.element.style.width = `${labelWidth}px`;
-      label.element.style.left = `${anchor.x}px`;
-      label.element.style.top = `${anchor.y}px`;
+      label.element.style.width = `${label.definition.labelWidth}px`;
+      label.element.style.left = `${displayX}px`;
+      label.element.style.top = `${displayY}px`;
+      label.element.style.transform = `translate(-50%, -50%) rotate(${label.definition.labelRotation}deg) scale(${labelScale})`;
       if (!label.element.hidden) {
         visibleRects.push({
-          left: anchor.x - labelWidth / 2,
-          right: anchor.x + labelWidth / 2,
-          top: anchor.y - labelHeight,
-          bottom: anchor.y,
+          left: displayX - labelWidth / 2, right: displayX + labelWidth / 2,
+          top: displayY - labelHeight, bottom: displayY,
         });
       }
     }
-    const lobby = projectToViewport(new Vector3(-1.7, FLOOR_Y + 0.9, -1.35), camera, width, height);
-    const lobbyWidth = lobbyLabel.offsetWidth || 120;
-    const lobbyHeight = lobbyLabel.offsetHeight || 20;
-    const lobbyRect = {
-      left: lobby.x - lobbyWidth / 2,
-      right: lobby.x + lobbyWidth / 2,
-      top: lobby.y - lobbyHeight / 2,
-      bottom: lobby.y + lobbyHeight / 2,
+    const medallion = projectToViewport(atScreen(REFERENCE_FEATURE_POINTS.medallion), camera, width, height);
+    const medallionWidth = 230 * labelScale;
+    const medallionHeight = 90 * labelScale;
+    const medallionRect = {
+      left: medallion.x - medallionWidth / 2, right: medallion.x + medallionWidth / 2,
+      top: medallion.y - medallionHeight / 2, bottom: medallion.y + medallionHeight / 2,
     };
-    const overlapsRoomLabel = visibleRects.some((rect) => rectanglesOverlap(lobbyRect, rect, 4));
-    lobbyLabel.hidden = viewMode !== 'full' || overlapsRoomLabel || lobby.z < -1 || lobby.z > 1
-      || lobbyRect.left < 0 || lobbyRect.right > width || lobbyRect.top < 0 || lobbyRect.bottom > height;
-    if (!lobbyLabel.hidden) {
-      lobbyLabel.style.left = `${lobby.x}px`;
-      lobbyLabel.style.top = `${lobby.y}px`;
+    const overlapsRoomLabel = visibleRects.some((rect) => rectanglesOverlap(medallionRect, rect, 3));
+    medallionLabel.hidden = viewMode !== 'full' || overlapsRoomLabel || medallion.z < -1 || medallion.z > 1
+      || medallionRect.left < 0 || medallionRect.right > width || medallionRect.top < 0 || medallionRect.bottom > height;
+    if (!medallionLabel.hidden) {
+      medallionLabel.style.left = `${medallion.x}px`;
+      medallionLabel.style.top = `${medallion.y}px`;
+      medallionLabel.style.transform = `translate(-50%, -50%) scale(${labelScale})`;
     }
   }
 
   function moveCamera(
     toTarget: Vector3,
-    toZoom: number,
+    toScale: number,
     mode: 'full' | 'room' | 'agent' | 'spot',
     immediate = false,
   ): void {
     viewMode = mode;
     if (immediate || reducedMotion) {
-      setCamera(toTarget, toZoom);
+      setCamera(toTarget, toScale);
       tween = null;
       return;
     }
     tween = {
       fromTarget: cameraTarget.clone(),
       toTarget: toTarget.clone(),
-      fromZoom: camera.zoom,
-      toZoom,
+      fromScale: cameraScale,
+      toScale,
       startedAt: performance.now(),
       duration: 760,
     };
@@ -720,43 +924,111 @@ export function createOfficeScene(options: OfficeSceneOptions): OfficeSceneContr
 
   function resetCamera(): void {
     setSelectedRoom(null);
-    moveCamera(cameraFrame.target.clone(), cameraFrame.zoom, 'full');
+    moveCamera(REFERENCE_CAMERA_TARGET.clone(), 1, 'full');
   }
 
   function focusRoom(roomId: string | null): void {
     setSelectedRoom(roomId);
     if (!roomId) { resetCamera(); return; }
-    const room = ROOM_3D_BY_ID[roomId];
+    const visualId = visualRoomForLogical(roomId);
+    const room = visualId ? visualRooms.get(visualId) : undefined;
     if (!room) { resetCamera(); return; }
-    const target = new Vector3(room.centerX, 0.65, room.centerZ + (room.row === 'north' ? 0.55 : -0.55));
-    moveCamera(target, cameraFrame.roomZoom, 'room');
+    const target = room.center.clone().setY(REFERENCE_LABEL_HEIGHT * 0.45);
+    moveCamera(target, 0.58, 'room');
   }
 
   function focusAgent(agentId: string | null): void {
     setSelectedAgent(agentId);
     if (!agentId) { setSelectedRoom(null); return; }
-    const record = robots.get(agentId);
+    const record = primaryRobots.get(agentId);
     if (!record) return;
     setSelectedRoom(record.roomId);
-    const target = record.group.position.clone().add(new Vector3(0, 0.72, 0));
-    moveCamera(target, cameraFrame.agentZoom, 'agent');
+    const target = record.group.position.clone().add(new Vector3(0, unit(42), 0));
+    moveCamera(target, 0.42, 'agent');
   }
 
   function focusSpot(spotId: string): void {
-    const spot = ROOM_SPOTS.find((candidate) => candidate.id === spotId);
-    if (!spot) return;
-    const point = spotToWorld(spot);
-    const target = new Vector3(point.x, 0.72, point.z);
-    setSelectedRoom(spot.roomId);
-    moveCamera(target, cameraFrame.spotZoom, 'spot');
+    const point = spotPositions.get(spotId);
+    if (!point) return;
+    setSelectedRoom(spotRoomIds.get(spotId) ?? null);
+    moveCamera(point.clone().add(new Vector3(0, unit(34), 0)), 0.5, 'spot');
   }
 
-  function effectiveState(agent: AgentParticipant): ReturnType<typeof agentVisualState> {
+  function effectiveState(agent: AgentParticipant) {
     return agentVisualState(agent, currentTasks, {
       location: robotLocations.get(agent.id),
       locationAuthorized: currentCommandAgentIds.has(agent.id),
       movementActive: movementActiveIds.has(agent.id),
     });
+  }
+
+  function robotPoints(): RobotPoint[] {
+    const result: RobotPoint[] = [];
+    for (const [visualId, points] of Object.entries(REFERENCE_ROBOT_POINTS)) {
+      const logicalRoomId = visualId === 'lobby'
+        ? 'zone-lounge'
+        : REFERENCE_ROOMS.find((room) => room.id === visualId)?.primaryLogicalRoomId ?? 'zone-lounge';
+      for (const screen of points) result.push({ visualId, logicalRoomId, screen, index: result.length });
+    }
+    return result;
+  }
+
+  function createRobotVisual(
+    agent: AgentParticipant, point: RobotPoint, primary: boolean, visualId: string,
+  ): void {
+    const world = atScreen(point.screen);
+    const record = factory.create(
+      agent, effectiveState(agent), world.x, world.z, facingCamera(world), robotScale,
+    );
+    record.group.userData.agentId = agent.id;
+    record.group.userData.roomId = point.logicalRoomId;
+    record.group.userData.visualRoomId = point.visualId;
+    record.group.userData.primaryRobot = primary;
+    record.roomId = point.logicalRoomId;
+    robots.set(visualId, { visualId, agentId: agent.id, record, logicalRoomId: point.logicalRoomId });
+    robotAgents.set(visualId, agent);
+    visualAgentIds.set(visualId, agent.id);
+    const existing = visualRecordsByAgent.get(agent.id) ?? [];
+    existing.push(visualId);
+    visualRecordsByAgent.set(agent.id, existing);
+    if (primary) {
+      primaryRobots.set(agent.id, record);
+      const manual = manualPositions.get(agent.id);
+      if (manual) {
+        record.group.position.set(manual.x, FLOOR_Y, manual.z);
+        record.group.rotation.y = manualRotations.get(agent.id) ?? record.group.rotation.y;
+      }
+    }
+    robotLayer.add(record.group);
+  }
+
+  function rebuildRobots(agents: AgentParticipant[]): void {
+    for (const visual of robots.values()) visual.record.dispose();
+    robots.clear();
+    primaryRobots.clear();
+    robotAgents.clear();
+    visualAgentIds.clear();
+    visualRecordsByAgent.clear();
+    if (!agents.length) return;
+    const points = robotPoints();
+    const used = new Set<number>();
+    for (const agent of agents) {
+      const preferredVisual = visualRoomForLogical(agent.zoneId ?? null) ?? 'lobby';
+      const candidate = points.find((point) => !used.has(point.index)
+        && (point.visualId === preferredVisual || point.visualId === 'lobby'));
+      const chosen = candidate ?? points.find((point) => !used.has(point.index));
+      if (!chosen) break;
+      used.add(chosen.index);
+      createRobotVisual(agent, chosen, true, `robot-primary-${agent.id}`);
+    }
+    let duplicate = 0;
+    for (const point of points) {
+      if (used.has(point.index)) continue;
+      const agent = agents[duplicate % agents.length]!;
+      createRobotVisual(agent, point, false, `robot-visual-${duplicate}`);
+      duplicate += 1;
+      used.add(point.index);
+    }
   }
 
   function setAgents(
@@ -772,53 +1044,59 @@ export function createOfficeScene(options: OfficeSceneOptions): OfficeSceneContr
       for (const [id, location] of Object.entries(nextLocations)) robotLocations.set(id, location);
     }
     if (nextCommandAgentIds) currentCommandAgentIds = nextCommandAgentIds;
-    const seen = new Set<string>();
-    const occupied = new Set<string>();
-    for (const agent of nextAgents) {
-      const roomId = agent.zoneId && ROOM_3D_BY_ID[agent.zoneId] ? agent.zoneId : 'zone-planning';
-      const room = ROOM_3D_BY_ID[roomId] ?? ROOM_3D_BY_ID['zone-planning'];
-      const spot = agentSpot(agent.id, roomId, occupied);
-      if (spot.spotId) occupied.add(spot.spotId);
-      const state = effectiveState(agent);
-      const facing = (room?.row === 'south' ? Math.PI : 0) + ((agent.id.length % 3) - 1) * 0.08;
-      robotAgents.set(agent.id, agent);
-      let record = robots.get(agent.id);
-      if (!record) {
-        record = factory.create(agent, state, spot.point.x, spot.point.z, facing);
-        robots.set(agent.id, record);
-        robotLayer.add(record.group);
-      } else if (!manualPositions.has(agent.id)) {
-        record.group.position.set(spot.point.x, 0.25, spot.point.z);
-        record.group.rotation.y = manualRotations.get(agent.id) ?? facing;
-        record.group.userData.roomId = roomId;
-        record.roomId = roomId;
-      }
-      factory.update(record, state, performance.now() / 1000, reducedMotion);
-      seen.add(agent.id);
-    }
-    for (const [id, record] of robots) {
-      if (!seen.has(id)) {
-        record.dispose();
-        robots.delete(id);
-        robotAgents.delete(id);
-        manualPositions.delete(id);
-        manualRotations.delete(id);
+    const signature = nextAgents.map((agent) => agent.id).join('|');
+    if (signature !== agentSignature) {
+      agentSignature = signature;
+      rebuildRobots(nextAgents);
+    } else {
+      for (const [visualId, agentId] of visualAgentIds) {
+        const agent = nextAgents.find((candidate) => candidate.id === agentId);
+        if (agent) robotAgents.set(visualId, agent);
       }
     }
-    if (selectedAgentId && !robots.has(selectedAgentId)) setSelectedAgent(null);
+    for (const [visualId, visual] of robots) {
+      const agent = robotAgents.get(visualId);
+      if (agent) factory.update(visual.record, effectiveState(agent), performance.now() / 1000, reducedMotion);
+    }
+    if (selectedAgentId && !primaryRobots.has(selectedAgentId)) setSelectedAgent(null);
+  }
+
+  function mapLegacyWorldToReference(point: WorldPoint, targetRoomId?: string | null): WorldPoint {
+    const targetVisual = visualRoomForLogical(targetRoomId ?? null);
+    let nearest = ROOM_3D_LAYOUTS[0];
+    let nearestDistance = Infinity;
+    for (const room of ROOM_3D_LAYOUTS) {
+      const distance = Math.hypot(point.x - room.centerX, point.z - room.centerZ);
+      if (distance < nearestDistance) { nearestDistance = distance; nearest = room; }
+    }
+    const visualId = targetVisual ?? (nearest ? visualRoomForLogical(nearest.id) : null) ?? 'lobby';
+    const visualRoom = visualRooms.get(visualId);
+    if (nearest && visualRoom) {
+      const scaleX = Math.min(2.4, visualRoom.width / Math.max(nearest.width, 0.001));
+      const scaleZ = Math.min(2.4, visualRoom.depth / Math.max(nearest.depth, 0.001));
+      const localX = (point.x - nearest.centerX) * scaleX;
+      const localZ = (point.z - nearest.centerZ) * scaleZ;
+      const mapped = visualRoom.center.clone()
+        .add(visualRoom.right.clone().multiplyScalar(localX))
+        .add(visualRoom.forward.clone().multiplyScalar(localZ));
+      return { x: mapped.x, z: mapped.z };
+    }
+    const lobby = atScreen(REFERENCE_FEATURE_POINTS.medallion);
+    return { x: lobby.x + point.x * unit(22), z: lobby.z + point.z * unit(22) };
   }
 
   /** Receives only real, authorized office-command positions; never an autonomous roaming generator. */
   function setRobotPositions(positions: Record<string, WorldPoint>): void {
     for (const [agentId, point] of Object.entries(positions)) {
-      const record = robots.get(agentId);
+      const record = primaryRobots.get(agentId);
       if (!record) continue;
-      const previous = manualPositions.get(agentId) ?? record.group.position.clone();
-      manualPositions.set(agentId, point);
-      const dx = point.x - previous.x;
-      const dz = point.z - previous.z;
+      const target = mapLegacyWorldToReference(point, robotLocations.get(agentId)?.targetRoomId);
+      const previous = manualPositions.get(agentId) ?? { x: record.group.position.x, z: record.group.position.z };
+      manualPositions.set(agentId, target);
+      const dx = target.x - previous.x;
+      const dz = target.z - previous.z;
       if (Math.hypot(dx, dz) > 0.008) manualRotations.set(agentId, Math.atan2(dx, dz));
-      record.group.position.set(point.x, 0.25, point.z);
+      record.group.position.set(target.x, FLOOR_Y, target.z);
       record.group.rotation.y = manualRotations.get(agentId) ?? record.group.rotation.y;
       const location = robotLocations.get(agentId);
       if (location?.targetRoomId && ROOM_3D_BY_ID[location.targetRoomId]) {
@@ -839,19 +1117,9 @@ export function createOfficeScene(options: OfficeSceneOptions): OfficeSceneContr
     const width = Math.max(1, container.clientWidth);
     const height = Math.max(1, container.clientHeight);
     const aspect = width / height;
-    const previousFrameZoom = cameraFrame.zoom;
-    cameraFrame = computeArchitecturalFrame(aspect);
+    updateReferenceCameraFov(camera, aspect);
     renderer.setSize(width, height, false);
-    camera.left = cameraFrame.left;
-    camera.right = cameraFrame.right;
-    camera.top = cameraFrame.top;
-    camera.bottom = cameraFrame.bottom;
-    const ratio = cameraFrame.zoom / previousFrameZoom;
-    const nextZoom = viewMode === 'full'
-      ? cameraFrame.zoom
-      : MathUtils.clamp(camera.zoom * ratio, 0.45, cameraFrame.agentZoom);
-    const nextTarget = viewMode === 'full' ? cameraFrame.target.clone() : cameraTarget.clone();
-    setCamera(nextTarget, nextZoom);
+    setCamera(cameraTarget, cameraScale);
     updateLabels();
   }
 
@@ -886,56 +1154,62 @@ export function createOfficeScene(options: OfficeSceneOptions): OfficeSceneContr
     for (const hit of hits) {
       if (isIgnoredForPicking(hit.object)) continue;
       let node: Object3D | null = hit.object;
-      let fallbackRoomId: string | null = null;
+      let fallback: { visualId: string; logicalRoomId: string; label: string } | null = null;
       while (node) {
         const agentId = node.userData.agentId;
-        if (typeof agentId === 'string' && robots.has(agentId)) {
+        if (typeof agentId === 'string' && primaryRobots.has(agentId)) {
           focusAgent(agentId);
           onAgent(agentId);
-          onInspect({ kind: 'robot', id: agentId, roomId: robots.get(agentId)?.roomId ?? '' });
+          onInspect({ kind: 'robot', id: agentId, roomId: primaryRobots.get(agentId)?.roomId ?? '' });
           return;
         }
         const workstationId = node.userData.workstationId;
         if (typeof workstationId === 'string') {
-          const roomId = String(node.userData.roomId ?? '');
+          const logicalRoomId = String(node.userData.roomId ?? spotRoomIds.get(workstationId) ?? '');
           focusSpot(workstationId);
           onInspect({
-            kind: 'workstation', id: workstationId, roomId,
+            kind: 'workstation', id: workstationId, roomId: logicalRoomId,
             label: String(node.userData.workstationLabel ?? workstationId),
           });
           return;
         }
         const screenId = node.userData.screenId;
         if (typeof screenId === 'string') {
-          const roomId = String(node.parent?.userData.roomId ?? '');
+          const logicalRoomId = String(node.userData.roomId ?? node.parent?.userData.roomId ?? '');
           onInspect({
-            kind: 'screen', id: screenId, roomId,
+            kind: 'screen', id: screenId, roomId: logicalRoomId,
             label: String(node.userData.screenLabel ?? screenId),
           });
           return;
         }
         const meetingId = node.userData.meetingId;
         if (typeof meetingId === 'string') {
-          const roomId = String(node.userData.roomId ?? '');
-          focusRoom(roomId);
+          const logicalRoomId = String(node.userData.roomId ?? '');
+          focusRoom(logicalRoomId);
           onInspect({
-            kind: 'meeting', id: meetingId, roomId,
+            kind: 'meeting', id: meetingId, roomId: logicalRoomId,
             label: String(node.userData.meetingLabel ?? meetingId),
           });
           return;
         }
-        const roomId = node.userData.roomId;
-        if (!fallbackRoomId && typeof roomId === 'string' && roomHighlights.has(roomId)) fallbackRoomId = roomId;
+        const visualId = node.userData.visualRoomId;
+        if (!fallback && typeof visualId === 'string' && roomHighlights.has(visualId)) {
+          const definition = REFERENCE_ROOMS.find((room) => room.id === visualId);
+          fallback = {
+            visualId,
+            logicalRoomId: String(node.userData.roomId ?? definition?.primaryLogicalRoomId ?? ''),
+            label: definition?.label ?? '',
+          };
+        }
         node = node.parent;
       }
-      if (fallbackRoomId) {
-        focusRoom(fallbackRoomId);
-        onRoom(fallbackRoomId);
-        if (fallbackRoomId === 'zone-lounge') {
-          onInspect({ kind: 'meeting', id: `${fallbackRoomId}-meeting`, roomId: fallbackRoomId, label: 'Meeting Room' });
-        } else {
-          onInspect({ kind: 'department', id: fallbackRoomId, roomId: fallbackRoomId });
-        }
+      if (fallback) {
+        focusRoom(fallback.logicalRoomId);
+        onRoom(fallback.logicalRoomId);
+        onInspect({
+          kind: 'department', id: fallback.logicalRoomId, roomId: fallback.logicalRoomId,
+          label: fallback.label,
+        });
         return;
       }
     }
@@ -952,19 +1226,19 @@ export function createOfficeScene(options: OfficeSceneOptions): OfficeSceneContr
       const progress = MathUtils.clamp((now - tween.startedAt) / tween.duration, 0, 1);
       const eased = 1 - Math.pow(1 - progress, 3);
       const target = new Vector3().lerpVectors(tween.fromTarget, tween.toTarget, eased);
-      setCamera(target, MathUtils.lerp(tween.fromZoom, tween.toZoom, eased));
+      setCamera(target, MathUtils.lerp(tween.fromScale, tween.toScale, eased));
       if (progress >= 1) tween = null;
     }
     camera.updateMatrixWorld();
     updateLabels();
-    for (const record of robots.values()) {
-      const agent = robotAgents.get(record.agentId);
-      if (agent) factory.update(record, effectiveState(agent), elapsed, reducedMotion);
+    for (const [visualId, visual] of robots) {
+      const agent = robotAgents.get(visualId);
+      if (agent) factory.update(visual.record, effectiveState(agent), elapsed, reducedMotion);
     }
     if (selectedAgentId) {
-      const record = robots.get(selectedAgentId);
+      const record = primaryRobots.get(selectedAgentId);
       if (record) {
-        agentRing.position.set(record.group.position.x, FLOOR_Y + 0.055, record.group.position.z);
+        agentRing.position.set(record.group.position.x, FLOOR_Y + unit(2), record.group.position.z);
         agentRing.rotation.z = elapsed * 0.55;
       }
     }
@@ -993,11 +1267,14 @@ export function createOfficeScene(options: OfficeSceneOptions): OfficeSceneContr
       renderer.domElement.removeEventListener('pointerup', onPointerUp);
       for (const label of roomLabels) label.element.removeEventListener('click', label.onSelect);
       labelLayer.remove();
-      for (const record of robots.values()) record.dispose();
+      for (const visual of robots.values()) visual.record.dispose();
       robots.clear();
+      primaryRobots.clear();
       factory.dispose();
       cache.dispose();
+      for (const geometry of customGeometries) geometry.dispose();
       for (const material of extraMaterials) material.dispose();
+      for (const texture of extraTextures) texture.dispose();
       palette.dispose();
       renderer.dispose();
       renderer.forceContextLoss();

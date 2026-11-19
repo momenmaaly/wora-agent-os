@@ -7,7 +7,7 @@ import type { AgentParticipant } from '../types.js';
 import type { OfficePalette } from './materials.js';
 import type { RobotVisualState } from './layout.js';
 
-export const ROBOT_SCALE = 1.38;
+export const ROBOT_SCALE = 0.72;
 
 export interface RobotParts {
   head: Group;
@@ -82,8 +82,8 @@ function hashPhase(value: string): number {
 
 function makeGeometries(): GeometryCache {
   return {
-    head: new RoundedBoxGeometry(0.66, 0.58, 0.54, 6, 0.16),
-    visor: new RoundedBoxGeometry(0.52, 0.32, 0.07, 5, 0.1),
+    head: new RoundedBoxGeometry(0.64, 0.56, 0.52, 7, 0.18),
+    visor: new RoundedBoxGeometry(0.5, 0.3, 0.07, 6, 0.1),
     torso: new RoundedBoxGeometry(0.52, 0.62, 0.36, 5, 0.11),
     chest: new RoundedBoxGeometry(0.26, 0.17, 0.035, 3, 0.045),
     foot: new RoundedBoxGeometry(0.2, 0.1, 0.29, 3, 0.045),
@@ -128,10 +128,10 @@ function makeArm(parent: Object3D, side: -1 | 1, geo: GeometryCache, palette: Of
   const arm = new Group();
   arm.position.set(side * 0.34, 0.71, 0);
   arm.rotation.z = side * 0.12;
-  put(arm, geo.joint, palette.purple, 0, 0, 0);
-  put(arm, geo.arm, palette.shell, 0, -0.2, 0);
-  put(arm, geo.joint, palette.purple, 0, -0.38, 0);
-  put(arm, geo.forearm, palette.shell, 0, -0.53, 0);
+  put(arm, geo.joint, palette.robotJoint, 0, 0, 0);
+  put(arm, geo.arm, palette.robotShell, 0, -0.2, 0);
+  put(arm, geo.joint, palette.robotJoint, 0, -0.38, 0);
+  put(arm, geo.forearm, palette.robotShell, 0, -0.53, 0);
   put(arm, geo.hand, palette.dark, 0, -0.7, 0);
   parent.add(arm);
   return arm;
@@ -140,10 +140,10 @@ function makeArm(parent: Object3D, side: -1 | 1, geo: GeometryCache, palette: Of
 function makeLeg(parent: Object3D, side: -1 | 1, geo: GeometryCache, palette: OfficePalette): Group {
   const leg = new Group();
   leg.position.set(side * 0.16, 0.36, 0);
-  put(leg, geo.joint, palette.purple, 0, 0, 0);
-  put(leg, geo.leg, palette.shell, 0, -0.16, 0);
-  put(leg, geo.joint, palette.purple, 0, -0.3, 0);
-  put(leg, geo.foot, palette.dark, 0, -0.34, 0.06);
+  put(leg, geo.joint, palette.robotJoint, 0, 0, 0);
+  put(leg, geo.leg, palette.robotShell, 0, -0.16, 0);
+  put(leg, geo.joint, palette.robotJoint, 0, -0.3, 0);
+  put(leg, geo.foot, palette.robotDark, 0, -0.34, 0.06);
   parent.add(leg);
   return leg;
 }
@@ -152,12 +152,15 @@ export function createRobotFactory(palette: OfficePalette) {
   const geo = makeGeometries();
   const geometries: BufferGeometry[] = Object.values(geo);
 
-  function create(agent: AgentParticipant, state: RobotVisualState, x: number, z: number, facing: number): RobotRecord {
+  function create(
+    agent: AgentParticipant, state: RobotVisualState, x: number, z: number, facing: number,
+    scale = ROBOT_SCALE,
+  ): RobotRecord {
     const group = new Group();
     group.name = `robot-${agent.id}`;
     group.position.set(x, 0.25, z);
     group.rotation.y = facing;
-    group.scale.setScalar(ROBOT_SCALE);
+    group.scale.setScalar(scale);
     group.userData.agentId = agent.id;
     group.userData.roomId = agent.zoneId;
     group.userData.state = state;
@@ -176,21 +179,22 @@ export function createRobotFactory(palette: OfficePalette) {
     const rightEye = put(head, geo.eye, eyeMaterial, 0.125, 0.035, 0.327);
     const mouth = put(head, geo.mouth, mouthMaterial, 0, -0.085, 0.328);
     mouth.visible = false;
-    put(head, geo.antenna, palette.metal, 0, 0.37, 0);
-    put(head, geo.antennaTip, palette.orange, 0, 0.49, 0);
-    const leftEar = put(head, geo.ear, palette.purple, -0.34, 0, 0);
+    const leftEar = put(head, geo.ear, palette.robotJoint, -0.34, 0, 0);
     leftEar.rotation.z = Math.PI / 2;
-    const rightEar = put(head, geo.ear, palette.purple, 0.34, 0, 0);
+    const rightEar = put(head, geo.ear, palette.robotJoint, 0.34, 0, 0);
     rightEar.rotation.z = Math.PI / 2;
-    const orangeRing = put(head, geo.earRing, palette.orange, 0.375, 0, 0);
-    orangeRing.rotation.y = Math.PI / 2;
+    const leftRing = put(head, geo.earRing, palette.robotCyan, -0.375, 0, 0);
+    leftRing.rotation.y = Math.PI / 2;
+    const rightRing = put(head, geo.earRing, palette.robotBlue, 0.375, 0, 0);
+    rightRing.rotation.y = Math.PI / 2;
+    put(head, geo.antennaTip, palette.orange, 0.39, 0.17, 0).scale.setScalar(0.38);
     group.add(head);
 
-    put(group, geo.neck, palette.cyan, 0, 0.94, 0);
-    put(group, geo.torso, palette.shell, 0, 0.62, 0);
-    const chest = put(group, geo.chest, palette.cyan, 0, 0.65, 0.195);
-    put(group, geo.joint, palette.purple, -0.26, 0.45, 0);
-    put(group, geo.joint, palette.purple, 0.26, 0.45, 0);
+    put(group, geo.neck, palette.robotBlue, 0, 0.94, 0);
+    put(group, geo.torso, palette.robotShell, 0, 0.62, 0);
+    const chest = put(group, geo.chest, palette.robotBlue, 0, 0.65, 0.195);
+    put(group, geo.joint, palette.robotJoint, -0.26, 0.45, 0);
+    put(group, geo.joint, palette.robotJoint, 0.26, 0.45, 0);
     const leftArm = makeArm(group, -1, geo, palette);
     const rightArm = makeArm(group, 1, geo, palette);
     const leftLeg = makeLeg(group, -1, geo, palette);
@@ -199,9 +203,9 @@ export function createRobotFactory(palette: OfficePalette) {
     const tablet = new Group();
     tablet.position.set(0.48, 0.48, 0.2);
     tablet.rotation.set(-0.2, -0.35, 0.12);
-    put(tablet, geo.tabletEdge, palette.cyanGlow, 0, 0, 0);
+    put(tablet, geo.tabletEdge, palette.robotCyan, 0, 0, 0);
     put(tablet, geo.tablet, palette.dark, 0, 0, 0.018);
-    tablet.visible = false;
+    tablet.visible = true;
     group.add(tablet);
 
     const record: RobotRecord = {
@@ -214,7 +218,7 @@ export function createRobotFactory(palette: OfficePalette) {
         eyeMaterial, mouthMaterial,
         phase: hashPhase(agent.id),
         baseY: group.position.y,
-        baseScale: ROBOT_SCALE,
+        baseScale: scale,
         leftBase: leftArm.rotation.z,
         rightBase: rightArm.rotation.z,
       },
@@ -235,7 +239,7 @@ export function createRobotFactory(palette: OfficePalette) {
     record.parts.eyeMaterial.opacity = colors.opacity;
     record.parts.mouthMaterial.opacity = state === 'communicating' ? 0.9 : 0;
     record.parts.mouth.visible = state === 'communicating';
-    record.parts.tablet.visible = state === 'reviewing' || state === 'communicating' || state === 'thinking' || state === 'meeting';
+    record.parts.tablet.visible = !['offline', 'blocked', 'waiting'].includes(state);
     record.group.scale.setScalar(record.parts.baseScale * (state === 'meeting' ? 0.94 : 1));
     record.group.userData.state = state;
     record.state = state;
@@ -244,7 +248,7 @@ export function createRobotFactory(palette: OfficePalette) {
   function update(record: RobotRecord, state: RobotVisualState, elapsed: number, reducedMotion: boolean): void {
     if (record.state !== state) applyState(record, state);
     const { head, leftArm, rightArm, leftLeg, rightLeg, leftEye, rightEye, chest, tablet, phase, baseY, leftBase, rightBase } = record.parts;
-    if (reducedMotion || state === 'offline' || state === 'blocked') {
+    if (reducedMotion || ['offline', 'blocked', 'waiting', 'idle', 'completed'].includes(state)) {
       head.rotation.set(0, 0, 0);
       leftArm.rotation.z = leftBase;
       rightArm.rotation.z = rightBase;

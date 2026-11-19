@@ -1,8 +1,13 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent } from 'react';
 import {
-  Activity, Bot, Box, Building2, ClipboardList, Cpu, Map as MapIcon, Monitor, Radio, UsersRound, X,
+  Activity, BarChart3, Bell, BookOpen, Bot, Box, BriefcaseBusiness, Building2, ChevronDown,
+  CircleUserRound, ClipboardList, Cpu, CreditCard, Crown, FolderKanban, LayoutDashboard,
+  Map as MapIcon, Monitor, Network, Plug2, Radio, Search, Settings as SettingsIcon,
+  UsersRound, X,
+  type LucideIcon,
 } from 'lucide-react';
 import { ROOM_BY_ID } from '../office/layout.js';
+import { WoraMark } from './WoraMark.js';
 import { motionMarkersToWorld } from '../office/motionBridge.js';
 import { ROOM_DISPLAY } from '../office/presentation.js';
 import { useOfficeMotion } from '../office/useOfficeSimulation.js';
@@ -49,6 +54,76 @@ function sameSet(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
   return true;
 }
 
+interface ReferenceChromeProps {
+  activityCount: number;
+  connected: boolean;
+  serverMode: string | null;
+  counts: { total: number; engaged: number; blocked: number; offline: number };
+  onShowActivity: () => void;
+}
+
+const REFERENCE_NAV: readonly { label: string; hash: string; icon: LucideIcon; active?: boolean }[] = [
+  { label: 'Company Overview', hash: '#campus', icon: LayoutDashboard, active: true },
+  { label: 'Executive Office', hash: '#director', icon: BriefcaseBusiness },
+  { label: 'Departments', hash: '#campus', icon: Building2 },
+  { label: 'Agent Directory', hash: '#campus', icon: UsersRound },
+  { label: 'Projects', hash: '#projects', icon: FolderKanban },
+  { label: 'Tasks & Workflows', hash: '#projects', icon: ClipboardList },
+  { label: 'Knowledge Base', hash: '#studio', icon: BookOpen },
+  { label: 'Reports & Analytics', hash: '#studio', icon: BarChart3 },
+  { label: 'Integrations', hash: '#integrations', icon: Plug2 },
+  { label: 'Billing & Usage', hash: '#pricing', icon: CreditCard },
+  { label: 'Settings', hash: '#settings', icon: SettingsIcon },
+];
+
+function ReferenceChrome({ activityCount, connected, serverMode, counts, onShowActivity }: ReferenceChromeProps) {
+  return <>
+    <aside className="reference-sidebar" aria-label="WORA company navigation" dir="ltr">
+      <header className="reference-brand">
+        <a href="#campus" aria-label="WORA home"><WoraMark size={30} /></a>
+        <span className="reference-enterprise">Enterprise <ChevronDown size={13} aria-hidden="true" /></span>
+      </header>
+      <a className="reference-company-card" href="#campus">
+        <span className="reference-company-icon"><Building2 size={17} aria-hidden="true" /></span>
+        <span><strong>My Company</strong><small><span className="status-dot" /> {connected ? 'Live' : 'Local session'}</small></span>
+        <ChevronDown size={14} aria-hidden="true" />
+      </a>
+      <nav className="reference-nav" aria-label="Company sections">
+        {REFERENCE_NAV.map((item) => <a key={item.label} href={item.hash} className={item.active ? 'is-active' : undefined} aria-current={item.active ? 'page' : undefined}>
+          <item.icon size={17} strokeWidth={1.8} aria-hidden="true" /><span>{item.label}</span>
+        </a>)}
+      </nav>
+      <section className="reference-upgrade" aria-label="Upgrade">
+        <Crown size={23} aria-hidden="true" />
+        <strong>Upgrade to Pro</strong>
+        <small>Unlock more power for your company</small>
+        <a href="#pricing">Upgrade Now</a>
+      </section>
+    </aside>
+
+    <button type="button" className="reference-search" aria-label="Search across your company" onClick={() => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true }));
+    }}><Search size={17} aria-hidden="true" /><span>Search across your company...</span></button>
+
+    <div className="reference-profile" dir="ltr">
+      <button type="button" className="reference-bell" aria-label={`Recorded activity: ${activityCount}`} onClick={onShowActivity}>
+        <Bell size={18} aria-hidden="true" />{activityCount > 0 && <bdi>{activityCount}</bdi>}
+      </button>
+      <span className="reference-profile-avatar" aria-hidden="true"><CircleUserRound size={27} strokeWidth={1.6} /></span>
+      <span className="reference-profile-copy"><strong>WORA Workspace</strong><small>{connected ? serverMode ?? 'Connected' : 'Local session'}</small></span>
+      <ChevronDown size={14} aria-hidden="true" />
+    </div>
+
+    <div className="office3d-status" role="status" aria-label="Company operational status">
+      <span className="reference-company-status"><Building2 size={21} aria-hidden="true" /><span><strong>My Company</strong><small>{connected ? 'Operational' : 'Local session'}</small></span></span>
+      <span className="reference-employees"><UsersRound size={18} aria-hidden="true" /><span><bdi>{counts.total}</bdi><small>AI Employees</small></span></span>
+      <span className="reference-working"><span className="status-dot" /><span><bdi>{counts.engaged}</bdi><small>Working</small></span></span>
+      <span className="reference-waiting"><span className="status-dot" /><span><bdi>{counts.offline}</bdi><small>Waiting</small></span></span>
+      <span className="reference-blocked"><span className="status-dot" /><span><bdi>{counts.blocked}</bdi><small>Blocked</small></span></span>
+    </div>
+  </>;
+}
+
 function locationSignature(location: AgentLocationSnapshot | undefined): string {
   if (!location) return '';
   return [location.areaId, location.activity, location.isWalking ? 'walking' : 'settled', location.targetRoomId ?? ''].join('|');
@@ -62,7 +137,7 @@ export function Office3D({
   const callbacks = useRef({ onRoom, onAgent, onOpenTasks, onTeam, onAssign });
   callbacks.current = { onRoom, onAgent, onOpenTasks, onTeam, onAssign };
   const [error, setError] = useState('');
-  const [showLive, setShowLive] = useState(false);
+  const [showLive, setShowLive] = useState(true);
   const [showFullOffice, setShowFullOffice] = useState(Boolean(roomId));
   const [inspection, setInspection] = useState<OfficeSelection | null>(null);
   const [motionMeta, setMotionMeta] = useState<MotionMeta>({ authorized: new Set(), moving: new Set() });
@@ -258,19 +333,23 @@ export function Office3D({
 
   return <section className="office3d-shell" aria-label="WORA 3D company office" dir="ltr">
     <div className="office3d-canvas" ref={mount} aria-label="Interactive WebGL office canvas" />
+    <ReferenceChrome
+      activityCount={activityLog.length}
+      connected={connected}
+      serverMode={serverMode}
+      counts={counts}
+      onShowActivity={() => setShowLive(true)}
+    />
     <div className="office3d-hint" aria-hidden="true">Fixed architectural view · Click a labelled room, robot, desk or meeting space to inspect it</div>
 
-    <div className="office3d-status" role="status">
-      <span className="office3d-status-title"><span className="status-dot" /> {connected ? `Connected · ${serverMode ?? 'session'}` : 'Local session'}</span>
-      <span><bdi>{counts.total}</bdi> agents</span>
-      <span><bdi>{counts.engaged}</bdi> engaged</span>
-      <span><bdi>{counts.blocked}</bdi> blocked</span>
-      {preview && <span className="office3d-preview-note">Preview · simulated replies, no provider</span>}
-    </div>
-
     {showLive && <aside className="office3d-live" aria-label="Live activity">
-      <header><span><Activity size={15} aria-hidden="true" /> Recorded activity</span><button type="button" aria-label="Close live activity" onClick={() => setShowLive(false)}><X size={15} /></button></header>
-      <div className="office3d-live-status"><ConnectionBadge /><span>Workspace events only</span></div>
+      <header><span><i className="reference-live-dot" aria-hidden="true" /> Live Activity</span><button type="button" aria-label="Close live activity" onClick={() => setShowLive(false)}><X size={15} /></button></header>
+      <div className="office3d-live-status"><ConnectionBadge /><span>Recorded workspace events only</span></div>
+      <div className="office3d-live-summary" aria-label="Recorded workspace totals">
+        <div><span>Workspace agents</span><bdi>{counts.total}</bdi></div>
+        <div><span>Recorded tasks</span><bdi>{tasks.length}</bdi></div>
+        <div><span>Activity events</span><bdi>{activityLog.length}</bdi></div>
+      </div>
       {activityLog.length ? <ul>{activityLog.slice(0, 10).map((event) => <li key={event.id}>
         <p dir="auto">{event.text}</p>
         <small>{LIVE_SCOPE_LABELS[event.scope] ?? event.scope} · <time dateTime={event.timestamp}>{localTime(event.timestamp)}</time></small>
@@ -278,6 +357,7 @@ export function Office3D({
       {tasks.length > 0 && <div className="office3d-live-tasks"><h3>Recorded tasks</h3>{tasks.slice(0, 5).map((task) => <div key={task.id}>
         <span dir="auto">{task.title}</span><small>{taskStage(task)} · {taskSourceLabel(task) || 'workspace'}</small>
       </div>)}</div>}
+      <a className="office3d-live-all" href="#projects">View All</a>
     </aside>}
 
     {inspection && <aside className="office3d-inspector" aria-label={OBJECT_LABELS[inspection.kind]}>
@@ -334,7 +414,7 @@ export function Office3D({
     <div className="office3d-controls" role="group" aria-label="Office view controls">
       <span className="office3d-active-view" aria-current="true"><Box size={14} aria-hidden="true" /><span>3D View</span></span>
       <button type="button" onClick={() => onViewChange('plan')}><MapIcon size={14} aria-hidden="true" /><span>Floor Plan</span></button>
-      <button type="button" aria-pressed={showLive} onClick={() => setShowLive((value) => !value)}><Radio size={14} aria-hidden="true" /><span>Activity</span></button>
+      <button type="button" aria-pressed={showLive} onClick={() => setShowLive((value) => !value)}><Radio size={14} aria-hidden="true" /><span>Live View</span></button>
       {showFullOffice && <button type="button" className="office3d-return" onClick={resetCamera} aria-label="Return to full office view"><Building2 size={14} aria-hidden="true" /><span>Return to full office</span></button>}
     </div>
 
