@@ -4,7 +4,7 @@
 .space-pink { --spatial-accent: #f0b3df; --spatial-floor: #524656; --spatial-tint: #b481a6; --spatial-side: #5d415f; --spatial-fabric: #876281; }
 .space-mint { --spatial-accent: #a1e2c8; --spatial-floor: #385753; --spatial-tint: #7cb6a1; --spatial-side: #3d625b; --spatial-fabric: #598c80; }
 
-.spatial-stage { position: relative; isolation: isolate; min-width: 0; overflow: hidden; background: radial-gradient(circle at 1px 1px, #a0baba38 1px, transparent 1.4px), #27383f; background-size: 19px 19px; }
+.spatial-stage { position: relative; isolation: isolate; min-width: 0; overflow: hidden; background: #27383f; }
 .spatial-svg { display: block; width: 100%; height: 100%; user-select: none; }
 .spatial-camera { transform-box: view-box; transform-origin: 0 0; transition: transform 470ms cubic-bezier(.21,.8,.3,1); }
 .spatial-camera.is-following { transition-duration: 85ms; }

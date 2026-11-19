@@ -11,6 +11,8 @@ export interface RobotParts {
   head: Group;
   leftArm: Group;
   rightArm: Group;
+  leftLeg: Group;
+  rightLeg: Group;
   leftEye: Mesh;
   rightEye: Mesh;
   mouth: Mesh;
@@ -56,15 +58,17 @@ interface GeometryCache {
 }
 
 const STATE_COLORS: Record<RobotVisualState, { eye: number; glow: number; opacity: number }> = {
-  working:      { eye: 0x68e7ff, glow: 0x0b8fb0, opacity: 1 },
-  thinking:     { eye: 0xa9c8ff, glow: 0x315bb0, opacity: 1 },
-  communicating:{ eye: 0x7eeaff, glow: 0x0c93b5, opacity: 1 },
-  idle:         { eye: 0x55d6f0, glow: 0x08718e, opacity: 0.92 },
-  reviewing:    { eye: 0xf0d18b, glow: 0x8a621c, opacity: 1 },
-  blocked:      { eye: 0xff8d86, glow: 0x9d2f2f, opacity: 1 },
-  completed:    { eye: 0x84e2ae, glow: 0x1c7d52, opacity: 1 },
-  waiting:      { eye: 0x9fb7c4, glow: 0x304b58, opacity: 0.65 },
-  offline:      { eye: 0x394852, glow: 0x121b22, opacity: 0.35 },
+  working:       { eye: 0x68e7ff, glow: 0x0b8fb0, opacity: 1 },
+  thinking:      { eye: 0xa9c8ff, glow: 0x315bb0, opacity: 1 },
+  communicating: { eye: 0x7eeaff, glow: 0x0c93b5, opacity: 1 },
+  idle:          { eye: 0x55d6f0, glow: 0x08718e, opacity: 0.92 },
+  reviewing:     { eye: 0xf0d18b, glow: 0x8a621c, opacity: 1 },
+  blocked:       { eye: 0xff8d86, glow: 0x9d2f2f, opacity: 1 },
+  completed:     { eye: 0x84e2ae, glow: 0x1c7d52, opacity: 1 },
+  waiting:       { eye: 0x9fb7c4, glow: 0x304b58, opacity: 0.65 },
+  offline:       { eye: 0x394852, glow: 0x121b22, opacity: 0.35 },
+  walking:       { eye: 0x76e6ff, glow: 0x0a86a6, opacity: 1 },
+  meeting:       { eye: 0xc5b4ff, glow: 0x6348a5, opacity: 1 },
 };
 
 function hashPhase(value: string): number {
@@ -130,7 +134,7 @@ function makeArm(parent: Object3D, side: -1 | 1, geo: GeometryCache, palette: Of
   return arm;
 }
 
-function makeLeg(parent: Object3D, side: -1 | 1, geo: GeometryCache, palette: OfficePalette): void {
+function makeLeg(parent: Object3D, side: -1 | 1, geo: GeometryCache, palette: OfficePalette): Group {
   const leg = new Group();
   leg.position.set(side * 0.16, 0.36, 0);
   put(leg, geo.joint, palette.purple, 0, 0, 0);
@@ -138,6 +142,7 @@ function makeLeg(parent: Object3D, side: -1 | 1, geo: GeometryCache, palette: Of
   put(leg, geo.joint, palette.purple, 0, -0.3, 0);
   put(leg, geo.foot, palette.dark, 0, -0.34, 0.06);
   parent.add(leg);
+  return leg;
 }
 
 export function createRobotFactory(palette: OfficePalette) {
@@ -184,8 +189,8 @@ export function createRobotFactory(palette: OfficePalette) {
     put(group, geo.joint, palette.purple, 0.26, 0.45, 0);
     const leftArm = makeArm(group, -1, geo, palette);
     const rightArm = makeArm(group, 1, geo, palette);
-    makeLeg(group, -1, geo, palette);
-    makeLeg(group, 1, geo, palette);
+    const leftLeg = makeLeg(group, -1, geo, palette);
+    const rightLeg = makeLeg(group, 1, geo, palette);
 
     const tablet = new Group();
     tablet.position.set(0.48, 0.48, 0.2);
@@ -201,7 +206,7 @@ export function createRobotFactory(palette: OfficePalette) {
       roomId: agent.zoneId ?? 'zone-planning',
       state,
       parts: {
-        head, leftArm, rightArm, leftEye, rightEye, mouth, chest, tablet,
+        head, leftArm, rightArm, leftLeg, rightLeg, leftEye, rightEye, mouth, chest, tablet,
         eyeMaterial, mouthMaterial,
         phase: hashPhase(agent.id),
         baseY: group.position.y,
@@ -225,18 +230,21 @@ export function createRobotFactory(palette: OfficePalette) {
     record.parts.eyeMaterial.opacity = colors.opacity;
     record.parts.mouthMaterial.opacity = state === 'communicating' ? 0.9 : 0;
     record.parts.mouth.visible = state === 'communicating';
-    record.parts.tablet.visible = state === 'reviewing' || state === 'communicating' || state === 'thinking';
+    record.parts.tablet.visible = state === 'reviewing' || state === 'communicating' || state === 'thinking' || state === 'meeting';
+    record.group.scale.y = state === 'meeting' ? 0.94 : 1;
     record.group.userData.state = state;
     record.state = state;
   }
 
   function update(record: RobotRecord, state: RobotVisualState, elapsed: number, reducedMotion: boolean): void {
     if (record.state !== state) applyState(record, state);
-    const { head, leftArm, rightArm, leftEye, rightEye, chest, tablet, phase, baseY, leftBase, rightBase } = record.parts;
+    const { head, leftArm, rightArm, leftLeg, rightLeg, leftEye, rightEye, chest, tablet, phase, baseY, leftBase, rightBase } = record.parts;
     if (reducedMotion || state === 'offline' || state === 'blocked') {
       head.rotation.set(0, 0, 0);
       leftArm.rotation.z = leftBase;
       rightArm.rotation.z = rightBase;
+      leftLeg.rotation.x = 0;
+      rightLeg.rotation.x = 0;
       leftEye.scale.y = 1;
       rightEye.scale.y = 1;
       chest.scale.setScalar(1);
@@ -248,23 +256,28 @@ export function createRobotFactory(palette: OfficePalette) {
     let speed = 1.35;
     let headTilt = 0;
     let wave = 0;
+    let legSwing = 0;
     if (state === 'working') { amplitude = 0.13; speed = 5.2; headTilt = 0.05; }
     else if (state === 'thinking') { amplitude = 0.035; speed = 1.1; headTilt = -0.13; }
     else if (state === 'communicating') { amplitude = 0.05; speed = 3.1; wave = 0.55; }
     else if (state === 'reviewing') { amplitude = 0.045; speed = 1.5; headTilt = 0.1; }
     else if (state === 'completed') { amplitude = 0.055; speed = 1.8; }
     else if (state === 'waiting') { amplitude = 0.012; speed = 0.75; }
+    else if (state === 'walking') { amplitude = 0.26; speed = 5.6; legSwing = 0.42; headTilt = 0.03; }
+    else if (state === 'meeting') { amplitude = 0.018; speed = 0.9; headTilt = -0.04; }
 
     const motion = Math.sin(t * speed);
     leftArm.rotation.z = leftBase + motion * amplitude;
     rightArm.rotation.z = rightBase - motion * amplitude + wave * Math.max(0, Math.sin(t * 4.4));
+    leftLeg.rotation.x = legSwing ? motion * legSwing : 0;
+    rightLeg.rotation.x = legSwing ? -motion * legSwing : 0;
     head.rotation.z = headTilt + motion * 0.018;
     head.rotation.x = Math.sin(t * speed * 0.55) * 0.02;
-    record.group.position.y = baseY + Math.sin(t * 1.6) * 0.012;
+    record.group.position.y = baseY + Math.sin(t * (state === 'walking' ? 5.6 : 1.6)) * (state === 'walking' ? 0.035 : 0.012);
     const blink = Math.sin(t * 0.9) > 0.985 ? 0.16 : 1;
     leftEye.scale.y = blink;
     rightEye.scale.y = blink;
-    chest.scale.y = 1 + Math.sin(t * speed) * (state === 'working' || state === 'communicating' ? 0.045 : 0.012);
+    chest.scale.y = 1 + Math.sin(t * speed) * (state === 'working' || state === 'communicating' || state === 'walking' ? 0.045 : 0.012);
     tablet.rotation.z = 0.12 + Math.sin(t * 1.2) * 0.025;
   }
 

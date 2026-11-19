@@ -1,9 +1,11 @@
 import { deepEqual, equal, ok } from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  OFFICE_WORLD, ROOM_3D_BY_ID, agentCurrentTask, agentSpot, agentVisualState, buildRoomLayouts, spotToWorld,
+  OFFICE_WORLD, ROOM_3D_BY_ID, agentCurrentTask, agentSpot, agentVisualState, buildRoomLayouts,
+  planPointToWorld, spotToWorld,
 } from '../src/three/layout.ts';
 import { ROOM_SPOTS } from '../src/office/layout.ts';
+import { motionMarkersToWorld } from '../src/office/motionBridge.ts';
 
 const agent = (extras = {}) => ({
   id: 'agent-test',
@@ -79,4 +81,33 @@ test('robot states are derived from real lifecycle and recorded task status, not
   equal(agentVisualState(agent(), [fixture]), 'idle', 'sample fixtures never drive productivity');
   equal(agentCurrentTask('agent-test', [fixture])?.id, undefined);
   deepEqual(agentCurrentTask('agent-test', [task('open')])?.status, 'open');
+});
+
+test('walking and meeting states require an authorized real command, not idle roaming', () => {
+  const meetingLocation = { activity: 'meeting', statusTextAr: 'في اجتماع مسجّل' };
+  equal(agentVisualState(agent(), [], { location: meetingLocation, locationAuthorized: false }), 'idle');
+  equal(agentVisualState(agent(), [], { location: meetingLocation, locationAuthorized: true }), 'meeting');
+  equal(agentVisualState(agent(), [], { movementActive: true }), 'walking');
+  equal(agentVisualState(agent({ lifecycleState: 'THINKING' }), []), 'thinking');
+  equal(agentVisualState(agent({ status: 'OFFLINE' }), [], { movementActive: true }), 'offline');
+});
+
+test('the WebGL movement bridge rejects automatic roaming and maps recorded command paths', () => {
+  const commandMarker = {
+    x: 1000, y: 440, path: [{ x: 1060, y: 440 }], targetRoomId: 'zone-engineering',
+    activity: 'walking', commandSeq: 17,
+  };
+  const roamMarker = {
+    x: 1000, y: 440, path: [{ x: 940, y: 440 }], targetRoomId: 'zone-lounge',
+    activity: 'collab', commandSeq: 0,
+  };
+  const frame = motionMarkersToWorld({ 'agent-command': commandMarker, 'agent-roam': roamMarker });
+  deepEqual(Object.keys(frame.positions), ['agent-command']);
+  ok(frame.movement.has('agent-command'));
+  ok(frame.authorized.has('agent-command'));
+  ok(!frame.authorized.has('agent-roam'));
+  deepEqual(frame.positions['agent-command'], planPointToWorld(1000, 440));
+  const settled = motionMarkersToWorld({ 'agent-command': { ...commandMarker, path: [] } });
+  equal(settled.movement.size, 0);
+  ok(settled.authorized.has('agent-command'));
 });

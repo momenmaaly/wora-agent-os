@@ -1,4 +1,4 @@
-import { OFFICE_ROOMS, ROOM_BY_ID, ROOM_SPOTS } from '../office/layout.ts';
+import { OFFICE_ROOMS, ROOM_BY_ID, ROOM_SPOTS as OFFICE_SPOTS } from '../office/layout.ts';
 import type { OfficeRoom, RoomSpot } from '../office/layout.ts';
 import type { AgentParticipant, SharedWorkspaceEntry } from '../types.ts';
 
@@ -13,12 +13,14 @@ export const OFFICE_WORLD = {
   northDepth: 4.15,
   southDepth: 4.65,
   glassHeight: 2.15,
+  corridorNorthZ: -3.18,
+  corridorSouthZ: 2.93,
 } as const;
 
 export type OfficeRow = 'north' | 'south';
 export type RobotVisualState =
   | 'working' | 'thinking' | 'communicating' | 'idle' | 'reviewing'
-  | 'blocked' | 'completed' | 'waiting' | 'offline';
+  | 'blocked' | 'completed' | 'waiting' | 'offline' | 'walking' | 'meeting';
 
 export interface Room3DLayout {
   id: string;
@@ -40,6 +42,24 @@ export interface WorldPoint {
   z: number;
 }
 
+/** Structural subset of the persisted agent-location snapshot. */
+export interface AgentMotionSnapshot {
+  areaId?: string;
+  areaNameAr?: string;
+  targetRoomId?: string | null;
+  isWalking?: boolean;
+  activity?: string;
+  statusTextAr?: string;
+}
+
+export interface RobotStateOptions {
+  location?: AgentMotionSnapshot;
+  /** True only when the location was produced by an authorized office command, not local auto-roam. */
+  locationAuthorized?: boolean;
+  /** True while a real dispatch/handoff/meeting movement path is being published. */
+  movementActive?: boolean;
+}
+
 const WORLD_X_SCALE = 0.01;
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
@@ -47,7 +67,7 @@ function rowFor(room: OfficeRoom): OfficeRow {
   return room.y < 400 ? 'north' : 'south';
 }
 
-/** Converts the existing 2D office plan into a 3D ring of departments around a central lobby. */
+/** Converts the existing 2D office plan into a 3D connected office around a central lobby. */
 export function buildRoomLayouts(): Room3DLayout[] {
   return OFFICE_ROOMS.map((room) => {
     const row = rowFor(room);
@@ -93,8 +113,43 @@ export function spotToWorld(spot: RoomSpot): WorldPoint {
   return { x: room.centerX + localX, z: room.centerZ + localZ };
 }
 
+/**
+ * Maps any point from the preserved 2D office navigation plan into the connected 3D world.
+ * Room interiors follow their room transform; hallway points flow through the central corridor.
+ */
+export function planPointToWorld(x: number, y: number): WorldPoint {
+  const planRoom = OFFICE_ROOMS.find((room) =>
+    x >= room.x - 4 && x <= room.x + room.width + 4 && y >= room.y - 4 && y <= room.y + room.height + 4,
+  );
+  if (planRoom) {
+    const room = ROOM_3D_BY_ID[planRoom.id];
+    if (room) {
+      const localX = clamp(
+        (x - (planRoom.x + planRoom.width / 2)) * WORLD_X_SCALE,
+        -room.width / 2 + 0.18,
+        room.width / 2 - 0.18,
+      );
+      const localZ = clamp(
+        ((y - (planRoom.y + planRoom.height / 2)) / planRoom.height) * room.depth,
+        -room.depth / 2 + 0.18,
+        room.depth / 2 - 0.18,
+      );
+      return { x: room.centerX + localX, z: room.centerZ + localZ };
+    }
+  }
+  const worldX = clamp((x - 1000) * WORLD_X_SCALE, -OFFICE_WORLD.slabWidth / 2 + 0.4, OFFICE_WORLD.slabWidth / 2 - 0.4);
+  const corridorT = clamp((y - 360) / 160, 0, 1);
+  return {
+    x: worldX,
+    z: OFFICE_WORLD.corridorNorthZ + corridorT * (OFFICE_WORLD.corridorSouthZ - OFFICE_WORLD.corridorNorthZ),
+  };
+}
+
+/** Re-export the preserved office plan so the WebGL scene can focus exact workstation spots. */
+export const ROOM_SPOTS = OFFICE_SPOTS;
+
 export function roomSpots(roomId: string): RoomSpot[] {
-  return ROOM_SPOTS.filter((spot) => spot.roomId === roomId);
+  return OFFICE_SPOTS.filter((spot) => spot.roomId === roomId);
 }
 
 /** Deterministic overflow positions when a department has more real agents than workstation spots. */
@@ -120,20 +175,33 @@ export function agentSpot(agentId: string, roomId: string, occupied: ReadonlySet
   return { point: overflowSpot(roomId, index), spotId: null };
 }
 
-/** Derives a robot animation only from real participant lifecycle and recorded task state. */
-export function agentVisualState(agent: AgentParticipant, tasks: readonly SharedWorkspaceEntry[]): RobotVisualState {
+/**
+ * Derives a robot animation only from real participant lifecycle, recorded task state,
+ * and authorized office commands. A stale activeTasks counter alone never shows work.
+ */
+export function agentVisualState(
+  agent: AgentParticipant,
+  tasks: readonly SharedWorkspaceEntry[],
+  options: RobotStateOptions = {},
+): RobotVisualState {
   const lifecycle = String(agent.lifecycleState ?? '');
   const status = String(agent.status ?? '');
   const current = tasks.find((task) => task.targetAgentId === agent.id && !task.payload?.sample);
+  const location = options.locationAuthorized ? options.location : undefined;
+  const activity = String(location?.activity ?? '');
+
   if (status === 'OFFLINE') return 'offline';
   if (lifecycle === 'ERROR') return 'blocked';
-  if (status === 'AWAY') return 'waiting';
-  if (lifecycle === 'RESPONDING' || String(agent.avatarState ?? '') === 'talking') return 'communicating';
-  if (lifecycle === 'THINKING' || lifecycle === 'REFINING') return 'thinking';
-  if (current?.status === 'review_pending') return 'reviewing';
+  if (options.movementActive) return 'walking';
+  if (lifecycle === 'RESPONDING' || String(agent.avatarState ?? '') === 'talking' || activity === 'responding') return 'communicating';
+  if (activity === 'meeting') return 'meeting';
+  if (lifecycle === 'THINKING' || lifecycle === 'REFINING' || activity === 'thinking') return 'thinking';
+  if (activity === 'board' || current?.status === 'review_pending') return 'reviewing';
   if (current?.status === 'approved' || current?.status === 'done') return 'completed';
-  if (lifecycle === 'EXECUTING' || lifecycle === 'EXECUTING_TOOL' || status === 'BUSY' || agent.activeTasks > 0) return 'working';
-  if (current && (current.status === 'open' || current.status === 'in_progress')) return 'working';
+  if (lifecycle === 'EXECUTING' || lifecycle === 'EXECUTING_TOOL') return 'working';
+  if (current && (current.status === 'open' || current.status === 'in_progress' || current.status === 'claimed')) return 'working';
+  if (activity === 'collab') return 'communicating';
+  if (status === 'AWAY') return 'waiting';
   return 'idle';
 }
 
@@ -144,11 +212,13 @@ export function agentCurrentTask(agentId: string, tasks: readonly SharedWorkspac
 export const ROBOT_STATE_LABELS: Record<RobotVisualState, string> = {
   working: 'يُنفّذ مهمة مسجّلة',
   thinking: 'يفكّر / يحلّل',
-  communicating: 'يرسل ردًا',
+  communicating: 'يتواصل مع الفريق',
   idle: 'متاح',
-  reviewing: 'بانتظار المراجعة',
+  reviewing: 'يراجع عملًا مسجّلًا',
   blocked: 'حالة خطأ مسجّلة',
   completed: 'آخر مهمة مكتملة',
   waiting: 'غير متاح مؤقتًا',
   offline: 'غير متصل',
+  walking: 'يتحرك بأمر مسجّل',
+  meeting: 'في اجتماع مسجّل',
 };
