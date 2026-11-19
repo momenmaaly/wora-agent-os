@@ -10,12 +10,15 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     sourcemap: false,
+    chunkSizeWarningLimit: 650,
     rollupOptions: {
       output: {
-        manualChunks: {
-          vendor: ['react', 'react-dom', 'zustand'],
-          socket: ['socket.io-client'],
-          icons:  ['lucide-react'],
+        manualChunks(id) {
+          if (id.includes('/node_modules/three/')) return 'three';
+          if (id.includes('/node_modules/react/') || id.includes('/node_modules/react-dom/') || id.includes('/node_modules/zustand/')) return 'vendor';
+          if (id.includes('/node_modules/socket.io-client/')) return 'socket';
+          if (id.includes('/node_modules/lucide-react/')) return 'icons';
+          return undefined;
         },
       },
     },

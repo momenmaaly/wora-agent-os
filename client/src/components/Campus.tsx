@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
-  ArrowLeft, ArrowRight, ClipboardList, Footprints, Layers3, Map, MapPin, Maximize2, Minimize2,
+  ArrowLeft, ArrowRight, Box, ClipboardList, Footprints, Layers3, Map, MapPin, Maximize2, Minimize2,
   MoreHorizontal, Plus, UsersRound,
 } from 'lucide-react';
 import { locatePoint, OFFICE_ROOMS, ROOM_BY_ID } from '../office/layout.js';
@@ -12,6 +12,9 @@ import { useWoraStore } from '../store/useWoraStore.js';
 import { ConnectionBadge, OfficePeople } from './OfficePeople.js';
 import { OfficeFloorplan } from './OfficeFloorplan.js';
 import { SpatialOffice } from './SpatialOffice.js';
+import { supportsWebGL } from '../three/webgl.js';
+
+const Office3D = lazy(() => import('./Office3D.js').then((module) => ({ default: module.Office3D })));
 
 function TourBar({ index, onVisit, onDirector }: { index: number; onVisit: (id: string | null, tour?: boolean) => void; onDirector: () => void }) {
   const next = TOUR_STOPS[index + 1];
@@ -36,9 +39,10 @@ function OfficeActivity() {
 export function Campus({ roomId, tourIndex, onVisit, onAssign, onDirector }: {
   roomId: string | null; tourIndex: number | null; onVisit: (id: string | null, tour?: boolean) => void; onAssign: () => void; onDirector: () => void;
 }) {
-  const [view, setView] = useState<'space' | 'plan'>('space');
+  const [view, setView] = useState<'3d' | 'space' | 'plan'>(() => supportsWebGL() ? '3d' : 'space');
   const [whole, setWhole] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  const [reset3D, setReset3D] = useState(0);
   const expandButton = useRef<HTMLButtonElement>(null);
   const scene = useRef<HTMLDivElement>(null);
   const room = roomId ? ROOM_BY_ID[roomId] : undefined;
@@ -54,7 +58,7 @@ export function Campus({ roomId, tourIndex, onVisit, onAssign, onDirector }: {
   const wide = whole && !following && command?.kind !== 'focus-agent';
   const working = Object.values(agents).filter(isBusyAgent).length;
   const openCount = tasks.filter((task) => (!roomId || task.zoneId === roomId) && isOpenTask(task)).length;
-  const focused = !wide && (Boolean(following) || command?.kind === 'focus-agent' || (Boolean(room) && (view === 'space' || command?.kind === 'focus-room')));
+  const focused = !wide && (Boolean(following) || command?.kind === 'focus-agent' || (Boolean(room) && (view === '3d' || view === 'space' || command?.kind === 'focus-room')));
   const panMode = expanded && view === 'space' ? (focused ? 'room' : 'office') : null;
   const placeName = place === 'zone-lounge' && !roomId ? 'الاستقبال' : ROOM_DISPLAY[place]?.label ?? 'الممر';
 
@@ -89,10 +93,11 @@ export function Campus({ roomId, tourIndex, onVisit, onAssign, onDirector }: {
   }, [onVisit, roomId, travelTo, view, focusRoomCamera]);
   function fit() {
     if (!focused && room && view === 'plan') focusRoomCamera(room.id); else resetCamera();
+    if (view === '3d') setReset3D((value) => value + 1);
     setWhole(focused);
   }
 
-  return <div className={`workbench${expanded ? ' is-expanded' : ''}`}>
+  return <div className={`workbench${expanded ? ' is-expanded' : ''}${view === '3d' ? ' is-cinematic' : ''}`}>
     <header className="workbench-header">
       <div className="workbench-title"><h1>ساحة العمل</h1><ConnectionBadge /></div>
       <button type="button" className="button primary workspace-assign" onClick={onAssign}><Plus size={17} aria-hidden="true" />إسناد مهمة</button>
@@ -102,6 +107,7 @@ export function Campus({ roomId, tourIndex, onVisit, onAssign, onDirector }: {
       <section className="panel workspace-canvas" aria-label="خريطة ساحة العمل">
         <div className="workspace-toolbar">
           <div className="workspace-view" role="group" aria-label="طريقة عرض الساحة">
+            <button type="button" className="is-3d" aria-pressed={view === '3d'} onClick={() => setView('3d')}><Box size={16} aria-hidden="true" />3D</button>
             <button type="button" aria-pressed={view === 'space'} onClick={() => setView('space')}><Layers3 size={16} aria-hidden="true" />مجسّم</button>
             <button type="button" aria-pressed={view === 'plan'} onClick={() => setView('plan')}><Map size={16} aria-hidden="true" />مخطط</button>
           </div>
@@ -115,7 +121,9 @@ export function Campus({ roomId, tourIndex, onVisit, onAssign, onDirector }: {
           </div>
         </div>
         <div className="workspace-map">
-          {view === 'space' ? <div ref={scene} className="spatial-stage" data-pan={panMode ?? undefined} dir="ltr" tabIndex={panMode ? 0 : undefined} role={panMode ? 'region' : undefined} aria-label={panMode ? 'مجسّم الساحة' : undefined}><SpatialOffice room={room} wide={wide} onRoom={chooseRoom} onAgent={focusAgentCamera} /></div>
+          {view === '3d' ? <Suspense fallback={<div className="office3d-loading panel" role="status">جارٍ تحميل مكتب الشركة ثلاثي الأبعاد…</div>}>
+            <Office3D roomId={roomId} resetSignal={reset3D} onRoom={chooseRoom} onAgent={focusAgentCamera} onViewChange={(next) => setView(next)} />
+          </Suspense> : view === 'space' ? <div ref={scene} className="spatial-stage" data-pan={panMode ?? undefined} dir="ltr" tabIndex={panMode ? 0 : undefined} role={panMode ? 'region' : undefined} aria-label={panMode ? 'مجسّم الساحة' : undefined}><SpatialOffice room={room} wide={wide} onRoom={chooseRoom} onAgent={focusAgentCamera} /></div>
             : <OfficeFloorplan selectedRoomId={roomId} onRoom={chooseRoom} onAgent={focusAgentCamera} />}
         </div>
         <footer className="workspace-canvas-footer">

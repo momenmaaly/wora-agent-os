@@ -2,6 +2,7 @@ import { lazy, useCallback, useEffect, useLayoutEffect, useRef, useState } from 
 import { CircleHelp } from 'lucide-react';
 import { CompanyHeader } from './components/CompanyHeader.js';
 import { CompanySidebar } from './components/CompanySidebar.js';
+import { ExecutiveCommandBar } from './components/ExecutiveCommandBar.js';
 import { HireAgentModal } from './components/HireAgentModal.js';
 import { ModelSwapModal } from './components/ModelSwapModal.js';
 import { ChatDrawer } from './components/ChatDrawer.js';
@@ -141,11 +142,12 @@ export default function App() {
           </WorkspacePage>
         </div>}
       </main>
+      <ExecutiveCommandBar onSubmit={() => { setVisitedDirector(true); navigateHash('#director/task'); }} />
     </div>
     {overlay === 'menu' && <Dialog key="menu" title="التنقل" variant="navigation" onClose={() => setOverlay(null)}><div className="company-sidebar"><CompanySidebar page={page} onNavigate={navigate} onHelp={() => setOverlay('help')} /></div></Dialog>}
     {overlay === 'search' && <QuickSearch onClose={() => setOverlay(null)} onNavigate={navigate} onAgent={openAgent} onRoom={visit} />}
     {overlay === 'help' && <Dialog key="help" icon={CircleHelp} title="استخدام مساحة العمل" onClose={() => setOverlay(null)}>
-      <div className="field-stack"><p>اختَر قسمًا أو وكيلًا من الساحة. استخدم «تكبير الساحة» للتركيز، واضغط Esc للرجوع.</p><p>من مكتب المدير اطلب «ملخص الساحة» أو اكتب مهمة جديدة لإسنادها.</p><button type="button" className="button" onClick={() => visit(null, true)}>جولة الأقسام</button></div>
+      <div className="field-stack"><p>اختَر قسمًا أو وكيلًا من الساحة. استخدم «تكبير الساحة» للتركيز، واضغط Esc للرجوع.</p><p>من مكتب المدير اطلب «ملخص الساحة» أو اكتب مهمة جديدة لإسنادها.</p><p>شريط «Executive Command» السفلي يرسل طلبك إلى مكتب المدير لمراجعته وإسناده؛ لا ينفّذ محاكاة.</p><button type="button" className="button" onClick={() => visit(null, true)}>جولة الأقسام</button></div>
     </Dialog>}
     <ChatDrawer />
     <WorkspaceBoard />
