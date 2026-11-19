@@ -49,7 +49,7 @@ The existing SVG office and floor-plan fallbacks, room/agent/object inspectors, 
 - `api-server/npm run typecheck` — passed; `api-server/npm test` — **24 passed, 1 skipped, 0 failed** (the pre-existing MongoDB integration skip).
 - `git diff --check` — passed.
 - Existing Vite dev server remained running on `0.0.0.0:5173`; HMR logs showed no compile errors. Local HTTP requests with the preview `Origin` returned `200` for `/`, the changed React modules, all changed Three.js modules, and the changed CSS.
-- GitHub checks on the existing PR commit showed `Vercel` and `Vercel Preview Comments` passing at the time of inspection. This was not a visual QA result and does not establish a post-push deployment of these new changes.
+- GitHub checks on the prior PR commit showed `Vercel` and `Vercel Preview Comments` passing before this change was pushed. At the last check after pushing the new code, `Vercel Preview Comments` passed and `Vercel` was pending. These are CI statuses, not visual QA results, and no post-push deployment success is claimed.
 
 ## Honest limitations / not validated
 
