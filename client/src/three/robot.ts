@@ -7,6 +7,8 @@ import type { AgentParticipant } from '../types.js';
 import type { OfficePalette } from './materials.js';
 import type { RobotVisualState } from './layout.js';
 
+export const ROBOT_SCALE = 1.38;
+
 export interface RobotParts {
   head: Group;
   leftArm: Group;
@@ -22,6 +24,7 @@ export interface RobotParts {
   mouthMaterial: MeshBasicMaterial;
   phase: number;
   baseY: number;
+  baseScale: number;
   leftBase: number;
   rightBase: number;
 }
@@ -79,25 +82,25 @@ function hashPhase(value: string): number {
 
 function makeGeometries(): GeometryCache {
   return {
-    head: new RoundedBoxGeometry(0.66, 0.58, 0.54, 5, 0.16),
-    visor: new RoundedBoxGeometry(0.52, 0.32, 0.07, 4, 0.1),
-    torso: new RoundedBoxGeometry(0.52, 0.62, 0.36, 4, 0.11),
+    head: new RoundedBoxGeometry(0.66, 0.58, 0.54, 6, 0.16),
+    visor: new RoundedBoxGeometry(0.52, 0.32, 0.07, 5, 0.1),
+    torso: new RoundedBoxGeometry(0.52, 0.62, 0.36, 5, 0.11),
     chest: new RoundedBoxGeometry(0.26, 0.17, 0.035, 3, 0.045),
     foot: new RoundedBoxGeometry(0.2, 0.1, 0.29, 3, 0.045),
     tablet: new RoundedBoxGeometry(0.3, 0.42, 0.035, 3, 0.035),
     tabletEdge: new RoundedBoxGeometry(0.34, 0.46, 0.018, 3, 0.04),
-    eye: new SphereGeometry(0.062, 16, 12),
-    joint: new SphereGeometry(0.088, 12, 10),
-    hand: new SphereGeometry(0.078, 12, 10),
-    arm: new CylinderGeometry(0.067, 0.074, 0.32, 12),
-    forearm: new CylinderGeometry(0.06, 0.067, 0.3, 12),
-    leg: new CylinderGeometry(0.072, 0.08, 0.28, 12),
-    neck: new CylinderGeometry(0.075, 0.085, 0.16, 12),
-    antenna: new CylinderGeometry(0.018, 0.022, 0.22, 10),
-    ear: new CylinderGeometry(0.085, 0.085, 0.055, 16),
-    earRing: new TorusGeometry(0.071, 0.018, 8, 18),
+    eye: new SphereGeometry(0.062, 22, 16),
+    joint: new SphereGeometry(0.088, 18, 14),
+    hand: new SphereGeometry(0.078, 18, 14),
+    arm: new CylinderGeometry(0.067, 0.074, 0.32, 18),
+    forearm: new CylinderGeometry(0.06, 0.067, 0.3, 18),
+    leg: new CylinderGeometry(0.072, 0.08, 0.28, 18),
+    neck: new CylinderGeometry(0.075, 0.085, 0.16, 18),
+    antenna: new CylinderGeometry(0.018, 0.022, 0.22, 14),
+    ear: new CylinderGeometry(0.085, 0.085, 0.055, 24),
+    earRing: new TorusGeometry(0.071, 0.018, 10, 28),
     mouth: new BoxGeometry(0.16, 0.028, 0.022),
-    antennaTip: new SphereGeometry(0.052, 12, 10),
+    antennaTip: new SphereGeometry(0.052, 18, 14),
   };
 }
 
@@ -154,6 +157,7 @@ export function createRobotFactory(palette: OfficePalette) {
     group.name = `robot-${agent.id}`;
     group.position.set(x, 0.25, z);
     group.rotation.y = facing;
+    group.scale.setScalar(ROBOT_SCALE);
     group.userData.agentId = agent.id;
     group.userData.roomId = agent.zoneId;
     group.userData.state = state;
@@ -210,6 +214,7 @@ export function createRobotFactory(palette: OfficePalette) {
         eyeMaterial, mouthMaterial,
         phase: hashPhase(agent.id),
         baseY: group.position.y,
+        baseScale: ROBOT_SCALE,
         leftBase: leftArm.rotation.z,
         rightBase: rightArm.rotation.z,
       },
@@ -231,7 +236,7 @@ export function createRobotFactory(palette: OfficePalette) {
     record.parts.mouthMaterial.opacity = state === 'communicating' ? 0.9 : 0;
     record.parts.mouth.visible = state === 'communicating';
     record.parts.tablet.visible = state === 'reviewing' || state === 'communicating' || state === 'thinking' || state === 'meeting';
-    record.group.scale.y = state === 'meeting' ? 0.94 : 1;
+    record.group.scale.setScalar(record.parts.baseScale * (state === 'meeting' ? 0.94 : 1));
     record.group.userData.state = state;
     record.state = state;
   }

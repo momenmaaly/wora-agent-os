@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent } from 'react';
 import {
-  Activity, Bot, Box, ClipboardList, Cpu, Map as MapIcon, Monitor, Radio, RotateCcw, UsersRound, X,
+  Activity, Bot, Box, Building2, ClipboardList, Cpu, Map as MapIcon, Monitor, Radio, UsersRound, X,
 } from 'lucide-react';
 import { ROOM_BY_ID } from '../office/layout.js';
 import { motionMarkersToWorld } from '../office/motionBridge.js';
@@ -18,7 +18,7 @@ import { ConnectionBadge } from './OfficePeople.js';
 export interface Office3DProps {
   roomId: string | null;
   resetSignal: number;
-  onRoom: (roomId: string) => void;
+  onRoom: (roomId: string | null) => void;
   onAgent: (agentId: string) => void;
   onViewChange: (view: 'plan' | 'space') => void;
   onOpenTasks: (roomId: string) => void;
@@ -63,6 +63,7 @@ export function Office3D({
   callbacks.current = { onRoom, onAgent, onOpenTasks, onTeam, onAssign };
   const [error, setError] = useState('');
   const [showLive, setShowLive] = useState(false);
+  const [showFullOffice, setShowFullOffice] = useState(Boolean(roomId));
   const [inspection, setInspection] = useState<OfficeSelection | null>(null);
   const [motionMeta, setMotionMeta] = useState<MotionMeta>({ authorized: new Set(), moving: new Set() });
   const firstReset = useRef(true);
@@ -116,15 +117,18 @@ export function Office3D({
         quality: recommended3DQuality(),
         reducedMotion,
         onRoom: (id) => {
+          setShowFullOffice(true);
           setInspection({ kind: 'department', id, roomId: id });
           callbacks.current.onRoom(id);
         },
         onAgent: (id) => {
           const agent = agentsRef.current.find((item) => item.id === id);
+          setShowFullOffice(true);
           setInspection({ kind: 'robot', id, roomId: agent?.zoneId ?? '' });
           callbacks.current.onAgent(id);
         },
         onInspect: (selection) => {
+          setShowFullOffice(true);
           setInspection(selection);
           if (selection.kind === 'screen') controller.current?.focusSpot(selection.id.replace(/-screen$/, ''));
         },
@@ -178,12 +182,14 @@ export function Office3D({
   }, [agentList, tasks]);
 
   useEffect(() => {
+    setShowFullOffice(Boolean(roomId));
     controller.current?.focusRoom(roomId);
   }, [roomId]);
 
   useEffect(() => {
     if (selectedAgentId) {
       const agent = agentsRef.current.find((item) => item.id === selectedAgentId);
+      setShowFullOffice(true);
       setInspection({ kind: 'robot', id: selectedAgentId, roomId: agent?.zoneId ?? '' });
       controller.current?.focusAgent(selectedAgentId);
     }
@@ -191,6 +197,7 @@ export function Office3D({
 
   useEffect(() => {
     if (firstReset.current) { firstReset.current = false; return; }
+    setShowFullOffice(false);
     controller.current?.resetCamera();
     setInspection(null);
   }, [resetSignal]);
@@ -224,13 +231,16 @@ export function Office3D({
   const preview = serverMode === 'preview';
 
   function resetCamera() {
+    setShowFullOffice(false);
+    controller.current?.focusAgent(null);
     controller.current?.resetCamera();
+    useWoraStore.getState().selectAgent(null);
     setInspection(null);
+    callbacks.current.onRoom(null);
   }
 
   function closeInspection() {
-    setInspection(null);
-    if (inspection?.kind === 'robot') controller.current?.focusAgent(null);
+    resetCamera();
   }
 
   function openInspectedTasks() {
@@ -248,7 +258,7 @@ export function Office3D({
 
   return <section className="office3d-shell" aria-label="WORA 3D company office" dir="ltr">
     <div className="office3d-canvas" ref={mount} aria-label="Interactive WebGL office canvas" />
-    <div className="office3d-hint" aria-hidden="true">Drag to rotate · Scroll or pinch to zoom · Click departments, robots, desks, screens or meeting spaces</div>
+    <div className="office3d-hint" aria-hidden="true">Fixed architectural view · Click a labelled room, robot, desk or meeting space to inspect it</div>
 
     <div className="office3d-status" role="status">
       <span className="office3d-status-title"><span className="status-dot" /> {connected ? `Connected · ${serverMode ?? 'session'}` : 'Local session'}</span>
@@ -325,7 +335,7 @@ export function Office3D({
       <span className="office3d-active-view" aria-current="true"><Box size={14} aria-hidden="true" /><span>3D View</span></span>
       <button type="button" onClick={() => onViewChange('plan')}><MapIcon size={14} aria-hidden="true" /><span>Floor Plan</span></button>
       <button type="button" aria-pressed={showLive} onClick={() => setShowLive((value) => !value)}><Radio size={14} aria-hidden="true" /><span>Activity</span></button>
-      <button type="button" onClick={resetCamera}><RotateCcw size={14} aria-hidden="true" /><span>Reset</span></button>
+      {showFullOffice && <button type="button" className="office3d-return" onClick={resetCamera} aria-label="Return to full office view"><Building2 size={14} aria-hidden="true" /><span>Return to full office</span></button>}
     </div>
 
     {error && <div className="office3d-fallback" role="alert">

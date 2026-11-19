@@ -120,14 +120,21 @@ export function Campus({ roomId, tourIndex, onVisit, onAssign, onDirector }: {
     if (panMode && viewport) viewport.scrollLeft = (viewport.scrollWidth - viewport.clientWidth) / 2;
   }, [panMode, roomId]);
 
-  const chooseRoom = useCallback((id: string) => {
+  const chooseRoom = useCallback((id: string | null) => {
+    if (!id) {
+      setWhole(true);
+      setDrawer(null);
+      onVisit(null);
+      resetCamera();
+      return;
+    }
     setWhole(false);
     setDrawer('team');
     if (id === roomId) {
       travelTo(id);
       if (view === 'plan') focusRoomCamera(id);
     } else onVisit(id);
-  }, [onVisit, roomId, travelTo, view, focusRoomCamera]);
+  }, [onVisit, roomId, travelTo, view, focusRoomCamera, resetCamera]);
 
   function fit() {
     if (!focused && room && view === 'plan') focusRoomCamera(room.id); else resetCamera();

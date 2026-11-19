@@ -98,7 +98,7 @@
   height: 100%;
   min-height: 0;
   overflow: hidden;
-  background: var(--company-frame);
+  background: #dfe6e7;
   color: var(--company-ink);
   direction: ltr;
 }
@@ -111,7 +111,7 @@
   left: 12px;
   bottom: 12px;
   z-index: 3;
-  max-width: min(420px, calc(100% - 190px));
+  max-width: min(380px, calc(100% - 340px));
   padding: 6px 8px;
   border: 1px solid var(--company-line);
   border-radius: var(--control-radius);
@@ -121,6 +121,81 @@
   letter-spacing: .01em;
   pointer-events: none;
 }
+/* Real DOM typography stays sharp at any device pixel ratio; no text is baked into WebGL. */
+.office3d-labels {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  overflow: hidden;
+  pointer-events: none;
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+.office3d-room-label {
+  position: absolute;
+  display: grid;
+  gap: 1px;
+  align-content: center;
+  justify-items: center;
+  min-height: 34px;
+  padding: 4px 7px;
+  transform: translate(-50%, -100%);
+  border: 1px solid #9dc5cd;
+  border-radius: 3px;
+  background: #173440;
+  color: #fff;
+  box-shadow: 0 1px 0 #0a1b22;
+  font-family: var(--font-sans, 'Inter Variable', system-ui, sans-serif);
+  text-align: center;
+  line-height: 1.15;
+  cursor: pointer;
+  pointer-events: auto;
+}
+.office3d-room-label strong {
+  max-width: 100%;
+  overflow: hidden;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 760;
+  letter-spacing: .005em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.office3d-room-label small {
+  max-width: 100%;
+  overflow: hidden;
+  color: #d1eef2;
+  font-size: 9px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.office3d-room-label:hover, .office3d-room-label:focus-visible {
+  border-color: #b8f4ff;
+  background: #0b2632;
+  outline: 2px solid #7eeaff;
+  outline-offset: 1px;
+}
+.office3d-room-label.is-selected {
+  border-color: #c8f7ff;
+  background: #0c6d83;
+}
+.office3d-lobby-label {
+  position: absolute;
+  padding: 3px 8px;
+  transform: translate(-50%, -50%);
+  border: 1px solid #8eabb2;
+  border-radius: 2px;
+  background: #f7fbfb;
+  color: #173440;
+  font-size: 10px;
+  font-weight: 760;
+  letter-spacing: .1em;
+  white-space: nowrap;
+}
+.office3d-room-label[hidden], .office3d-lobby-label[hidden] { display: none !important; }
+
 .office3d-status {
   position: absolute;
   top: 10px;
@@ -240,6 +315,13 @@
 .office3d-controls .office3d-active-view { color: var(--company-accent); background: var(--company-panel-2); }
 .office3d-controls button:hover { background: var(--company-panel-2); color: var(--company-ink); }
 .office3d-controls button[aria-pressed='true'] { background: var(--company-panel-2); color: var(--company-accent); }
+ .office3d-controls .office3d-return {
+  border: 1px solid var(--company-accent);
+  background: var(--company-accent);
+  color: #0d2430;
+  font-weight: 760;
+}
+.office3d-controls .office3d-return:hover { background: #8ae9f6; color: #0d2430; }
 
 .office3d-fallback {
   position: absolute;
@@ -268,6 +350,11 @@
   .executive-command-avatar, .executive-command-label { display: none; }
   .executive-command-submit span { display: none; }
   .office3d-hint { display: none; }
+  .office3d-room-label { min-height: 30px; padding: 3px 5px; }
+  .office3d-room-label strong { font-size: 10px; }
+  .office3d-room-label small { display: none; }
+  .office3d-lobby-label { font-size: 8px; padding: 2px 5px; }
+  .office3d-controls .office3d-return span { display: none; }
   .office3d-status { top: 7px; font-size: 9px; gap: 3px; max-width: calc(100% - 14px); overflow: hidden; }
   .office3d-status span { padding: 2px 4px; }
   .office3d-status span:nth-child(n+4) { display: none; }

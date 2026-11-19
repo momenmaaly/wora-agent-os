@@ -12,7 +12,7 @@ export const OFFICE_WORLD = {
   southZ: 5.25,
   northDepth: 4.15,
   southDepth: 4.65,
-  glassHeight: 2.15,
+  glassHeight: 2.8,
   corridorNorthZ: -3.18,
   corridorSouthZ: 2.93,
 } as const;
@@ -85,7 +85,7 @@ export function buildRoomLayouts(): Room3DLayout[] {
       centerZ: row === 'north' ? OFFICE_WORLD.northZ : OFFICE_WORLD.southZ,
       width,
       depth,
-      signY: 2.55,
+      signY: 3.18,
     };
   });
 }

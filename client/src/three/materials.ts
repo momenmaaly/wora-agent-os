@@ -29,8 +29,6 @@ export interface OfficePalette {
   paper: MeshStandardMaterial;
   screenFrame: MeshStandardMaterial;
   screenMaterial: (variant: ScreenVariant) => MeshStandardMaterial;
-  signMaterial: (label: string, code: string, accent: string, crown?: boolean) => MeshBasicMaterial;
-  logoMaterial: () => MeshBasicMaterial;
   dispose: () => void;
 }
 
@@ -57,7 +55,7 @@ function textureFrom(canvas: HTMLCanvasElement, repeatX = 1, repeatY = 1): Canva
   texture.wrapS = RepeatWrapping;
   texture.wrapT = RepeatWrapping;
   texture.repeat.set(repeatX, repeatY);
-  texture.anisotropy = 4;
+  texture.anisotropy = 8;
   return texture;
 }
 
@@ -77,7 +75,8 @@ function roundedRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: num
 }
 
 function makeMarbleTexture(): CanvasTexture {
-  const { canvas, ctx } = canvas2d(512, 512);
+  const { canvas, ctx } = canvas2d(1024, 1024);
+  ctx.scale(2, 2);
   const random = seeded(17);
   ctx.fillStyle = '#f2f0e9';
   ctx.fillRect(0, 0, 512, 512);
@@ -103,7 +102,8 @@ function makeMarbleTexture(): CanvasTexture {
 }
 
 function makeWoodTexture(): CanvasTexture {
-  const { canvas, ctx } = canvas2d(512, 256);
+  const { canvas, ctx } = canvas2d(1024, 512);
+  ctx.scale(2, 2);
   const random = seeded(29);
   ctx.fillStyle = '#b47a46';
   ctx.fillRect(0, 0, 512, 256);
@@ -121,7 +121,8 @@ function makeWoodTexture(): CanvasTexture {
 
 /** Abstract, decorative screen content. No numeric KPIs, fake charts, or simulated activity. */
 function makeScreenTexture(variant: ScreenVariant): CanvasTexture {
-  const { canvas, ctx } = canvas2d(512, 300);
+  const { canvas, ctx } = canvas2d(1024, 600);
+  ctx.scale(2, 2);
   const random = seeded(variant.length * 97 + 41);
   ctx.fillStyle = '#101b2a';
   ctx.fillRect(0, 0, 512, 300);
@@ -193,78 +194,11 @@ function makeScreenTexture(variant: ScreenVariant): CanvasTexture {
   return textureFrom(canvas);
 }
 
-function makeSignTexture(label: string, code: string, accent: string, crown: boolean): CanvasTexture {
-  const { canvas, ctx } = canvas2d(768, 176);
-  ctx.clearRect(0, 0, 768, 176);
-  ctx.shadowColor = 'rgba(0,0,0,.32)';
-  ctx.shadowBlur = 18;
-  ctx.shadowOffsetY = 8;
-  ctx.fillStyle = '#172433';
-  roundedRect(ctx, 8, 12, 752, 144, 30);
-  ctx.fill();
-  ctx.shadowColor = 'transparent';
-  ctx.strokeStyle = accent;
-  ctx.lineWidth = 5;
-  ctx.stroke();
-  ctx.fillStyle = accent;
-  roundedRect(ctx, 30, 38, 10, 92, 5);
-  ctx.fill();
-  if (crown) {
-    ctx.beginPath();
-    ctx.moveTo(90, 94);
-    ctx.lineTo(104, 58);
-    ctx.lineTo(122, 82);
-    ctx.lineTo(140, 52);
-    ctx.lineTo(154, 94);
-    ctx.closePath();
-    ctx.fillStyle = '#f3c969';
-    ctx.fill();
-  }
-  let fontSize = 48;
-  do {
-    ctx.font = `700 ${fontSize}px Inter, Arial, sans-serif`;
-    fontSize -= 2;
-  } while (ctx.measureText(label).width > 570 && fontSize > 25);
-  ctx.fillStyle = '#f7fbff';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(label, crown ? 180 : 72, 72);
-  ctx.font = '600 22px Inter, Arial, sans-serif';
-  ctx.fillStyle = 'rgba(219,236,246,.72)';
-  ctx.fillText(`WORA  ·  ${code}`, crown ? 180 : 72, 118);
-  return textureFrom(canvas);
-}
-
-function makeLogoTexture(): CanvasTexture {
-  const { canvas, ctx } = canvas2d(512, 512);
-  ctx.clearRect(0, 0, 512, 512);
-  ctx.strokeStyle = 'rgba(43, 104, 125, .65)';
-  ctx.lineWidth = 10;
-  ctx.beginPath();
-  ctx.arc(256, 256, 216, 0, Math.PI * 2);
-  ctx.stroke();
-  ctx.strokeStyle = 'rgba(200, 167, 89, .75)';
-  ctx.lineWidth = 4;
-  ctx.beginPath();
-  ctx.arc(256, 256, 185, 0, Math.PI * 2);
-  ctx.stroke();
-  ctx.fillStyle = '#17465a';
-  ctx.font = '800 112px Inter, Arial, sans-serif';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText('WORA', 256, 250);
-  ctx.fillStyle = 'rgba(23, 70, 90, .55)';
-  ctx.font = '600 26px Inter, Arial, sans-serif';
-  ctx.fillText('AGENT OS', 256, 330);
-  return textureFrom(canvas);
-}
-
 export function createOfficePalette(): OfficePalette {
   const textures: Texture[] = [];
   const materials: Material[] = [];
   const roomFloorCache = new Map<string, MeshStandardMaterial>();
   const screenCache = new Map<ScreenVariant, MeshStandardMaterial>();
-  const signCache = new Map<string, MeshBasicMaterial>();
-  let logoMaterial: MeshBasicMaterial | null = null;
 
   const trackTexture = <T extends Texture>(texture: T): T => { textures.push(texture); return texture; };
   const trackMaterial = <T extends Material>(material: T): T => { materials.push(material); return material; };
@@ -319,28 +253,11 @@ export function createOfficePalette(): OfficePalette {
       screenCache.set(variant, material);
       return material;
     },
-    signMaterial: (label, code, accent, crown = false) => {
-      const key = `${label}|${code}|${accent}|${crown}`;
-      const cached = signCache.get(key);
-      if (cached) return cached;
-      const map = trackTexture(makeSignTexture(label, code, accent, crown));
-      const material = trackMaterial(new MeshBasicMaterial({ map, transparent: true, side: DoubleSide, depthWrite: false, depthTest: false }));
-      signCache.set(key, material);
-      return material;
-    },
-    logoMaterial: () => {
-      if (logoMaterial) return logoMaterial;
-      const map = trackTexture(makeLogoTexture());
-      logoMaterial = trackMaterial(new MeshBasicMaterial({ map, transparent: true, side: DoubleSide, depthWrite: false }));
-      return logoMaterial;
-    },
     dispose: () => {
       for (const material of materials) material.dispose();
       for (const texture of textures) texture.dispose();
       roomFloorCache.clear();
       screenCache.clear();
-      signCache.clear();
-      logoMaterial = null;
     },
   };
 }

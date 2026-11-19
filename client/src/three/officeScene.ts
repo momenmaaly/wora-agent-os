@@ -1,12 +1,11 @@
 import {
   ACESFilmicToneMapping, AmbientLight, BoxGeometry, CircleGeometry, Color, CylinderGeometry,
-  DirectionalLight, DoubleSide, Fog, Group, HemisphereLight, IcosahedronGeometry, MathUtils,
+  DirectionalLight, DoubleSide, Group, HemisphereLight, IcosahedronGeometry, MathUtils,
   Mesh, MeshBasicMaterial, MeshStandardMaterial, Object3D, OrthographicCamera, PCFSoftShadowMap,
   PlaneGeometry, PointLight, Raycaster, Scene, SphereGeometry,
   SRGBColorSpace, TorusGeometry, Vector2, Vector3, WebGLRenderer,
   type BufferGeometry, type Material,
 } from 'three';
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 import type { AgentParticipant, SharedWorkspaceEntry } from '../types.js';
 import {
@@ -15,10 +14,12 @@ import {
 } from './layout.js';
 import { createOfficePalette, type OfficePalette, type ScreenVariant } from './materials.js';
 import { createRobotFactory, type RobotRecord } from './robot.js';
+import {
+  ARCHITECTURAL_OFFSET, applyArchitecturalFrame, computeArchitecturalFrame, projectToViewport,
+  rectanglesOverlap, roomArchitectureLabel, roomLabelAnchor, roomLabelSpan,
+} from './architecture.js';
 
 const FLOOR_Y = 0.25;
-const FRUSTUM_HEIGHT = 18;
-const DEFAULT_OFFSET = new Vector3(21, 23, 25);
 
 interface Placement {
   x?: number; y?: number; z?: number;
@@ -112,14 +113,21 @@ export interface OfficeSceneController {
 }
 
 interface CameraTween {
-  fromPosition: Vector3;
-  toPosition: Vector3;
   fromTarget: Vector3;
   toTarget: Vector3;
   fromZoom: number;
   toZoom: number;
   startedAt: number;
   duration: number;
+}
+
+interface RoomLabel {
+  room: Room3DLayout;
+  element: HTMLButtonElement;
+  anchor: Vector3;
+  left: Vector3;
+  right: Vector3;
+  onSelect: () => void;
 }
 
 export function createOfficeScene(options: OfficeSceneOptions): OfficeSceneController {
@@ -132,57 +140,92 @@ export function createOfficeScene(options: OfficeSceneOptions): OfficeSceneContr
   const extraMaterials: Material[] = [];
   const extraMaterial = <T extends Material>(material: T): T => { extraMaterials.push(material); return material; };
   const warmStrip = extraMaterial(new MeshBasicMaterial({ color: '#f3c987' }));
-  const outdoorGround = extraMaterial(new MeshStandardMaterial({ color: '#1b342e', roughness: 1 }));
+  const groundMaterial = extraMaterial(new MeshStandardMaterial({ color: '#dfe6e7', roughness: 0.94 }));
   const corridorFloor = extraMaterial(new MeshStandardMaterial({ color: '#dfe5e3', roughness: 0.52, metalness: 0.03 }));
   const corridorLine = extraMaterial(new MeshStandardMaterial({ color: '#8fa9ad', roughness: 0.6, metalness: 0.15 }));
-  const corridorPath = extraMaterial(new MeshBasicMaterial({ color: '#2e7f8d', transparent: true, opacity: 0.55, depthWrite: false }));
   const selectionRingMaterial = extraMaterial(new MeshBasicMaterial({ color: '#7eeaff', transparent: true, opacity: 0.86, side: DoubleSide, depthWrite: false }));
 
   const renderer = new WebGLRenderer({ antialias: quality === 'high', alpha: false, powerPreference: 'high-performance' });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, quality === 'high' ? 1.7 : 1.1));
-  renderer.setClearColor(new Color('#101b26'), 1);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, quality === 'high' ? 2 : 1.25));
+  renderer.setClearColor(new Color('#dfe6e7'), 1);
   renderer.outputColorSpace = SRGBColorSpace;
   renderer.toneMapping = ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.12;
+  renderer.toneMappingExposure = 1.18;
   renderer.shadowMap.enabled = quality === 'high';
   renderer.shadowMap.type = PCFSoftShadowMap;
   renderer.domElement.style.display = 'block';
   renderer.domElement.style.width = '100%';
   renderer.domElement.style.height = '100%';
-  renderer.domElement.style.touchAction = 'none';
+  renderer.domElement.style.touchAction = 'manipulation';
   renderer.domElement.tabIndex = 0;
   renderer.domElement.setAttribute('role', 'application');
   renderer.domElement.setAttribute('aria-label', 'WORA interactive 3D company office');
   container.appendChild(renderer.domElement);
 
   const scene = new Scene();
-  scene.background = new Color('#101b26');
-  scene.fog = new Fog('#172633', 38, 76);
+  scene.background = new Color('#dfe6e7');
 
-  let baseZoom = 1;
-  const camera = new OrthographicCamera(-12, 12, 9, -9, 0.1, 160);
-  camera.position.copy(DEFAULT_OFFSET);
-  camera.lookAt(0, 0.5, 0);
-  const controls = new OrbitControls(camera, renderer.domElement);
-  controls.target.set(0, 0.4, 0);
-  controls.enableDamping = true;
-  controls.dampingFactor = 0.08;
-  controls.enablePan = true;
-  controls.enableRotate = true;
-  controls.enableZoom = true;
-  controls.screenSpacePanning = true;
-  controls.minPolarAngle = Math.PI / 5.2;
-  controls.maxPolarAngle = Math.PI / 2.65;
-  controls.minZoom = 0.45;
-  controls.maxZoom = 3.4;
-  controls.listenToKeyEvents(renderer.domElement);
+  const initialAspect = Math.max(1, container.clientWidth) / Math.max(1, container.clientHeight);
+  let cameraFrame = computeArchitecturalFrame(initialAspect);
+  let cameraTarget = cameraFrame.target.clone();
+  let viewMode: 'full' | 'room' | 'agent' | 'spot' = 'full';
+  const camera = new OrthographicCamera(cameraFrame.left, cameraFrame.right, cameraFrame.top, cameraFrame.bottom, 0.1, 160);
+  applyArchitecturalFrame(camera, cameraFrame);
+
+  function setCamera(target: Vector3, zoom: number): void {
+    cameraTarget.copy(target);
+    camera.position.copy(target).add(ARCHITECTURAL_OFFSET);
+    camera.lookAt(target);
+    camera.zoom = zoom;
+    camera.updateProjectionMatrix();
+    camera.updateMatrixWorld();
+  }
+
+  const labelLayer = document.createElement('div');
+  labelLayer.className = 'office3d-labels';
+  labelLayer.setAttribute('aria-label', 'Architectural office room labels');
+  const lobbyLabel = document.createElement('div');
+  lobbyLabel.className = 'office3d-lobby-label';
+  lobbyLabel.dir = 'ltr';
+  lobbyLabel.setAttribute('aria-hidden', 'true');
+  lobbyLabel.textContent = 'WORA · AGENT OS';
+  labelLayer.appendChild(lobbyLabel);
+
+  const roomLabels: RoomLabel[] = ROOM_3D_LAYOUTS.map((room) => {
+    const display = roomArchitectureLabel(room);
+    const element = document.createElement('button');
+    element.type = 'button';
+    element.className = 'office3d-room-label';
+    element.dataset.roomId = room.id;
+    element.dir = 'ltr';
+    element.setAttribute('aria-label', `${display.en} — ${display.ar}`);
+    const title = document.createElement('strong');
+    title.textContent = display.en;
+    const subtitle = document.createElement('small');
+    subtitle.dir = 'rtl';
+    subtitle.textContent = display.ar;
+    element.append(title, subtitle);
+    const span = roomLabelSpan(room);
+    const onSelect = () => {
+      focusRoom(room.id);
+      onRoom(room.id);
+      if (room.id === 'zone-lounge') {
+        onInspect({ kind: 'meeting', id: `${room.id}-meeting`, roomId: room.id, label: display.en });
+      } else {
+        onInspect({ kind: 'department', id: room.id, roomId: room.id, label: display.en });
+      }
+    };
+    element.addEventListener('click', onSelect);
+    labelLayer.appendChild(element);
+    return { room, element, anchor: roomLabelAnchor(room), left: span.left, right: span.right, onSelect };
+  });
+  container.appendChild(labelLayer);
 
   const roomLayer = new Group();
   const robotLayer = new Group();
   scene.add(roomLayer, robotLayer);
 
   const roomHighlights = new Map<string, Mesh>();
-  const billboards: Mesh[] = [];
   const robots = new Map<string, RobotRecord>();
   const robotAgents = new Map<string, AgentParticipant>();
   const robotLocations = new Map<string, AgentMotionSnapshot>();
@@ -352,39 +395,58 @@ export function createOfficeScene(options: OfficeSceneOptions): OfficeSceneContr
   }
 
   function glassWall(parent: Object3D, room: Room3DLayout): void {
+    const walls = new Group();
+    walls.name = 'non-pickable-glass-partitions';
+    walls.userData.ignoreRaycast = true;
+    parent.add(walls);
     const frontZ = room.row === 'north' ? room.depth / 2 : -room.depth / 2;
+    const backZ = -frontZ;
     const face = room.row === 'north' ? 1 : -1;
     const h = OFFICE_WORLD.glassHeight;
     const door = Math.min(1.05, room.width * 0.28);
     const panel = (room.width - door) / 2;
+
+    add(walls, cache.box(room.width, 0.82, 0.14), palette.white, { y: FLOOR_Y + 0.41, z: backZ });
+    add(walls, cache.box(room.width, h - 0.9, 0.055), palette.glass, {
+      y: FLOOR_Y + 0.86 + (h - 0.9) / 2, z: backZ, cast: false, receive: false,
+    });
+    add(walls, cache.box(room.width, 0.08, 0.18), palette.frame, { y: FLOOR_Y + h, z: backZ });
+    for (const x of [-room.width / 2, 0, room.width / 2]) {
+      add(walls, cache.box(0.06, h, 0.085), palette.frame, { x, y: FLOOR_Y + h / 2, z: backZ });
+    }
     for (const side of [-1, 1]) {
       const x = side * (door / 2 + panel / 2);
-      add(parent, cache.box(panel, h, 0.055), palette.glass, { x, y: FLOOR_Y + h / 2, z: frontZ, cast: false, receive: false });
-      add(parent, cache.box(panel, 0.055, 0.075), palette.frame, { x, y: FLOOR_Y + h, z: frontZ });
-      add(parent, cache.box(panel, 0.055, 0.075), palette.frame, { x, y: FLOOR_Y + 0.03, z: frontZ });
+      add(walls, cache.box(panel, h, 0.055), palette.glass, { x, y: FLOOR_Y + h / 2, z: frontZ, cast: false, receive: false });
+      add(walls, cache.box(panel, 0.055, 0.075), palette.frame, { x, y: FLOOR_Y + h, z: frontZ });
+      add(walls, cache.box(panel, 0.055, 0.075), palette.frame, { x, y: FLOOR_Y + 0.03, z: frontZ });
+      add(walls, cache.box(panel, 0.45, 0.085), palette.white, { x, y: FLOOR_Y + 0.24, z: frontZ });
     }
     for (const x of [-room.width / 2, -door / 2, door / 2, room.width / 2]) {
-      add(parent, cache.box(0.06, h, 0.085), palette.frame, { x, y: FLOOR_Y + h / 2, z: frontZ });
+      add(walls, cache.box(0.06, h, 0.085), palette.frame, { x, y: FLOOR_Y + h / 2, z: frontZ });
     }
-    add(parent, cache.box(room.width, 0.06, 0.085), palette.frame, { y: FLOOR_Y + h, z: frontZ });
-    add(parent, cache.box(door, 0.035, 0.12), warmStrip, { y: FLOOR_Y + 0.03, z: frontZ + face * 0.03, cast: false });
+    add(walls, cache.box(room.width, 0.06, 0.085), palette.frame, { y: FLOOR_Y + h, z: frontZ });
+    add(walls, cache.box(door, 0.035, 0.12), warmStrip, { y: FLOOR_Y + 0.03, z: frontZ + face * 0.03, cast: false });
     for (const side of [-1, 1]) {
       const x = side * room.width / 2;
-      add(parent, cache.box(0.055, h, room.depth * 0.86), palette.glass, { x, y: FLOOR_Y + h / 2, z: 0, cast: false, receive: false });
-      for (const z of [-room.depth * 0.43, 0, room.depth * 0.43]) add(parent, cache.box(0.075, h, 0.06), palette.frame, { x, y: FLOOR_Y + h / 2, z });
-      add(parent, cache.box(0.075, 0.06, room.depth * 0.86), palette.frame, { x, y: FLOOR_Y + h, z: 0 });
+      add(walls, cache.box(0.09, h * 0.38, room.depth * 0.86), palette.white, { x, y: FLOOR_Y + h * 0.19, z: 0 });
+      add(walls, cache.box(0.055, h * 0.62, room.depth * 0.86), palette.glass, { x, y: FLOOR_Y + h * 0.69, z: 0, cast: false, receive: false });
+      for (const z of [-room.depth * 0.43, 0, room.depth * 0.43]) add(walls, cache.box(0.075, h, 0.06), palette.frame, { x, y: FLOOR_Y + h / 2, z });
+      add(walls, cache.box(0.075, 0.06, room.depth * 0.86), palette.frame, { x, y: FLOOR_Y + h, z: 0 });
     }
   }
 
   function roomFloor(parent: Object3D, room: Room3DLayout): Mesh {
-    add(parent, cache.rounded(room.width, 0.07, room.depth, 0.12), palette.roomFloor(room.accent), { y: FLOOR_Y - 0.01 });
+    add(parent, cache.plane(room.width, room.depth), palette.roomFloor(room.accent), {
+      y: FLOOR_Y - 0.008, rx: -Math.PI / 2, cast: false, receive: true,
+    });
     for (const x of [-room.width * 0.25, room.width * 0.25]) {
-      add(parent, cache.box(0.018, 0.012, room.depth * 0.9), palette.metal, { x, y: FLOOR_Y + 0.04, z: 0, cast: false });
+      add(parent, cache.box(0.018, 0.012, room.depth * 0.9), palette.metal, { x, y: FLOOR_Y - 0.001, z: 0, cast: false });
     }
     const highlight = extraMaterial(new MeshBasicMaterial({ color: new Color(room.accent), transparent: true, opacity: 0.18, side: DoubleSide, depthWrite: false }));
     const selection = add(parent, cache.plane(room.width * 0.98, room.depth * 0.96), highlight, {
       y: FLOOR_Y + 0.055, rx: -Math.PI / 2, cast: false, receive: false, renderOrder: 2,
     });
+    selection.userData.ignoreRaycast = true;
     selection.visible = false;
     return selection;
   }
@@ -415,91 +477,73 @@ export function createOfficeScene(options: OfficeSceneOptions): OfficeSceneContr
     }
     const frontZ = room.row === 'north' ? room.depth / 2 : -room.depth / 2;
     const face = room.row === 'north' ? 1 : -1;
-    const sign = add(group, cache.plane(Math.min(2.9, room.width * 0.82), 0.66),
-      palette.signMaterial(room.nameEn, room.code, room.accent, room.id === 'zone-boardroom'), {
-        y: room.signY, z: frontZ + face * 0.11, cast: false, receive: false, renderOrder: 8,
-      });
-    billboards.push(sign);
+    add(group, cache.rounded(Math.min(2.9, room.width * 0.82), 0.14, 0.1, 0.025), palette.frame, {
+      y: room.signY, z: frontZ + face * 0.11, cast: false, receive: false,
+    });
     plant(group, -room.width / 2 + 0.48, room.row === 'north' ? -room.depth / 2 + 0.58 : room.depth / 2 - 0.58, 0.72);
     add(group, cache.box(room.width * 0.78, 0.025, 0.08), warmStrip, {
       y: FLOOR_Y + 0.04, z: frontZ - face * 0.12, cast: false,
     });
   }
 
-  function createSlab(): void {
-    add(scene, cache.plane(58, 42), outdoorGround, { y: -0.3, rx: -Math.PI / 2, cast: false, receive: quality === 'high' });
-    add(scene, cache.rounded(OFFICE_WORLD.slabWidth, OFFICE_WORLD.slabThickness, OFFICE_WORLD.slabDepth, 0.28), palette.marble, { y: 0 });
-    add(scene, cache.rounded(OFFICE_WORLD.slabWidth + 0.18, 0.12, OFFICE_WORLD.slabDepth + 0.18, 0.25), palette.floorEdge, { y: -0.16 });
-    for (const z of [-OFFICE_WORLD.slabDepth / 2, OFFICE_WORLD.slabDepth / 2]) {
-      add(scene, cache.box(OFFICE_WORLD.slabWidth, 0.035, 0.07), warmStrip, { y: FLOOR_Y - 0.18, z, cast: false });
-    }
-    for (const x of [-OFFICE_WORLD.slabWidth / 2, OFFICE_WORLD.slabWidth / 2]) {
-      add(scene, cache.box(0.07, 0.035, OFFICE_WORLD.slabDepth), warmStrip, { y: FLOOR_Y - 0.18, x, cast: false });
-    }
-    const glassH = 1.5;
-    for (const z of [-OFFICE_WORLD.slabDepth / 2 - 0.05, OFFICE_WORLD.slabDepth / 2 + 0.05]) {
-      add(scene, cache.box(OFFICE_WORLD.slabWidth, glassH, 0.05), palette.glass, { y: FLOOR_Y + glassH / 2, z, cast: false, receive: false });
-      add(scene, cache.box(OFFICE_WORLD.slabWidth, 0.055, 0.08), palette.frame, { y: FLOOR_Y + glassH, z });
-      for (let i = 0; i <= 8; i += 1) add(scene, cache.box(0.055, glassH, 0.08), palette.frame, { x: -OFFICE_WORLD.slabWidth / 2 + i * OFFICE_WORLD.slabWidth / 8, y: FLOOR_Y + glassH / 2, z });
-    }
-    for (const x of [-OFFICE_WORLD.slabWidth / 2 - 0.05, OFFICE_WORLD.slabWidth / 2 + 0.05]) {
-      add(scene, cache.box(0.05, glassH, OFFICE_WORLD.slabDepth), palette.glass, { y: FLOOR_Y + glassH / 2, x, cast: false, receive: false });
-      add(scene, cache.box(0.08, 0.055, OFFICE_WORLD.slabDepth), palette.frame, { y: FLOOR_Y + glassH, x });
-    }
-    for (const [x, z] of [[-10.7, -7.4], [10.7, -7.4], [-10.7, 7.4], [10.7, 7.4]] as const) plant(scene, x, z, 0.95);
-  }
-
-  function dashedCorridorPath(parent: Object3D, from: WorldPoint, to: WorldPoint): void {
-    const dx = to.x - from.x;
-    const dz = to.z - from.z;
-    const length = Math.hypot(dx, dz);
-    if (length < 0.1) return;
-    const steps = Math.max(2, Math.ceil(length / 0.42));
-    const angle = Math.atan2(-dz, dx);
-    for (let i = 0; i < steps; i += 2) {
-      const t = (i + 0.5) / steps;
-      add(parent, cache.box(0.22, 0.012, 0.045), corridorPath, {
-        x: from.x + dx * t,
-        y: FLOOR_Y + 0.07,
-        z: from.z + dz * t,
-        ry: angle,
-        cast: false,
-        receive: false,
-        renderOrder: 2,
-      });
+  function createGround(): void {
+    const environment = new Group();
+    environment.name = 'grounded-architectural-environment';
+    environment.userData.ignoreRaycast = true;
+    scene.add(environment);
+    const wallH = 3.35;
+    const halfWidth = OFFICE_WORLD.slabWidth / 2;
+    const halfDepth = OFFICE_WORLD.slabDepth / 2;
+    add(environment, cache.plane(80, 60), groundMaterial, { y: FLOOR_Y - 0.04, rx: -Math.PI / 2, cast: false, receive: true });
+    add(environment, cache.plane(OFFICE_WORLD.slabWidth, OFFICE_WORLD.slabDepth), palette.marble, {
+      y: FLOOR_Y - 0.025, rx: -Math.PI / 2, cast: false, receive: true,
+    });
+    add(environment, cache.box(OFFICE_WORLD.slabWidth, wallH, 0.18), palette.white, {
+      y: FLOOR_Y + wallH / 2, z: -halfDepth,
+    });
+    add(environment, cache.box(0.18, wallH, OFFICE_WORLD.slabDepth), palette.white, {
+      x: -halfWidth, y: FLOOR_Y + wallH / 2, z: 0,
+    });
+    add(environment, cache.box(OFFICE_WORLD.slabWidth, 0.08, 0.22), palette.frame, {
+      y: FLOOR_Y + wallH, z: -halfDepth,
+    });
+    add(environment, cache.box(0.22, 0.08, OFFICE_WORLD.slabDepth), palette.frame, {
+      x: -halfWidth, y: FLOOR_Y + wallH, z: 0,
+    });
+    for (let x = -halfWidth + 2; x < halfWidth; x += 4) {
+      add(environment, cache.box(0.035, wallH, 0.2), palette.frame, { x, y: FLOOR_Y + wallH / 2, z: -halfDepth });
     }
   }
 
-  /** Continuous circulation spine and door-to-lobby routes make the departments one connected office. */
+  /** Continuous circulation spine; room doors open directly onto the shared floor. */
   function createCorridors(): void {
     const group = new Group();
     group.name = 'connected-corridors';
     scene.add(group);
     const corridorDepth = OFFICE_WORLD.corridorSouthZ - OFFICE_WORLD.corridorNorthZ + 0.42;
     const corridorCenterZ = (OFFICE_WORLD.corridorNorthZ + OFFICE_WORLD.corridorSouthZ) / 2;
-    add(group, cache.box(OFFICE_WORLD.slabWidth - 0.65, 0.035, corridorDepth), corridorFloor, {
-      y: FLOOR_Y + 0.006, z: corridorCenterZ, cast: false, receive: true,
+    add(group, cache.box(OFFICE_WORLD.slabWidth - 0.65, 0.014, corridorDepth), corridorFloor, {
+      y: FLOOR_Y - 0.015, z: corridorCenterZ, cast: false, receive: true,
     });
-    for (let x = -10; x <= 10; x += 2) {
-      add(group, cache.box(0.014, 0.012, corridorDepth - 0.15), corridorLine, {
-        x, y: FLOOR_Y + 0.032, z: corridorCenterZ, cast: false,
+    for (let x = -10; x <= 10; x += 4) {
+      add(group, cache.box(0.012, 0.008, corridorDepth - 0.15), corridorLine, {
+        x, y: FLOOR_Y - 0.002, z: corridorCenterZ, cast: false,
       });
     }
     for (const z of [OFFICE_WORLD.corridorNorthZ, 0, OFFICE_WORLD.corridorSouthZ]) {
-      add(group, cache.box(OFFICE_WORLD.slabWidth - 0.7, 0.012, 0.025), corridorLine, {
-        y: FLOOR_Y + 0.034, z, cast: false,
+      add(group, cache.box(OFFICE_WORLD.slabWidth - 0.7, 0.008, 0.02), corridorLine, {
+        y: FLOOR_Y - 0.002, z, cast: false,
       });
     }
-    add(group, cache.box(1.65, 0.018, corridorDepth - 0.2), corridorLine, {
-      y: FLOOR_Y + 0.038, z: corridorCenterZ, cast: false,
+    add(group, cache.box(1.65, 0.01, corridorDepth - 0.2), corridorLine, {
+      y: FLOOR_Y - 0.003, z: corridorCenterZ, cast: false,
     });
     for (const room of ROOM_3D_LAYOUTS) {
       const frontZ = room.row === 'north' ? room.centerZ + room.depth / 2 : room.centerZ - room.depth / 2;
-      const door: WorldPoint = { x: room.centerX, z: frontZ };
-      const mid: WorldPoint = { x: room.centerX * 0.48, z: 0 };
-      const lobby: WorldPoint = { x: 0, z: 0 };
-      dashedCorridorPath(group, door, mid);
-      dashedCorridorPath(group, mid, lobby);
+      const face = room.row === 'north' ? 1 : -1;
+      add(group, cache.box(1.08, 0.01, 0.14), warmStrip, {
+        x: room.centerX, y: FLOOR_Y - 0.001, z: frontZ + face * 0.16, cast: false,
+      });
     }
     for (const x of [-7.4, 7.4]) {
       add(group, cache.rounded(1.25, 0.12, 0.34, 0.06), palette.sofa, {
@@ -514,44 +558,45 @@ export function createOfficeScene(options: OfficeSceneOptions): OfficeSceneContr
 
   function createLobby(): void {
     const group = new Group();
-    group.name = 'central-lobby';
+    group.name = 'central-reception-and-shared-area';
+    group.position.y = FLOOR_Y;
     scene.add(group);
-    add(group, cache.cylinder(OFFICE_WORLD.lobbyRadius + 0.12, OFFICE_WORLD.lobbyRadius + 0.12, 0.11, 64), palette.marble, { y: FLOOR_Y + 0.01 });
-    add(group, cache.plane(4.3, 4.3), palette.logoMaterial(), { y: FLOOR_Y + 0.075, rx: -Math.PI / 2, cast: false, receive: false, renderOrder: 3 });
-    add(group, cache.torus(OFFICE_WORLD.lobbyRadius + 0.18, 0.045, Math.PI * 2), palette.metal, { y: FLOOR_Y + 0.12, rx: Math.PI / 2 });
-    add(group, cache.cylinder(0.82, 0.94, 0.38, 40), palette.white, { y: FLOOR_Y + 0.2 });
-    add(group, cache.circle(0.78), palette.soil, { y: FLOOR_Y + 0.4, rx: -Math.PI / 2, cast: false });
-    add(group, cache.cylinder(0.09, 0.14, 1.35, 12), palette.woodDark, { y: FLOOR_Y + 1.02 });
-    for (let i = 0; i < 9; i += 1) {
-      const angle = (i / 9) * Math.PI * 2;
-      const leaf = add(group, cache.ico(0.55, 1), i % 2 ? palette.leaf : palette.leafDark, {
-        x: Math.cos(angle) * 0.72, y: FLOOR_Y + 1.72 + (i % 3) * 0.2, z: Math.sin(angle) * 0.72,
-      });
-      leaf.scale.set(1.15, 0.9, 1.15);
+
+    add(group, cache.plane(5.8, 4.7), palette.roomFloor('#a9d5de'), {
+      y: 0.001, rx: -Math.PI / 2, cast: false, receive: true,
+    });
+    add(group, cache.box(5.8, 0.012, 0.025), palette.metal, { y: 0.01, z: -2.35, cast: false });
+    add(group, cache.box(5.8, 0.012, 0.025), palette.metal, { y: 0.01, z: 2.35, cast: false });
+
+    const reception = new Group();
+    reception.position.set(-1.7, 0, -1.35);
+    add(reception, cache.rounded(2.3, 0.72, 0.52, 0.07), palette.white, { y: 0.39 });
+    add(reception, cache.rounded(2.42, 0.09, 0.62, 0.05), palette.wood, { y: 0.79 });
+    add(reception, cache.box(2.3, 0.22, 0.04), palette.frame, { y: 0.54, z: 0.28 });
+    add(reception, cache.box(0.62, 0.42, 0.055), palette.screenFrame, { x: -0.55, y: 1.08, z: -0.05 });
+    add(reception, cache.plane(0.56, 0.36), palette.screenMaterial('plan'), {
+      x: -0.55, y: 1.08, z: -0.019, cast: false, receive: false,
+    });
+    add(reception, cache.rounded(0.48, 0.025, 0.18, 0.02), palette.dark, { x: 0.3, y: 0.85, z: 0.12 });
+    add(reception, cache.cylinder(0.055, 0.045, 0.1, 14), palette.white, { x: 0.8, y: 0.89, z: -0.06 });
+    chair(reception, -0.5, -0.6);
+    group.add(reception);
+
+    const lounge = new Group();
+    lounge.position.set(1.75, 0, 0.45);
+    add(lounge, cache.rounded(1.35, 0.34, 0.58, 0.07), palette.sofa, { y: 0.28, z: -1.18 });
+    add(lounge, cache.rounded(1.35, 0.56, 0.12, 0.05), palette.sofa, { y: 0.59, z: -1.48 });
+    add(lounge, cache.rounded(1.35, 0.34, 0.58, 0.07), palette.sofa, { y: 0.28, z: 1.18 });
+    add(lounge, cache.rounded(1.35, 0.56, 0.12, 0.05), palette.sofa, { y: 0.59, z: 1.48, ry: Math.PI });
+    for (const x of [-0.48, 0.48]) for (const z of [-0.24, 0.24]) {
+      add(lounge, cache.box(0.055, 0.34, 0.055), palette.metal, { x, y: 0.18, z });
     }
-    add(group, cache.ico(0.8, 1), palette.leaf, { y: FLOOR_Y + 2.25 }).scale.set(1.2, 0.95, 1.2);
-    for (let i = 0; i < 3; i += 1) {
-      const angle = (i / 3) * Math.PI * 2 + 0.45;
-      add(group, cache.torus(1.55, 0.22, Math.PI * 0.58), palette.sofa, {
-        x: Math.cos(angle) * 1.62, y: FLOOR_Y + 0.42, z: Math.sin(angle) * 1.62,
-        rx: Math.PI / 2, ry: -angle,
-      });
-      add(group, cache.rounded(0.34, 0.13, 0.24, 0.06), palette.paper, {
-        x: Math.cos(angle) * 2.12, y: FLOOR_Y + 0.52, z: Math.sin(angle) * 2.12, ry: -angle,
-      });
-    }
-    const railRadius = 3.15;
-    add(group, cache.torus(railRadius, 0.035, Math.PI * 2), palette.frame, { y: FLOOR_Y + 0.72, rx: Math.PI / 2 });
-    for (let i = 0; i < 12; i += 1) {
-      const angle = (i / 12) * Math.PI * 2;
-      const x = Math.cos(angle) * railRadius;
-      const z = Math.sin(angle) * railRadius;
-      add(group, cache.cylinder(0.025, 0.025, 0.72, 8), palette.frame, { x, y: FLOOR_Y + 0.36, z });
-      const panel = add(group, cache.box(0.05, 0.58, railRadius * 0.5), palette.glass, {
-        x: Math.cos(angle + Math.PI / 12) * railRadius, y: FLOOR_Y + 0.36, z: Math.sin(angle + Math.PI / 12) * railRadius,
-        ry: -angle - Math.PI / 12, cast: false, receive: false,
-      });
-      panel.scale.z = 1.02;
+    add(lounge, cache.rounded(1.1, 0.08, 0.62, 0.045), palette.wood, { y: 0.38 });
+    add(lounge, cache.rounded(0.34, 0.028, 0.24, 0.025), palette.paper, { x: -0.24, y: 0.44, z: 0.04, ry: 0.18 });
+    group.add(lounge);
+
+    for (const [x, z] of [[-3.9, -1.85], [3.9, -1.85], [-3.9, 1.85], [3.9, 1.85]] as const) {
+      plant(group, x, z, 0.72);
     }
   }
 
@@ -582,7 +627,7 @@ export function createOfficeScene(options: OfficeSceneOptions): OfficeSceneContr
     scene.add(lobbyLight);
   }
 
-  createSlab();
+  createGround();
   createCorridors();
   createLobby();
   for (const room of ROOM_3D_LAYOUTS) createRoom(room);
@@ -601,35 +646,81 @@ export function createOfficeScene(options: OfficeSceneOptions): OfficeSceneContr
   function setSelectedRoom(roomId: string | null): void {
     selectedRoomId = roomId && roomHighlights.has(roomId) ? roomId : null;
     for (const [id, highlight] of roomHighlights) highlight.visible = id === selectedRoomId;
+    for (const label of roomLabels) label.element.classList.toggle('is-selected', label.room.id === selectedRoomId);
   }
 
-  function moveCamera(toTarget: Vector3, toPosition: Vector3, toZoom: number, immediate = false): void {
+  function updateLabels(): void {
+    const width = Math.max(1, container.clientWidth);
+    const height = Math.max(1, container.clientHeight);
+    const visibleRects: { left: number; right: number; top: number; bottom: number }[] = [];
+    camera.updateMatrixWorld();
+    for (const label of roomLabels) {
+      const anchor = projectToViewport(label.anchor, camera, width, height);
+      const left = projectToViewport(label.left, camera, width, height);
+      const right = projectToViewport(label.right, camera, width, height);
+      const projectedWidth = Math.max(1, Math.abs(right.x - left.x));
+      const labelWidth = Math.max(150, Math.min(160, projectedWidth * 0.92));
+      const labelHeight = label.element.offsetHeight || 34;
+      const inView = anchor.z >= -1 && anchor.z <= 1
+        && anchor.x >= -50 && anchor.x <= width + 50
+        && anchor.y >= 20 && anchor.y <= height + 20;
+      const hiddenByFocus = viewMode !== 'full' && Boolean(selectedRoomId) && label.room.id !== selectedRoomId;
+      label.element.hidden = !inView || hiddenByFocus;
+      label.element.style.width = `${labelWidth}px`;
+      label.element.style.left = `${anchor.x}px`;
+      label.element.style.top = `${anchor.y}px`;
+      if (!label.element.hidden) {
+        visibleRects.push({
+          left: anchor.x - labelWidth / 2,
+          right: anchor.x + labelWidth / 2,
+          top: anchor.y - labelHeight,
+          bottom: anchor.y,
+        });
+      }
+    }
+    const lobby = projectToViewport(new Vector3(-1.7, FLOOR_Y + 0.9, -1.35), camera, width, height);
+    const lobbyWidth = lobbyLabel.offsetWidth || 120;
+    const lobbyHeight = lobbyLabel.offsetHeight || 20;
+    const lobbyRect = {
+      left: lobby.x - lobbyWidth / 2,
+      right: lobby.x + lobbyWidth / 2,
+      top: lobby.y - lobbyHeight / 2,
+      bottom: lobby.y + lobbyHeight / 2,
+    };
+    const overlapsRoomLabel = visibleRects.some((rect) => rectanglesOverlap(lobbyRect, rect, 4));
+    lobbyLabel.hidden = viewMode !== 'full' || overlapsRoomLabel || lobby.z < -1 || lobby.z > 1
+      || lobbyRect.left < 0 || lobbyRect.right > width || lobbyRect.top < 0 || lobbyRect.bottom > height;
+    if (!lobbyLabel.hidden) {
+      lobbyLabel.style.left = `${lobby.x}px`;
+      lobbyLabel.style.top = `${lobby.y}px`;
+    }
+  }
+
+  function moveCamera(
+    toTarget: Vector3,
+    toZoom: number,
+    mode: 'full' | 'room' | 'agent' | 'spot',
+    immediate = false,
+  ): void {
+    viewMode = mode;
     if (immediate || reducedMotion) {
-      camera.position.copy(toPosition);
-      controls.target.copy(toTarget);
-      camera.zoom = toZoom;
-      camera.updateProjectionMatrix();
-      controls.update();
+      setCamera(toTarget, toZoom);
       tween = null;
-      controls.enabled = true;
       return;
     }
     tween = {
-      fromPosition: camera.position.clone(),
-      toPosition,
-      fromTarget: controls.target.clone(),
-      toTarget,
+      fromTarget: cameraTarget.clone(),
+      toTarget: toTarget.clone(),
       fromZoom: camera.zoom,
       toZoom,
       startedAt: performance.now(),
-      duration: 820,
+      duration: 760,
     };
-    controls.enabled = false;
   }
 
   function resetCamera(): void {
-    const target = new Vector3(0, 0.45, 0);
-    moveCamera(target, target.clone().add(DEFAULT_OFFSET), baseZoom);
+    setSelectedRoom(null);
+    moveCamera(cameraFrame.target.clone(), cameraFrame.zoom, 'full');
   }
 
   function focusRoom(roomId: string | null): void {
@@ -637,9 +728,8 @@ export function createOfficeScene(options: OfficeSceneOptions): OfficeSceneContr
     if (!roomId) { resetCamera(); return; }
     const room = ROOM_3D_BY_ID[roomId];
     if (!room) { resetCamera(); return; }
-    const target = new Vector3(room.centerX, 0.6, room.centerZ + (room.row === 'north' ? 0.8 : -0.8));
-    const offset = DEFAULT_OFFSET.clone().multiplyScalar(0.82);
-    moveCamera(target, target.clone().add(offset), Math.min(baseZoom * 1.78, 2.7));
+    const target = new Vector3(room.centerX, 0.65, room.centerZ + (room.row === 'north' ? 0.55 : -0.55));
+    moveCamera(target, cameraFrame.roomZoom, 'room');
   }
 
   function focusAgent(agentId: string | null): void {
@@ -648,18 +738,17 @@ export function createOfficeScene(options: OfficeSceneOptions): OfficeSceneContr
     const record = robots.get(agentId);
     if (!record) return;
     setSelectedRoom(record.roomId);
-    const target = record.group.position.clone().add(new Vector3(0, 0.65, 0));
-    const offset = DEFAULT_OFFSET.clone().multiplyScalar(0.58);
-    moveCamera(target, target.clone().add(offset), Math.min(baseZoom * 2.2, 3.2));
+    const target = record.group.position.clone().add(new Vector3(0, 0.72, 0));
+    moveCamera(target, cameraFrame.agentZoom, 'agent');
   }
 
   function focusSpot(spotId: string): void {
     const spot = ROOM_SPOTS.find((candidate) => candidate.id === spotId);
     if (!spot) return;
     const point = spotToWorld(spot);
-    const target = new Vector3(point.x, 0.65, point.z);
+    const target = new Vector3(point.x, 0.72, point.z);
     setSelectedRoom(spot.roomId);
-    moveCamera(target, target.clone().add(DEFAULT_OFFSET.clone().multiplyScalar(0.62)), Math.min(baseZoom * 2.05, 3.05));
+    moveCamera(target, cameraFrame.spotZoom, 'spot');
   }
 
   function effectiveState(agent: AgentParticipant): ReturnType<typeof agentVisualState> {
@@ -746,29 +835,24 @@ export function createOfficeScene(options: OfficeSceneOptions): OfficeSceneContr
   setSelectedRoom(selectedRoomId);
   setAgents(currentAgents, currentTasks, options.locations, options.commandAgentIds);
 
-  function computeBaseZoom(aspect: number): number {
-    if (aspect >= 1.5) return 1;
-    if (aspect >= 1.15) return 0.88;
-    if (aspect >= 0.85) return 0.68;
-    return 0.56;
-  }
-
   function resize(): void {
     const width = Math.max(1, container.clientWidth);
     const height = Math.max(1, container.clientHeight);
     const aspect = width / height;
-    const nextBase = computeBaseZoom(aspect);
-    const ratio = nextBase / baseZoom;
-    baseZoom = nextBase;
+    const previousFrameZoom = cameraFrame.zoom;
+    cameraFrame = computeArchitecturalFrame(aspect);
     renderer.setSize(width, height, false);
-    camera.left = -FRUSTUM_HEIGHT * aspect / 2;
-    camera.right = FRUSTUM_HEIGHT * aspect / 2;
-    camera.top = FRUSTUM_HEIGHT / 2;
-    camera.bottom = -FRUSTUM_HEIGHT / 2;
-    camera.zoom = MathUtils.clamp(camera.zoom * ratio, baseZoom * 0.6, baseZoom * 3.4);
-    camera.updateProjectionMatrix();
-    controls.minZoom = baseZoom * 0.6;
-    controls.maxZoom = baseZoom * 3.4;
+    camera.left = cameraFrame.left;
+    camera.right = cameraFrame.right;
+    camera.top = cameraFrame.top;
+    camera.bottom = cameraFrame.bottom;
+    const ratio = cameraFrame.zoom / previousFrameZoom;
+    const nextZoom = viewMode === 'full'
+      ? cameraFrame.zoom
+      : MathUtils.clamp(camera.zoom * ratio, 0.45, cameraFrame.agentZoom);
+    const nextTarget = viewMode === 'full' ? cameraFrame.target.clone() : cameraTarget.clone();
+    setCamera(nextTarget, nextZoom);
+    updateLabels();
   }
 
   resize();
@@ -778,6 +862,14 @@ export function createOfficeScene(options: OfficeSceneOptions): OfficeSceneContr
   const raycaster = new Raycaster();
   const pointer = new Vector2();
   let pointerStart: { x: number; y: number; id: number } | null = null;
+  function isIgnoredForPicking(object: Object3D): boolean {
+    let node: Object3D | null = object;
+    while (node) {
+      if (node.userData.ignoreRaycast === true) return true;
+      node = node.parent;
+    }
+    return false;
+  }
   function onPointerDown(event: PointerEvent): void {
     if (event.button !== 0) return;
     pointerStart = { x: event.clientX, y: event.clientY, id: event.pointerId };
@@ -792,6 +884,7 @@ export function createOfficeScene(options: OfficeSceneOptions): OfficeSceneContr
     raycaster.setFromCamera(pointer, camera);
     const hits = raycaster.intersectObjects(scene.children, true);
     for (const hit of hits) {
+      if (isIgnoredForPicking(hit.object)) continue;
       let node: Object3D | null = hit.object;
       let fallbackRoomId: string | null = null;
       while (node) {
@@ -838,7 +931,11 @@ export function createOfficeScene(options: OfficeSceneOptions): OfficeSceneContr
       if (fallbackRoomId) {
         focusRoom(fallbackRoomId);
         onRoom(fallbackRoomId);
-        onInspect({ kind: 'department', id: fallbackRoomId, roomId: fallbackRoomId });
+        if (fallbackRoomId === 'zone-lounge') {
+          onInspect({ kind: 'meeting', id: `${fallbackRoomId}-meeting`, roomId: fallbackRoomId, label: 'Meeting Room' });
+        } else {
+          onInspect({ kind: 'department', id: fallbackRoomId, roomId: fallbackRoomId });
+        }
         return;
       }
     }
@@ -854,18 +951,16 @@ export function createOfficeScene(options: OfficeSceneOptions): OfficeSceneContr
     if (tween) {
       const progress = MathUtils.clamp((now - tween.startedAt) / tween.duration, 0, 1);
       const eased = 1 - Math.pow(1 - progress, 3);
-      camera.position.lerpVectors(tween.fromPosition, tween.toPosition, eased);
-      controls.target.lerpVectors(tween.fromTarget, tween.toTarget, eased);
-      camera.zoom = MathUtils.lerp(tween.fromZoom, tween.toZoom, eased);
-      camera.updateProjectionMatrix();
-      if (progress >= 1) { tween = null; controls.enabled = true; }
+      const target = new Vector3().lerpVectors(tween.fromTarget, tween.toTarget, eased);
+      setCamera(target, MathUtils.lerp(tween.fromZoom, tween.toZoom, eased));
+      if (progress >= 1) tween = null;
     }
-    controls.update();
+    camera.updateMatrixWorld();
+    updateLabels();
     for (const record of robots.values()) {
       const agent = robotAgents.get(record.agentId);
       if (agent) factory.update(record, effectiveState(agent), elapsed, reducedMotion);
     }
-    for (const billboard of billboards) billboard.quaternion.copy(camera.quaternion);
     if (selectedAgentId) {
       const record = robots.get(selectedAgentId);
       if (record) {
@@ -896,7 +991,8 @@ export function createOfficeScene(options: OfficeSceneOptions): OfficeSceneContr
       resizeObserver.disconnect();
       renderer.domElement.removeEventListener('pointerdown', onPointerDown);
       renderer.domElement.removeEventListener('pointerup', onPointerUp);
-      controls.dispose();
+      for (const label of roomLabels) label.element.removeEventListener('click', label.onSelect);
+      labelLayer.remove();
       for (const record of robots.values()) record.dispose();
       robots.clear();
       factory.dispose();
