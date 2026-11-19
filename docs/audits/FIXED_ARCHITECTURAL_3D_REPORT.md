@@ -49,12 +49,12 @@ The existing SVG office and floor-plan fallbacks, room/agent/object inspectors, 
 - `api-server/npm run typecheck` — passed; `api-server/npm test` — **24 passed, 1 skipped, 0 failed** (the pre-existing MongoDB integration skip).
 - `git diff --check` — passed.
 - Existing Vite dev server remained running on `0.0.0.0:5173`; HMR logs showed no compile errors. Local HTTP requests with the preview `Origin` returned `200` for `/`, the changed React modules, all changed Three.js modules, and the changed CSS.
-- GitHub checks on the prior PR commit showed `Vercel` and `Vercel Preview Comments` passing before this change was pushed. Immediately after the code push, `Vercel Preview Comments` passed while `Vercel` was pending; the final check after the follow-up docs push showed both `Vercel` and `Vercel Preview Comments` passing. These are CI statuses, not visual QA results: no browser screenshot, WebGL interaction, or rendered-frame comparison was performed.
+- GitHub check status is transient across successive pushes: `Vercel` and `Vercel Preview Comments` passed before this change was pushed, both passed at one check after the code push, and another post-docs check showed `Vercel Preview Comments` passing while `Vercel` was pending. These are CI statuses, not visual QA results: no browser screenshot, WebGL interaction, or rendered-frame comparison was performed.
 
 ## Honest limitations / not validated
 
 - No real browser, GPU/WebGL interaction, screenshot, pixel comparison, measured FPS, load test, or mobile-device QA was performed; browser binaries and Playwright/Puppeteer are unavailable in this sandbox.
 - The desktop viewport checks are **structural projection/typography tests**, not screenshots from a rendered WebGL frame. The user-facing acceptance criterion — that layout, main room names, and robots are clearly recognizable/readable at the default Campus view without zooming — is implemented and structurally checked, but has **not** been visually confirmed in an actual desktop browser.
 - No claim of pixel-perfect fidelity to the approved robot image is made. The exact reference remains a specification only.
-- The passing Vercel checks are reported as CI status only; they do not substitute for visual acceptance, GPU/WebGL interaction, or rendered-frame readability QA.
+- Passing or pending Vercel checks are reported as CI status only; they do not substitute for visual acceptance, GPU/WebGL interaction, or rendered-frame readability QA.
 - Existing product limitations remain: backend zones/seed roster are smaller than the client’s ten-room presentation, one MongoDB integration test is skipped, and later roadmap phases (dynamic departments, full GM orchestration, approvals, provider/BYOK usage, universal integrations, memory/reporting, subscriptions/admin, and production hardening) are not implemented here.
