@@ -82,25 +82,25 @@ function hashPhase(value: string): number {
 
 function makeGeometries(): GeometryCache {
   return {
-    head: new RoundedBoxGeometry(0.64, 0.56, 0.52, 7, 0.18),
-    visor: new RoundedBoxGeometry(0.5, 0.3, 0.07, 6, 0.1),
-    torso: new RoundedBoxGeometry(0.52, 0.62, 0.36, 5, 0.11),
-    chest: new RoundedBoxGeometry(0.26, 0.17, 0.035, 3, 0.045),
-    foot: new RoundedBoxGeometry(0.2, 0.1, 0.29, 3, 0.045),
-    tablet: new RoundedBoxGeometry(0.3, 0.42, 0.035, 3, 0.035),
-    tabletEdge: new RoundedBoxGeometry(0.34, 0.46, 0.018, 3, 0.04),
-    eye: new SphereGeometry(0.062, 22, 16),
-    joint: new SphereGeometry(0.088, 18, 14),
-    hand: new SphereGeometry(0.078, 18, 14),
-    arm: new CylinderGeometry(0.067, 0.074, 0.32, 18),
-    forearm: new CylinderGeometry(0.06, 0.067, 0.3, 18),
-    leg: new CylinderGeometry(0.072, 0.08, 0.28, 18),
-    neck: new CylinderGeometry(0.075, 0.085, 0.16, 18),
-    antenna: new CylinderGeometry(0.018, 0.022, 0.22, 14),
-    ear: new CylinderGeometry(0.085, 0.085, 0.055, 24),
-    earRing: new TorusGeometry(0.071, 0.018, 10, 28),
-    mouth: new BoxGeometry(0.16, 0.028, 0.022),
-    antennaTip: new SphereGeometry(0.052, 18, 14),
+    head: new RoundedBoxGeometry(0.72, 0.62, 0.58, 8, 0.2),
+    visor: new RoundedBoxGeometry(0.58, 0.36, 0.08, 7, 0.12),
+    torso: new RoundedBoxGeometry(0.58, 0.66, 0.4, 6, 0.12),
+    chest: new RoundedBoxGeometry(0.3, 0.2, 0.04, 4, 0.05),
+    foot: new RoundedBoxGeometry(0.22, 0.11, 0.32, 4, 0.05),
+    tablet: new RoundedBoxGeometry(0.34, 0.46, 0.04, 4, 0.04),
+    tabletEdge: new RoundedBoxGeometry(0.38, 0.5, 0.02, 4, 0.045),
+    eye: new SphereGeometry(0.075, 32, 24),
+    joint: new SphereGeometry(0.1, 24, 18),
+    hand: new SphereGeometry(0.088, 24, 18),
+    arm: new CylinderGeometry(0.075, 0.082, 0.34, 22),
+    forearm: new CylinderGeometry(0.068, 0.075, 0.32, 22),
+    leg: new CylinderGeometry(0.08, 0.088, 0.3, 22),
+    neck: new CylinderGeometry(0.085, 0.095, 0.18, 22),
+    antenna: new CylinderGeometry(0.02, 0.024, 0.24, 16),
+    ear: new CylinderGeometry(0.095, 0.095, 0.06, 28),
+    earRing: new TorusGeometry(0.08, 0.02, 12, 32),
+    mouth: new BoxGeometry(0.18, 0.03, 0.024),
+    antennaTip: new SphereGeometry(0.058, 20, 16),
   };
 }
 
@@ -172,13 +172,17 @@ export function createRobotFactory(palette: OfficePalette) {
     mouthMaterial.transparent = true;
 
     const head = new Group();
-    head.position.set(0, 1.29, 0);
+    head.position.set(0, 1.32, 0);
     put(head, geo.head, palette.shell, 0, 0, 0);
-    put(head, geo.visor, palette.dark, 0, 0.015, 0.285);
-    const leftEye = put(head, geo.eye, eyeMaterial, -0.125, 0.035, 0.327);
-    const rightEye = put(head, geo.eye, eyeMaterial, 0.125, 0.035, 0.327);
-    const mouth = put(head, geo.mouth, mouthMaterial, 0, -0.085, 0.328);
+    put(head, geo.visor, palette.robotVisor, 0, 0.02, 0.31);
+    const leftEye = put(head, geo.eye, eyeMaterial, -0.14, 0.045, 0.36);
+    leftEye.scale.set(1, 1.25, 0.45);
+    const rightEye = put(head, geo.eye, eyeMaterial, 0.14, 0.045, 0.36);
+    rightEye.scale.set(1, 1.25, 0.45);
+    const mouth = put(head, geo.mouth, mouthMaterial, 0, -0.09, 0.355);
     mouth.visible = false;
+    put(head, geo.antenna, palette.robotJoint, 0.3, 0.42, 0).rotation.z = -0.25;
+    put(head, geo.antennaTip, palette.orange, 0.36, 0.53, 0);
     const leftEar = put(head, geo.ear, palette.robotJoint, -0.34, 0, 0);
     leftEar.rotation.z = Math.PI / 2;
     const rightEar = put(head, geo.ear, palette.robotJoint, 0.34, 0, 0);
@@ -190,9 +194,14 @@ export function createRobotFactory(palette: OfficePalette) {
     put(head, geo.antennaTip, palette.orange, 0.39, 0.17, 0).scale.setScalar(0.38);
     group.add(head);
 
-    put(group, geo.neck, palette.robotBlue, 0, 0.94, 0);
-    put(group, geo.torso, palette.robotShell, 0, 0.62, 0);
-    const chest = put(group, geo.chest, palette.robotBlue, 0, 0.65, 0.195);
+    put(group, geo.neck, palette.robotBlue, 0, 0.97, 0);
+    const collar = put(group, geo.earRing, palette.robotBlue, 0, 1.02, 0);
+    collar.rotation.x = Math.PI / 2;
+    collar.scale.setScalar(1.15);
+    put(group, geo.torso, palette.robotShell, 0, 0.64, 0);
+    const chest = put(group, geo.chest, palette.robotBlue, 0, 0.68, 0.215);
+    put(group, geo.mouth, palette.robotCyan, 0, 0.68, 0.24).scale.set(0.9, 0.7, 0.5);
+    put(group, geo.tablet, palette.robotDark, 0, 0.64, -0.22);
     put(group, geo.joint, palette.robotJoint, -0.26, 0.45, 0);
     put(group, geo.joint, palette.robotJoint, 0.26, 0.45, 0);
     const leftArm = makeArm(group, -1, geo, palette);

@@ -67,34 +67,31 @@ test('the exact seven-room reference composition replaces the ten-label diamond 
   match(campus, /onVisit\(null\)/);
 });
 
-test('real DOM nameplates, WORA medallion text and high-resolution materials replace baked signs', () => {
+test('real extruded 3D plaques, WORA medallion text and high-resolution materials replace DOM tags', () => {
   const scene = read('three/officeScene.ts');
   const materials = read('three/materials.ts');
   const css = read('styles/company-frame.css');
 
-  match(scene, /labelLayer\.className = 'office3d-labels'/);
-  match(scene, /document\.createElement\('button'\)/);
-  match(scene, /title\.textContent = definition\.label/);
-  match(scene, /subtitle\.textContent = definition\.labelAr/);
-  match(scene, /container\.appendChild\(labelLayer\)/);
-  match(scene, /iconSvg\(definition\.icon\)/);
-  match(scene, /medallionLabel\.innerHTML/);
-  match(scene, /<strong>WORA<\/strong>/);
-  match(scene, /focusRoom\(definition\.primaryLogicalRoomId\);\s*onRoom\(definition\.primaryLogicalRoomId\);/);
-  match(scene, /rectanglesOverlap\(medallionRect, rect, 3\)/);
+  match(scene, /plaqueLayer\.name = 'real-3d-room-plaques'/);
+  match(scene, /new TextGeometry\(text, \{/);
+  match(scene, /new Font\(helvetikerBold\)/);
+  match(scene, /helvetiker_bold\.typeface\.json/);
+  match(scene, /function createPlaques\(\)/);
+  match(scene, /function createMedallionText\(\)/);
+  match(scene, /makeTextGeometry\(definition\.label, textSize\)/);
+  match(scene, /makeTextGeometry\('WORA', unit\(42\)\)/);
+  match(scene, /availableWidth = plaqueWidth - iconWidth/);
+  match(scene, /plaqueMaterials\.set\(definition\.id, plaqueMaterial\)/);
+  match(scene, /scene\.add\(environmentLayer, roomLayer, robotLayer, plaqueLayer\)/);
+  ok(!scene.includes("document.createElement('button')"), 'no DOM room-label buttons');
+  ok(!scene.includes('office3d-room-label'), 'no DOM room-label class in scene');
+  ok(!scene.includes('labelLayer'), 'no DOM label layer in scene');
   for (const forbidden of ['makeSignTexture', 'makeLogoTexture', 'signMaterial', 'logoMaterial', 'fillText', 'ctx.font']) {
     ok(!materials.includes(forbidden), `no baked text path ${forbidden}`);
   }
   match(materials, /texture\.anisotropy = 16/);
   match(materials, /new MeshPhysicalMaterial\(\{\s*map: marbleTexture/s);
   match(css, /\.reference-sidebar \{/);
-  match(css, /\.office3d-medallion-label \{/);
-  match(css, /\.office3d-shell \.office3d-room-label/);
-  match(css, /\.office3d-medallion-label\[hidden\] \{ display: none !important; \}/);
-  match(css, /rotate\(var\(--label-rotation, 0deg\)\)/);
-  ok(scene.includes('rotate(${label.definition.labelRotation}deg)'));
-  match(scene, /viewportScale = width < 1600/);
-  match(scene, /sidebarSafe = width <= 1500/);
   match(css, /@media \(max-width: 1500px\)/);
 });
 
@@ -112,10 +109,17 @@ test('high-quality rendering, reference robots and connected architectural furni
     'function desk(', 'function chair(', 'function executiveDesk(', 'function conferenceTable(',
     'function screenBoard(', 'function shelf(', 'function serverRack(', 'palette.screenMaterial', 'palette.glass',
   ]) ok(scene.includes(feature), `${feature} is present`);
+  match(scene, /const robotScale = unit\(112\) \/ 1\.78;/);
+  match(scene, /const deskScale = unit\(108\) \/ 1\.42;/);
+  match(scene, /const wallHeight = unit\(132\);/);
+  match(scene, /RoomEnvironment/);
+  match(scene, /scene\.fog = new Fog/);
+  match(scene, /curtainGlass/);
   match(robot, /export const ROBOT_SCALE = 0\.72;/);
   match(robot, /group\.scale\.setScalar\(scale\)/);
   match(robot, /baseScale: scale/);
-  match(robot, /new SphereGeometry\(0\.062, 22, 16\)/);
+  match(robot, /new SphereGeometry\(0\.075, 32, 24\)/);
+  match(robot, /new RoundedBoxGeometry\(0\.72, 0\.62, 0\.58, 8, 0\.2\)/);
   match(robot, /\['offline', 'blocked', 'waiting', 'idle', 'completed'\]\.includes\(state\)/);
 });
 

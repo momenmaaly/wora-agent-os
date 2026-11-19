@@ -93,13 +93,13 @@ function textureFrom(canvas: HTMLCanvasElement, repeatX = 1, repeatY = 1): Canva
 function makeMarbleTexture(): CanvasTexture {
   const { canvas, ctx } = canvas2d(2048, 2048);
   const random = seeded(41);
-  ctx.fillStyle = '#c7bec0';
+  ctx.fillStyle = '#c4bcb4';
   ctx.fillRect(0, 0, 2048, 2048);
   for (let i = 0; i < 220; i += 1) {
     const x = random() * 2048;
     const y = random() * 2048;
     const radius = 50 + random() * 240;
-    const tint = random() > 0.55 ? '#e2d8da' : '#a79ba2';
+    const tint = random() > 0.55 ? '#e6e1dc' : '#b3aaa2';
     ctx.fillStyle = `${tint}${Math.floor(20 + random() * 30).toString(16).padStart(2, '0')}`;
     ctx.beginPath();
     ctx.ellipse(x, y, radius, radius * (0.4 + random() * 0.7), random() * Math.PI, 0, Math.PI * 2);
@@ -111,9 +111,9 @@ function makeMarbleTexture(): CanvasTexture {
       const y = random() * 2048;
       const length = 120 + random() * 620;
       ctx.strokeStyle = pass % 2 === 0
-        ? `rgba(246,240,238,${0.16 + random() * 0.28})`
-        : `rgba(65,68,82,${0.08 + random() * 0.13})`;
-      ctx.lineWidth = 0.7 + random() * (pass === 0 ? 3.4 : 1.6);
+        ? `rgba(250,247,242,${0.3 + random() * 0.4})`
+        : `rgba(52,55,68,${0.18 + random() * 0.22})`;
+      ctx.lineWidth = 1.2 + random() * (pass === 0 ? 5.2 : 2.6);
       ctx.beginPath();
       ctx.moveTo(x, y);
       ctx.bezierCurveTo(x + length * 0.3, y + random() * 90 - 45, x + length * 0.65, y + random() * 140 - 70, x + length, y + random() * 100 - 50);
@@ -239,7 +239,7 @@ export function createOfficePalette(): OfficePalette {
     clearcoat: 0.78, clearcoatRoughness: 0.18, envMapIntensity: 1.1,
   }));
   const marbleDark = trackMaterial(new MeshPhysicalMaterial({
-    map: marbleTexture, color: '#8d858b', roughness: 0.34, metalness: 0.03, clearcoat: 0.6,
+    map: marbleTexture, color: '#9a948e', roughness: 0.34, metalness: 0.03, clearcoat: 0.6,
   }));
   const floorWood = trackMaterial(new MeshStandardMaterial({ map: woodTexture, color: '#9d7c5e', roughness: 0.5, metalness: 0.02 }));
   const floorEdge = trackMaterial(new MeshStandardMaterial({ color: '#273744', roughness: 0.35, metalness: 0.62 }));
@@ -262,8 +262,8 @@ export function createOfficePalette(): OfficePalette {
   const orange = trackMaterial(new MeshStandardMaterial({ color: '#e7a24a', roughness: 0.32, metalness: 0.48 }));
   const purple = trackMaterial(new MeshStandardMaterial({ color: '#6e4fa8', roughness: 0.36, metalness: 0.3 }));
   const green = trackMaterial(new MeshStandardMaterial({ color: '#2c8b62', roughness: 0.72 }));
-  const leaf = trackMaterial(new MeshStandardMaterial({ color: '#3d9c6d', roughness: 0.82, flatShading: true }));
-  const leafDark = trackMaterial(new MeshStandardMaterial({ color: '#236b50', roughness: 0.88, flatShading: true }));
+  const leaf = trackMaterial(new MeshStandardMaterial({ color: '#2f7d57', roughness: 0.82, flatShading: true }));
+  const leafDark = trackMaterial(new MeshStandardMaterial({ color: '#1f5c40', roughness: 0.88, flatShading: true }));
   const soil = trackMaterial(new MeshStandardMaterial({ color: '#3a3028', roughness: 1 }));
   const sofa = trackMaterial(new MeshStandardMaterial({ color: '#4b4a50', roughness: 0.92 }));
   const sofaBrown = trackMaterial(new MeshStandardMaterial({ color: '#8a5a3b', roughness: 0.88 }));

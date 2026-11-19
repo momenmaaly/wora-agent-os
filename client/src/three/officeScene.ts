@@ -1,12 +1,17 @@
 import {
   ACESFilmicToneMapping, AmbientLight, BoxGeometry, BufferGeometry, CircleGeometry, Color,
   CylinderGeometry, DirectionalLight, DoubleSide, Float32BufferAttribute, Group, HemisphereLight,
-  IcosahedronGeometry, MathUtils, Mesh, MeshBasicMaterial, MeshPhysicalMaterial, MeshStandardMaterial,
+  Fog, IcosahedronGeometry, MathUtils, Mesh, MeshBasicMaterial, MeshPhysicalMaterial, MeshStandardMaterial,
   Object3D, PCFSoftShadowMap, PerspectiveCamera, PlaneGeometry, PointLight, Raycaster, Scene,
   SphereGeometry, SRGBColorSpace, TorusGeometry, Vector2, Vector3, WebGLRenderer,
   type Material, type Texture,
 } from 'three';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
+import { PMREMGenerator } from 'three';
+import { TextGeometry } from 'three/examples/jsm/geometries/TextGeometry.js';
+import { Font } from 'three/examples/jsm/loaders/FontLoader.js';
+import helvetikerBold from 'three/examples/fonts/helvetiker_bold.typeface.json';
 import type { AgentParticipant, SharedWorkspaceEntry } from '../types.js';
 import {
   ROOM_3D_BY_ID, ROOM_3D_LAYOUTS, ROOM_SPOTS, agentVisualState,
@@ -17,12 +22,11 @@ import { createRobotFactory, type RobotRecord } from './robot.js';
 import {
   REFERENCE_CAMERA_TARGET, REFERENCE_DESK_POINTS, REFERENCE_DISPLAY_POINTS, REFERENCE_FEATURE_POINTS,
   REFERENCE_PLANT_POINTS, REFERENCE_RAIL_POINTS, REFERENCE_ROBOT_POINTS, REFERENCE_ROOMS,
-  REFERENCE_VIEWPORT, REFERENCE_FLOOR_Y, REFERENCE_LABEL_HEIGHT,
+  REFERENCE_FLOOR_Y, REFERENCE_LABEL_HEIGHT,
   applyReferenceCamera, buildReferenceRooms, logicalRoomsForVisual, makeReferenceCamera,
   screenToFloor, updateReferenceCameraFov, visualRoomForLogical, worldUnitsPerPixel,
   type ReferenceIcon, type ReferenceRoomWorld, type ScreenPoint,
 } from './referenceLayout.js';
-import { projectToViewport, rectanglesOverlap } from './architecture.js';
 
 const FLOOR_Y = REFERENCE_FLOOR_Y;
 
@@ -76,24 +80,6 @@ function add(
   return mesh;
 }
 
-function iconSvg(icon: ReferenceIcon): SVGSVGElement {
-  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  svg.setAttribute('viewBox', '0 0 24 24');
-  svg.setAttribute('aria-hidden', 'true');
-  svg.setAttribute('class', 'office3d-label-icon');
-  const paths: Record<ReferenceIcon, string> = {
-    megaphone: '<path d="M3 11v2a2 2 0 0 0 2 2h2l7 4V5L7 9H5a2 2 0 0 0-2 2Z" fill="currentColor"/><path d="m16 9 4-2v10l-4-2" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M7 15v4h3v-2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>',
-    crown: '<path d="m3 8 4 4 5-7 5 7 4-4-2 10H5L3 8Z" fill="currentColor"/><rect x="5" y="19" width="14" height="2" rx="1" fill="currentColor"/>',
-    code: '<path d="m9 7-5 5 5 5M15 7l5 5-5 5M13 5l-2 14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>',
-    palette: '<path d="M12 3a9 9 0 0 0 0 18h1.5a2 2 0 0 0 1.4-3.4 1.6 1.6 0 0 1 1.2-2.6H18a3 3 0 0 0 3-3A9 9 0 0 0 12 3Z" fill="currentColor"/><circle cx="7.5" cy="11" r="1.4" fill="#173440"/><circle cx="10" cy="7.5" r="1.4" fill="#173440"/><circle cx="15" cy="8" r="1.4" fill="#173440"/><circle cx="17" cy="12" r="1.4" fill="#173440"/>',
-    flask: '<path d="M9 3h6M10 3v6L5 19a1 1 0 0 0 .9 1.5h12.2a1 1 0 0 0 .9-1.5L14 9V3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M7.5 15h9l1.5 3.5a1 1 0 0 1-.9 1.5H7a1 1 0 0 1-.9-1.5L7.5 15Z" fill="currentColor"/>',
-    bars: '<rect x="3" y="14" width="4" height="7" rx="1" fill="currentColor"/><rect x="10" y="9" width="4" height="12" rx="1" fill="currentColor"/><rect x="17" y="4" width="4" height="17" rx="1" fill="currentColor"/>',
-    shield: '<path d="M12 2 4 5v6c0 5 3.4 9 8 11 4.6-2 8-6 8-11V5l-8-3Z" fill="currentColor"/><path d="m8.5 12 2.5 2.5 5-5.5" fill="none" stroke="#173440" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
-  };
-  svg.innerHTML = paths[icon];
-  return svg;
-}
-
 export interface OfficeSceneOptions {
   container: HTMLElement;
   agents: AgentParticipant[];
@@ -133,15 +119,6 @@ interface CameraTween {
   toScale: number;
   startedAt: number;
   duration: number;
-}
-
-interface RoomLabel {
-  visualId: string;
-  logicalRoomId: string;
-  definition: (typeof REFERENCE_ROOMS)[number];
-  element: HTMLButtonElement;
-  anchor: Vector3;
-  onSelect: () => void;
 }
 
 interface RobotVisual {
@@ -202,7 +179,7 @@ export function createOfficeScene(options: OfficeSceneOptions): OfficeSceneContr
     extraTextures.push(groundMap);
   }
   const groundMaterial = extraMaterial(new MeshPhysicalMaterial({
-    map: groundMap, color: '#d3c4c7', roughness: 0.3, metalness: 0.02, clearcoat: 0.7, clearcoatRoughness: 0.2,
+    map: groundMap, color: '#c2b9b2', roughness: 0.3, metalness: 0.02, clearcoat: 0.7, clearcoatRoughness: 0.2,
   }));
   const roomMap = groundMap?.clone();
   if (roomMap) {
@@ -211,7 +188,7 @@ export function createOfficeScene(options: OfficeSceneOptions): OfficeSceneContr
     extraTextures.push(roomMap);
   }
   const roomMarbleMaterial = extraMaterial(new MeshPhysicalMaterial({
-    map: roomMap, color: '#c8b8bd', roughness: 0.32, metalness: 0.02, clearcoat: 0.62, clearcoatRoughness: 0.22,
+    map: roomMap, color: '#c9c0b8', roughness: 0.32, metalness: 0.02, clearcoat: 0.62, clearcoatRoughness: 0.22,
   }));
   const lowerWallMaterial = extraMaterial(new MeshStandardMaterial({ color: '#c8c8c9', roughness: 0.68, metalness: 0.02 }));
   const accentWallMaterial = extraMaterial(new MeshStandardMaterial({ color: '#60717e', roughness: 0.5, metalness: 0.16 }));
@@ -228,10 +205,10 @@ export function createOfficeScene(options: OfficeSceneOptions): OfficeSceneContr
 
   const renderer = new WebGLRenderer({ antialias: quality === 'high', alpha: false, powerPreference: 'high-performance' });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, quality === 'high' ? 2 : 1.25));
-  renderer.setClearColor(new Color('#d9e2e6'), 1);
+  renderer.setClearColor(new Color('#cfe4ee'), 1);
   renderer.outputColorSpace = SRGBColorSpace;
   renderer.toneMapping = ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.16;
+  renderer.toneMappingExposure = 1.12;
   renderer.shadowMap.enabled = quality === 'high';
   renderer.shadowMap.type = PCFSoftShadowMap;
   renderer.domElement.style.display = 'block';
@@ -244,7 +221,11 @@ export function createOfficeScene(options: OfficeSceneOptions): OfficeSceneContr
   container.appendChild(renderer.domElement);
 
   const scene = new Scene();
-  scene.background = new Color('#d9e2e6');
+  const pmrem = new PMREMGenerator(renderer);
+  scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+  pmrem.dispose();
+  scene.background = new Color('#cfe4ee');
+  scene.fog = new Fog(new Color('#cfe4ee'), 55, 130);
 
   const initialWidth = Math.max(1, container.clientWidth);
   const initialHeight = Math.max(1, container.clientHeight);
@@ -252,12 +233,12 @@ export function createOfficeScene(options: OfficeSceneOptions): OfficeSceneContr
   const camera = makeReferenceCamera(initialAspect);
   const worldPerPixel = worldUnitsPerPixel(camera, initialWidth, initialHeight);
   const unit = (pixels: number): number => pixels * worldPerPixel;
-  const wallHeight = unit(104);
-  const robotScale = unit(74) / 1.78;
-  const deskScale = unit(76) / 1.42;
-  const plantScale = unit(46) / 2;
-  const screenWidth = unit(124);
-  const screenHeight = unit(70);
+  const wallHeight = unit(132);
+  const robotScale = unit(112) / 1.78;
+  const deskScale = unit(108) / 1.42;
+  const plantScale = unit(62) / 2;
+  const screenWidth = unit(152);
+  const screenHeight = unit(88);
 
   let cameraTarget = REFERENCE_CAMERA_TARGET.clone();
   let cameraScale = 1;
@@ -268,63 +249,34 @@ export function createOfficeScene(options: OfficeSceneOptions): OfficeSceneContr
     applyReferenceCamera(camera, cameraTarget, cameraScale);
   }
 
-  const labelLayer = document.createElement('div');
-  labelLayer.className = 'office3d-labels';
-  labelLayer.setAttribute('aria-label', 'Exact-reference office room labels');
-  const medallionLabel = document.createElement('div');
-  medallionLabel.className = 'office3d-medallion-label';
-  medallionLabel.dir = 'ltr';
-  medallionLabel.setAttribute('aria-hidden', 'true');
-  medallionLabel.innerHTML = '<svg viewBox="0 0 120 58" aria-hidden="true"><path d="M8 17c17-18 35-16 48 0 11-10 22-10 31 0 8 9 5 22-5 28-12 7-24 1-33-8-10 11-23 15-35 7-10-7-13-20-6-27Z" fill="#1fc3e0"/><path d="M60 17c-13-16-31-18-48 0-7 8-4 20 6 27 12 8 25 4 35-7 9 9 21 15 33 8 10-6 13-19 5-28-9-10-20-10-31 0Z" fill="#168bd7" opacity=".42"/></svg><strong>WORA</strong>';
-  labelLayer.appendChild(medallionLabel);
-
   const referenceRooms = buildReferenceRooms(camera, initialWidth, initialHeight);
   const visualRooms = new Map(referenceRooms.map((room) => [room.definition.id, room] as const));
-  const roomLabels: RoomLabel[] = referenceRooms.map((room) => {
-    const definition = room.definition;
-    const element = document.createElement('button');
-    element.type = 'button';
-    element.className = 'office3d-room-label';
-    element.dataset.roomId = definition.id;
-    element.dataset.logicalRoomId = definition.primaryLogicalRoomId;
-    element.dir = 'ltr';
-    element.style.width = `${definition.labelWidth}px`;
-    element.style.setProperty('--label-rotation', `${definition.labelRotation}deg`);
-    element.setAttribute('aria-label', `${definition.label} — ${definition.labelAr}`);
-    const title = document.createElement('strong');
-    title.textContent = definition.label;
-    const subtitle = document.createElement('small');
-    subtitle.dir = 'rtl';
-    subtitle.setAttribute('aria-hidden', 'true');
-    subtitle.textContent = definition.labelAr;
-    element.append(iconSvg(definition.icon), title, subtitle);
-    const onSelect = () => {
-      focusRoom(definition.primaryLogicalRoomId);
-      onRoom(definition.primaryLogicalRoomId);
-      onInspect({
-        kind: 'department', id: definition.primaryLogicalRoomId,
-        roomId: definition.primaryLogicalRoomId, label: definition.label,
-      });
-    };
-    element.addEventListener('click', onSelect);
-    labelLayer.appendChild(element);
-    return {
-      visualId: definition.id,
-      logicalRoomId: definition.primaryLogicalRoomId,
-      definition,
-      element,
-      anchor: room.labelPoint,
-      onSelect,
-    };
-  });
-  container.appendChild(labelLayer);
+  const plaqueLayer = new Group();
+  plaqueLayer.name = 'real-3d-room-plaques';
+  const plaqueMaterials = new Map<string, MeshStandardMaterial>();
+  const plaqueTextMaterial = extraMaterial(new MeshStandardMaterial({
+    color: '#f4fbff', roughness: 0.32, metalness: 0.08, emissive: '#22384a', emissiveIntensity: 0.35,
+  }));
+  const plaqueIconMaterial = extraMaterial(new MeshStandardMaterial({
+    color: '#2bd5ec', roughness: 0.3, metalness: 0.2, emissive: '#0b5f73', emissiveIntensity: 0.7,
+  }));
+  const plaqueGoldMaterial = extraMaterial(new MeshStandardMaterial({
+    color: '#f2c44d', roughness: 0.3, metalness: 0.35, emissive: '#6b4d08', emissiveIntensity: 0.55,
+  }));
+  const medallionTextMaterial = extraMaterial(new MeshStandardMaterial({
+    color: '#1a2733', roughness: 0.42, metalness: 0.15,
+  }));
+  const medallionMarkMaterial = extraMaterial(new MeshStandardMaterial({
+    color: '#1fc3e0', roughness: 0.3, metalness: 0.1, emissive: '#0a5f73', emissiveIntensity: 0.5,
+  }));
+  const roomFont = new Font(helvetikerBold);
 
   const environmentLayer = new Group();
   const roomLayer = new Group();
   const robotLayer = new Group();
   environmentLayer.name = 'grounded-reference-environment';
   environmentLayer.userData.ignoreRaycast = true;
-  scene.add(environmentLayer, roomLayer, robotLayer);
+  scene.add(environmentLayer, roomLayer, robotLayer, plaqueLayer);
 
   const roomHighlights = new Map<string, Mesh>();
   const spotPositions = new Map<string, Vector3>();
@@ -706,9 +658,49 @@ export function createOfficeScene(options: OfficeSceneOptions): OfficeSceneContr
     add(environmentLayer, cache.plane(120, 120), groundMaterial, {
       y: FLOOR_Y - unit(3), rx: -Math.PI / 2, cast: false, receive: true,
     });
+    // Building slab edge so the office reads as a real floor plate, not an island.
+    const slabEdge = extraMaterial(new MeshStandardMaterial({ color: '#8d9296', roughness: 0.6, metalness: 0.2 }));
+    add(environmentLayer, cache.box(120, unit(10), unit(6)), slabEdge, {
+      y: FLOOR_Y - unit(8), z: unit(560), cast: false, receive: true,
+    });
+    // Perimeter glass curtain wall with mullions and exterior greenery/buildings.
+    const curtainGlass = extraMaterial(new MeshPhysicalMaterial({
+      color: '#a8c8d8', transparent: true, opacity: 0.12, roughness: 0.06, metalness: 0.05,
+      clearcoat: 1, clearcoatRoughness: 0.05, side: DoubleSide, depthWrite: false, envMapIntensity: 1.3,
+    }));
+    const curtainFrame = extraMaterial(new MeshStandardMaterial({ color: '#3d5266', roughness: 0.35, metalness: 0.7 }));
+    const backLeft = atScreen([230, 120]);
+    const backRight = atScreen([1450, 120]);
+    const backEdge = edgePlacement(backLeft, backRight);
+    add(environmentLayer, cache.box(backEdge.length, unit(190), unit(2)), curtainGlass, {
+      x: backEdge.x, y: FLOOR_Y + unit(95), z: backEdge.z, ry: backEdge.ry, cast: false, receive: false,
+    });
+    add(environmentLayer, cache.box(backEdge.length, unit(3), unit(4)), curtainFrame, {
+      x: backEdge.x, y: FLOOR_Y + unit(190), z: backEdge.z, ry: backEdge.ry, cast: false,
+    });
+    add(environmentLayer, cache.box(backEdge.length, unit(3), unit(4)), curtainFrame, {
+      x: backEdge.x, y: FLOOR_Y + unit(4), z: backEdge.z, ry: backEdge.ry, cast: false,
+    });
+    for (let i = 0; i <= 10; i += 1) {
+      const t = i / 10;
+      const post = backLeft.clone().lerp(backRight, t);
+      add(environmentLayer, cache.box(unit(2), unit(190), unit(2)), curtainFrame, {
+        x: post.x, y: FLOOR_Y + unit(95), z: post.z, ry: backEdge.ry, cast: false,
+      });
+    }
+    // Distant exterior building blocks and trees visible through the glass.
+    const buildingMat = extraMaterial(new MeshStandardMaterial({ color: '#9fb4c2', roughness: 0.8 }));
+    for (const [bx, bz, bw, bh] of [[-30, -34, 14, 22], [-12, -38, 10, 30], [8, -36, 12, 18], [26, -34, 10, 26]] as const) {
+      add(environmentLayer, cache.box(bw, bh, 8), buildingMat, {
+        x: bx, y: bh / 2 - unit(6), z: bz, cast: false, receive: false,
+      });
+    }
     // The floor and exterior planting continue beyond the frame; there is no floating island.
     for (const point of [[280, 70], [420, 35], [1370, 70], [1510, 95], [280, 860], [1590, 850], [240, 750], [1640, 760]] as ScreenPoint[]) {
       plant(environmentLayer, atScreen(point), plantScale * 1.25);
+    }
+    for (const point of [[500, 60], [800, 45], [1100, 55], [1350, 60]] as ScreenPoint[]) {
+      plant(environmentLayer, atScreen(point), plantScale * 1.6);
     }
   }
 
@@ -801,6 +793,143 @@ export function createOfficeScene(options: OfficeSceneOptions): OfficeSceneContr
     for (const screenPoint of REFERENCE_PLANT_POINTS) plant(environmentLayer, atScreen(screenPoint), plantScale * 0.82);
   }
 
+
+  function makeTextGeometry(text: string, size: number): TextGeometry {
+    const geometry = new TextGeometry(text, {
+      font: roomFont,
+      size,
+      depth: size * 0.14,
+      curveSegments: 6,
+      bevelEnabled: true,
+      bevelThickness: size * 0.03,
+      bevelSize: size * 0.025,
+      bevelSegments: 2,
+    });
+    geometry.computeBoundingBox();
+    customGeometries.push(geometry);
+    return geometry;
+  }
+
+  function centerGeometry(geometry: BufferGeometry): { width: number; height: number } {
+    geometry.computeBoundingBox();
+    const box = geometry.boundingBox;
+    const width = box ? box.max.x - box.min.x : 0;
+    const height = box ? box.max.y - box.min.y : 0;
+    if (box) geometry.translate(-(box.min.x + width / 2), -(box.min.y + height / 2), -(box.min.z + (box.max.z - box.min.z) / 2));
+    return { width, height };
+  }
+
+  function plaqueIcon(icon: ReferenceIcon, material: Material): Group {
+    const group = new Group();
+    const u = unit(1);
+    if (icon === 'megaphone') {
+      add(group, cache.cylinder(unit(2), unit(11), unit(20), 16), material, { rz: Math.PI / 2, x: unit(2) });
+      add(group, cache.box(unit(6), unit(12), unit(4)), material, { x: -unit(8), y: -unit(10) });
+    } else if (icon === 'crown') {
+      add(group, cache.box(unit(26), unit(4), unit(4)), material, { y: -unit(8) });
+      for (const x of [-unit(10), 0, unit(10)]) {
+        add(group, cache.cylinder(unit(0.5), unit(4), unit(12), 4), material, { x, y: unit(2) });
+      }
+      add(group, cache.sphere(unit(2.5), 10), material, { x: -unit(10), y: unit(10) });
+      add(group, cache.sphere(unit(2.5), 10), material, { x: 0, y: unit(12) });
+      add(group, cache.sphere(unit(2.5), 10), material, { x: unit(10), y: unit(10) });
+    } else if (icon === 'code') {
+      add(group, cache.box(unit(3), unit(16), unit(3)), material, { x: -unit(10), y: 0, rz: 0.5 });
+      add(group, cache.box(unit(3), unit(16), unit(3)), material, { x: unit(10), y: 0, rz: -0.5 });
+      add(group, cache.box(unit(3), unit(22), unit(3)), material, { rz: 0.35 });
+    } else if (icon === 'palette') {
+      const disc = add(group, cache.sphere(unit(13), 18), material, {});
+      disc.scale.set(1, 1, 0.35);
+      for (const [x, y] of [[-unit(5), unit(3)], [unit(4), unit(5)], [unit(6), -unit(3)]] as const) {
+        add(group, cache.sphere(unit(2.2), 10), palette.dark, { x, y, z: unit(4) });
+      }
+    } else if (icon === 'flask') {
+      add(group, cache.cylinder(unit(3), unit(3), unit(10), 12), material, { y: unit(6) });
+      add(group, cache.cylinder(unit(3), unit(10), unit(14), 16), material, { y: -unit(5) });
+    } else if (icon === 'bars') {
+      add(group, cache.box(unit(5), unit(10), unit(3)), material, { x: -unit(9), y: -unit(3) });
+      add(group, cache.box(unit(5), unit(16), unit(3)), material, { x: 0, y: 0 });
+      add(group, cache.box(unit(5), unit(22), unit(3)), material, { x: unit(9), y: unit(3) });
+    } else {
+      add(group, cache.box(unit(18), unit(20), unit(3)), material, { y: unit(2) });
+      add(group, cache.cylinder(unit(1), unit(10), unit(9), 16), material, { y: -unit(12), rz: Math.PI });
+    }
+    void u;
+    return group;
+  }
+
+  /** Real extruded 3D room plaques integrated above each glass room. */
+  function createPlaques(): void {
+    for (const room of referenceRooms) {
+      const definition = room.definition;
+      const group = new Group();
+      group.name = `plaque-${definition.id}`;
+      group.position.copy(room.labelPoint);
+      group.rotation.y = facingCamera(room.labelPoint);
+      group.userData.visualRoomId = definition.id;
+      group.userData.roomId = definition.primaryLogicalRoomId;
+      group.userData.roomLabel = definition.label;
+      const plaqueWidth = unit(definition.labelWidth);
+      const plaqueHeight = unit(46);
+      const plaqueDepth = unit(7);
+      const plaqueMaterial = extraMaterial(new MeshStandardMaterial({
+        color: '#111b28', roughness: 0.34, metalness: 0.28,
+        emissive: '#0a1622', emissiveIntensity: 0.4,
+      }));
+      plaqueMaterials.set(definition.id, plaqueMaterial);
+      const plaque = add(group, cache.rounded(plaqueWidth, plaqueHeight, plaqueDepth, unit(6)), plaqueMaterial, {});
+      plaque.userData.visualRoomId = definition.id;
+      plaque.userData.roomId = definition.primaryLogicalRoomId;
+      plaque.userData.roomLabel = definition.label;
+      const textSize = unit(24);
+      const textGeometry = makeTextGeometry(definition.label, textSize);
+      const textSizeInfo = centerGeometry(textGeometry);
+      const iconMaterial = definition.icon === 'crown' ? plaqueGoldMaterial : plaqueIconMaterial;
+      const icon = plaqueIcon(definition.icon, iconMaterial);
+      const iconWidth = unit(30);
+      const textX = iconWidth / 2 + textSizeInfo.width / 2 - plaqueWidth / 2 + unit(14);
+      icon.position.set(-plaqueWidth / 2 + unit(18), 0, plaqueDepth / 2 + unit(1));
+      group.add(icon);
+      const text = new Mesh(textGeometry, plaqueTextMaterial);
+      const availableWidth = plaqueWidth - iconWidth - unit(30);
+      if (textSizeInfo.width > availableWidth && textSizeInfo.width > 0) {
+        text.scale.setScalar(availableWidth / textSizeInfo.width);
+      }
+      text.position.set(textX, 0, plaqueDepth / 2 + unit(1));
+      text.castShadow = false;
+      text.receiveShadow = false;
+      text.userData.visualRoomId = definition.id;
+      text.userData.roomId = definition.primaryLogicalRoomId;
+      text.userData.roomLabel = definition.label;
+      group.add(text);
+      plaqueLayer.add(group);
+    }
+  }
+
+  /** Extruded WORA floor medallion lettering and link mark. */
+  function createMedallionText(): void {
+    const medallion = atScreen(REFERENCE_FEATURE_POINTS.medallion);
+    const group = new Group();
+    group.position.set(medallion.x, FLOOR_Y + unit(2), medallion.z);
+    group.rotation.y = facingCamera(medallion);
+    const textGeometry = makeTextGeometry('WORA', unit(42));
+    const info = centerGeometry(textGeometry);
+    const text = new Mesh(textGeometry, medallionTextMaterial);
+    text.rotation.x = -Math.PI / 2;
+    text.position.set(0, unit(1), unit(24));
+    text.receiveShadow = true;
+    group.add(text);
+    void info;
+    const mark = new Group();
+    mark.position.set(0, unit(1), -unit(30));
+    const left = add(mark, cache.torus(unit(16), unit(5), Math.PI * 1.25), medallionMarkMaterial, { rx: Math.PI / 2, ry: Math.PI * 0.85, cast: false });
+    const right = add(mark, cache.torus(unit(16), unit(5), Math.PI * 1.25), medallionMarkMaterial, { rx: Math.PI / 2, ry: -Math.PI * 0.15, cast: false });
+    left.position.x = -unit(14);
+    right.position.x = unit(14);
+    group.add(mark);
+    environmentLayer.add(group);
+  }
+
   function createLights(): void {
     scene.add(new HemisphereLight(0xe8f6ff, 0x46595a, 1.25));
     scene.add(new AmbientLight(0xffffff, 0.42));
@@ -832,6 +961,8 @@ export function createOfficeScene(options: OfficeSceneOptions): OfficeSceneContr
   createCorridors();
   createLobby();
   for (const room of referenceRooms) createRoom(room);
+  createPlaques();
+  createMedallionText();
   createLights();
 
   const agentRing = add(scene, cache.torus(unit(22), unit(2)), selectionRingMaterial, {
@@ -848,56 +979,18 @@ export function createOfficeScene(options: OfficeSceneOptions): OfficeSceneContr
     selectedRoomId = roomId;
     selectedVisualRoomId = visualRoomForLogical(roomId);
     for (const [id, highlight] of roomHighlights) highlight.visible = id === selectedVisualRoomId;
-    for (const label of roomLabels) label.element.classList.toggle('is-selected', label.visualId === selectedVisualRoomId);
+    for (const [id, material] of plaqueMaterials) {
+      const selected = id === selectedVisualRoomId;
+      material.emissive.set(selected ? '#0e4a5c' : '#0a1622');
+      material.emissiveIntensity = selected ? 0.9 : 0.4;
+    }
   }
 
   function updateLabels(): void {
-    const width = Math.max(1, container.clientWidth);
-    const height = Math.max(1, container.clientHeight);
-    const visibleRects: { left: number; right: number; top: number; bottom: number }[] = [];
-    camera.updateMatrixWorld();
-    const viewportScale = width < 1600 ? MathUtils.clamp(width / REFERENCE_VIEWPORT.width, 0.76, 1) : 1;
-    const labelScale = MathUtils.clamp(viewportScale / cameraScale, 0.76, 1.65);
-    const sidebarSafe = width <= 1500 ? 190 : 217;
-    for (const label of roomLabels) {
-      const anchor = projectToViewport(label.anchor, camera, width, height);
-      const labelWidth = label.definition.labelWidth * labelScale;
-      const labelHeight = (label.element.offsetHeight || 44) * labelScale;
-      const displayX = width < 1600
-        ? MathUtils.clamp(anchor.x, sidebarSafe + labelWidth / 2 + 4, width - 12 - labelWidth / 2)
-        : anchor.x;
-      const displayY = width < 1600 ? MathUtils.clamp(anchor.y, 145, height - 100) : anchor.y;
-      const inView = anchor.z >= -1 && anchor.z <= 1
-        && anchor.x >= -80 && anchor.x <= width + 80
-        && anchor.y >= 15 && anchor.y <= height + 80;
-      const hiddenByFocus = viewMode !== 'full' && Boolean(selectedVisualRoomId) && label.visualId !== selectedVisualRoomId;
-      label.element.hidden = !inView || hiddenByFocus;
-      label.element.style.width = `${label.definition.labelWidth}px`;
-      label.element.style.left = `${displayX}px`;
-      label.element.style.top = `${displayY}px`;
-      label.element.style.transform = `translate(-50%, -50%) rotate(${label.definition.labelRotation}deg) scale(${labelScale})`;
-      if (!label.element.hidden) {
-        visibleRects.push({
-          left: displayX - labelWidth / 2, right: displayX + labelWidth / 2,
-          top: displayY - labelHeight, bottom: displayY,
-        });
-      }
-    }
-    const medallion = projectToViewport(atScreen(REFERENCE_FEATURE_POINTS.medallion), camera, width, height);
-    const medallionWidth = 230 * labelScale;
-    const medallionHeight = 90 * labelScale;
-    const medallionRect = {
-      left: medallion.x - medallionWidth / 2, right: medallion.x + medallionWidth / 2,
-      top: medallion.y - medallionHeight / 2, bottom: medallion.y + medallionHeight / 2,
-    };
-    const overlapsRoomLabel = visibleRects.some((rect) => rectanglesOverlap(medallionRect, rect, 3));
-    medallionLabel.hidden = viewMode !== 'full' || overlapsRoomLabel || medallion.z < -1 || medallion.z > 1
-      || medallionRect.left < 0 || medallionRect.right > width || medallionRect.top < 0 || medallionRect.bottom > height;
-    if (!medallionLabel.hidden) {
-      medallionLabel.style.left = `${medallion.x}px`;
-      medallionLabel.style.top = `${medallion.y}px`;
-      medallionLabel.style.transform = `translate(-50%, -50%) scale(${labelScale})`;
-    }
+    // Real 3D plaques are scene geometry; no DOM projection is required.
+    // Selection emissive is maintained by setSelectedRoom.
+    void viewMode;
+    void selectedVisualRoomId;
   }
 
   function moveCamera(
@@ -1265,8 +1358,7 @@ export function createOfficeScene(options: OfficeSceneOptions): OfficeSceneContr
       resizeObserver.disconnect();
       renderer.domElement.removeEventListener('pointerdown', onPointerDown);
       renderer.domElement.removeEventListener('pointerup', onPointerUp);
-      for (const label of roomLabels) label.element.removeEventListener('click', label.onSelect);
-      labelLayer.remove();
+      plaqueLayer.clear();
       for (const visual of robots.values()) visual.record.dispose();
       robots.clear();
       primaryRobots.clear();

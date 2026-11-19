@@ -137,7 +137,7 @@ export function Office3D({
   const callbacks = useRef({ onRoom, onAgent, onOpenTasks, onTeam, onAssign });
   callbacks.current = { onRoom, onAgent, onOpenTasks, onTeam, onAssign };
   const [error, setError] = useState('');
-  const [showLive, setShowLive] = useState(true);
+  const [showLive, setShowLive] = useState(() => typeof window === 'undefined' || window.innerWidth > 860);
   const [showFullOffice, setShowFullOffice] = useState(Boolean(roomId));
   const [inspection, setInspection] = useState<OfficeSelection | null>(null);
   const [motionMeta, setMotionMeta] = useState<MotionMeta>({ authorized: new Set(), moving: new Set() });

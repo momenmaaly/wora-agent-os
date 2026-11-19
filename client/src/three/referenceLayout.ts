@@ -7,7 +7,7 @@ export const REFERENCE_CAMERA_POSITION = new Vector3(18, 24, 20);
 export const REFERENCE_CAMERA_TARGET = new Vector3(0, 0.5, 0);
 export const REFERENCE_CAMERA_OFFSET = REFERENCE_CAMERA_POSITION.clone().sub(REFERENCE_CAMERA_TARGET);
 export const REFERENCE_FOV = 38;
-export const REFERENCE_LABEL_HEIGHT = 3.15;
+export const REFERENCE_LABEL_HEIGHT = 3.6;
 export const REFERENCE_FLOOR_Y = 0.03;
 
 export type ReferenceIcon = 'megaphone' | 'crown' | 'code' | 'palette' | 'flask' | 'bars' | 'shield';
@@ -51,43 +51,43 @@ export const REFERENCE_ROOMS: readonly ReferenceRoomDefinition[] = [
     id: 'marketing', label: 'Marketing', labelAr: 'التسويق', icon: 'megaphone', accent: '#2bd5ec',
     primaryLogicalRoomId: 'zone-marketing', displayVariant: 'analytics', floor: 'marble', furniture: 'marketing',
     screenPolygon: [[260, 285], [520, 145], [650, 285], [300, 420]],
-    screenLabel: [355, 205], labelWidth: 158, labelRotation: -16,
+    screenLabel: [355, 205], labelWidth: 192, labelRotation: -16,
   },
   {
     id: 'executive', label: 'Executive Office', labelAr: 'مكتب المدير', icon: 'crown', accent: '#f0c24a',
     primaryLogicalRoomId: 'zone-boardroom', displayVariant: 'plan', floor: 'wood', furniture: 'executive',
     screenPolygon: [[650, 135], [1040, 135], [1060, 305], [670, 305]],
-    screenLabel: [880, 155], labelWidth: 252, labelRotation: 0,
+    screenLabel: [880, 155], labelWidth: 284, labelRotation: 0,
   },
   {
     id: 'engineering', label: 'Engineering', labelAr: 'الهندسة', icon: 'code', accent: '#2bd5ec',
     primaryLogicalRoomId: 'zone-engineering', displayVariant: 'code', floor: 'marble', furniture: 'engineering',
     screenPolygon: [[1060, 145], [1330, 280], [1400, 400], [1090, 390]],
-    screenLabel: [1310, 215], labelWidth: 220, labelRotation: 16,
+    screenLabel: [1310, 215], labelWidth: 252, labelRotation: 16,
   },
   {
     id: 'creative', label: 'Creative Studio', labelAr: 'الإبداع', icon: 'palette', accent: '#2bd5ec',
     primaryLogicalRoomId: 'zone-design', displayVariant: 'creative', floor: 'marble', furniture: 'creative',
     screenPolygon: [[250, 450], [520, 420], [640, 560], [300, 650]],
-    screenLabel: [340, 490], labelWidth: 214, labelRotation: -16,
+    screenLabel: [340, 455], labelWidth: 244, labelRotation: -16,
   },
   {
     id: 'management', label: 'Management', labelAr: 'الإدارة', icon: 'bars', accent: '#2bd5ec',
     primaryLogicalRoomId: 'zone-sales', displayVariant: 'analytics', floor: 'wood', furniture: 'management',
     screenPolygon: [[1320, 400], [1600, 420], [1650, 620], [1350, 660]],
-    screenLabel: [1500, 445], labelWidth: 198, labelRotation: 16,
+    screenLabel: [1500, 445], labelWidth: 230, labelRotation: 16,
   },
   {
     id: 'research', label: 'Research', labelAr: 'البحث', icon: 'flask', accent: '#2bd5ec',
     primaryLogicalRoomId: 'zone-planning', displayVariant: 'world', floor: 'marble', furniture: 'research',
     screenPolygon: [[520, 560], [780, 590], [860, 750], [550, 800]] as const,
-    screenLabel: [590, 590], labelWidth: 166, labelRotation: 18,
+    screenLabel: [590, 555], labelWidth: 200, labelRotation: 18,
   },
   {
     id: 'qa', label: 'QA & Testing', labelAr: 'الجودة', icon: 'shield', accent: '#2bd5ec',
     primaryLogicalRoomId: 'zone-review', displayVariant: 'qa', floor: 'marble', furniture: 'qa',
     screenPolygon: [[970, 570], [1240, 560], [1320, 740], [1000, 800]] as const,
-    screenLabel: [1170, 590], labelWidth: 204, labelRotation: 18,
+    screenLabel: [1170, 555], labelWidth: 232, labelRotation: 18,
   },
 ] as const;
 
@@ -192,8 +192,13 @@ function screenToPlane(
   width: number,
   height: number,
 ): Vector3 {
-  const x = (point[0] / REFERENCE_VIEWPORT.width) * width;
-  const y = (point[1] / REFERENCE_VIEWPORT.height) * height;
+  // Letterbox-fit the 1672x941 reference composition so portrait/mobile
+  // viewports preserve architectural proportions instead of stretching them.
+  const scale = Math.min(width / REFERENCE_VIEWPORT.width, height / REFERENCE_VIEWPORT.height);
+  const offsetX = (width - REFERENCE_VIEWPORT.width * scale) / 2;
+  const offsetY = (height - REFERENCE_VIEWPORT.height * scale) / 2;
+  const x = offsetX + point[0] * scale;
+  const y = offsetY + point[1] * scale;
   const raycaster = new Raycaster();
   raycaster.setFromCamera(new Vector2((x / width) * 2 - 1, 1 - (y / height) * 2), camera);
   const result = new Vector3();
