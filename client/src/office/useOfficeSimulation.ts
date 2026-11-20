@@ -8,18 +8,22 @@ import { CORRIDORS, computeOfficePath, getAgentHomeSpot, locatePoint, OFFICE_ROO
 import { RECEPTION_POINT, roomEntrance, visitorRoute } from './visits.js';
 import type { AgentParticipant } from '../types.js';
 
-interface Marker extends Point2D {
+/** A movement record. commandSeq is non-zero only for a recorded workspace/operator command. */
+export interface OfficeMotionMarker extends Point2D {
   path: Point2D[];
   targetRoomId: string | null;
   activity: AgentActivityKind;
+  commandSeq: number;
 }
 
-function at(point: Point2D): Marker {
-  return { x: point.x, y: point.y, path: [], targetRoomId: null, activity: 'desk' };
+type Marker = OfficeMotionMarker;
+
+function at(point: Point2D, activity: AgentActivityKind = 'desk', commandSeq = 0): Marker {
+  return { x: point.x, y: point.y, path: [], targetRoomId: null, activity, commandSeq };
 }
 
 export const useOfficeMotion = create<{
-  markers: Record<string, Marker>;
+  markers: Record<string, OfficeMotionMarker>;
   player: Marker;
   movePlayer: (target: Point2D) => void;
   visitRoom: (roomId: string | null) => void;
@@ -108,7 +112,14 @@ export function useOfficeSimulation(initialRoomId: string | null) {
       }
     }
 
-    function route(agentId: string, roomId: string, spotId?: string, activity: AgentActivityKind = 'desk', origin?: Point2D) {
+    function route(
+      agentId: string,
+      roomId: string,
+      spotId?: string,
+      activity: AgentActivityKind = 'desk',
+      origin?: Point2D,
+      commandSeq = 0,
+    ) {
       const marker = motion.getState().markers[agentId];
       const target = ROOM_SPOTS.find((spot) => spot.id === spotId && spot.roomId === roomId)
         ?? ROOM_SPOTS.find((spot) => spot.roomId === roomId && spot.role === 'desk')
@@ -116,7 +127,9 @@ export function useOfficeSimulation(initialRoomId: string | null) {
       if (!marker || !target) return;
       const from = origin ?? marker;
       const path = computeOfficePath(from, target.id);
-      const next = reducedMotion.matches ? { ...at(target), activity } : { ...at(from), path, targetRoomId: roomId, activity };
+      const next = reducedMotion.matches
+        ? at(target, activity, commandSeq)
+        : { ...at(from, activity, commandSeq), path, targetRoomId: roomId };
       motion.setState((s) => ({ markers: { ...s.markers, [agentId]: next } }));
       publishLocation(agentId, next);
       if (next.path.length) start();
@@ -125,23 +138,24 @@ export function useOfficeSimulation(initialRoomId: string | null) {
     function run(command: OfficeCommand | null) {
       if (!command) return;
       const agents = Object.values(office.getState().agents);
+      const seq = command.seq;
       switch (command.kind) {
         case 'dispatch-room':
-          route(command.agentId, command.roomId, command.spotId, command.activity);
+          route(command.agentId, command.roomId, command.spotId, command.activity, undefined, seq);
           break;
         case 'return-desks':
-          agents.forEach((agent) => { const home = getAgentHomeSpot(agent); route(agent.id, home.roomId, home.id); });
+          agents.forEach((agent) => { const home = getAgentHomeSpot(agent); route(agent.id, home.roomId, home.id, 'desk', undefined, seq); });
           break;
         case 'standup': {
           const boardroom = useBillingStore.getState().plan === 'pro';
           const roomId = boardroom ? 'zone-boardroom' : 'zone-lounge';
           const seats = ROOM_SPOTS.filter((spot) => spot.roomId === roomId && (boardroom ? spot.role === 'meeting' : spot.role !== 'reception'));
-          agents.forEach((agent, index) => route(agent.id, roomId, seats[index % seats.length]?.id, 'meeting'));
+          agents.forEach((agent, index) => route(agent.id, roomId, seats[index % seats.length]?.id, 'meeting', undefined, seq));
           break;
         }
         case 'spawn-at-reception': {
           const reception = ROOM_SPOTS.find((spot) => spot.role === 'reception');
-          route(command.agentId, command.homeRoomId, undefined, 'desk', reception);
+          route(command.agentId, command.homeRoomId, undefined, 'desk', reception, seq);
           break;
         }
         case 'handoff': {
@@ -150,7 +164,7 @@ export function useOfficeSimulation(initialRoomId: string | null) {
           if (!from || !to || from.id === to.id) break;
           const roomId = getAgentHomeSpot(to).roomId;
           const desk = ROOM_SPOTS.find((spot) => spot.roomId === roomId && spot.role === 'collab');
-          route(from.id, roomId, desk?.id, 'collab');
+          route(from.id, roomId, desk?.id, 'collab', undefined, seq);
           break;
         }
       }

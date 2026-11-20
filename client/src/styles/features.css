@@ -31,9 +31,9 @@
 .project-switcher { align-items: stretch; }
 .project-switcher .filter-chip { min-height: 42px; padding-inline: 11px; font-size: 13px; }
 .project-dot { width: 8px; height: 8px; border-radius: 50%; display: block; flex: 0 0 auto; }
-.project-banner { display: flex; align-items: center; justify-content: space-between; gap: 14px; background: radial-gradient(ellipse at 92% 0%, var(--accent-wash), transparent 82%), var(--panel); }
+.project-banner { display: flex; align-items: center; justify-content: space-between; gap: 14px; background: var(--panel); }
 .project-banner-title { display: flex; align-items: flex-start; gap: 11px; min-width: 0; }
-.project-banner h2 { font-weight: 700; font-size: clamp(19px, 2.1vw, 27px); overflow-wrap: anywhere; }
+.project-banner h2 { font-weight: 700; font-size: clamp(17px, 1.8vw, 23px); overflow-wrap: anywhere; }
 .project-banner p { color: var(--subtle); line-height: 1.65; overflow-wrap: anywhere; }
 .project-banner .label { width: min(100%, 158px); flex: 0 0 auto; }
 .project-tabs { display: flex; gap: 6px; align-items: center; padding: 10px; overflow-x: auto; border-bottom: 1px solid var(--line); }
@@ -73,7 +73,7 @@
 .vote-button { color: var(--accent); min-width: 51px; }
 .price-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 .price-card { min-width: 0; display: grid; gap: 14px; padding: clamp(16px, 2.45vw, 32px); }
-.price-card.is-pro { border-color: var(--accent-line); background: radial-gradient(ellipse at 25% 0%, var(--accent-wash), transparent 68%), var(--panel); }
+.price-card.is-pro { border-color: var(--accent-line); background: var(--panel); }
 .price-head { display: flex; align-items: flex-start; gap: 9px; }
 .price-head > div { flex: 1; min-width: 0; }
 .price-head h2 { font-size: 23px; font-weight: 700; line-height: 1.2; }

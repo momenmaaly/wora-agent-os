@@ -22,6 +22,9 @@ logs/
 # Imported archives
 google_drive/
 
+# Local analysis scratch files
+.cache/
+
 # OS & IDE
 .DS_Store
 Thumbs.db

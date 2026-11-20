@@ -1,6 +1,7 @@
 import { BriefcaseBusiness, Menu, Moon, Search, Sun } from 'lucide-react';
 import type { PageId } from '../pages.js';
 import { useWoraStore } from '../store/useWoraStore.js';
+import { CompanyStatusStrip } from './CompanyStatusStrip.js';
 import { IconButton } from './ui.js';
 import { WoraMark } from './WoraMark.js';
 
@@ -13,6 +14,7 @@ export function CompanyHeader({ page, onMenu, onSearch, onHome, onDirector }: { 
       <a href="#campus" className="mobile-brand" aria-label="Wora — ساحة العمل" onClick={(event) => { if (!event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey) { event.preventDefault(); onHome(); } }}><WoraMark size={28} /></a>
       <span className="topbar-workspace">مساحة عمل <bdi>Wora</bdi></span>
     </div>
+    <CompanyStatusStrip />
     <div className="topbar-actions">
       {page !== 'director' && <button type="button" className="icon-button mobile-director" aria-label="مكتب المدير" onClick={onDirector}><BriefcaseBusiness size={17} aria-hidden="true" /></button>}
       <button type="button" className="search-trigger" aria-label="البحث في مساحة العمل" aria-haspopup="dialog" aria-keyshortcuts="Control+k Meta+k" onClick={onSearch}>

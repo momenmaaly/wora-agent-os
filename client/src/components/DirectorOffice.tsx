@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { ArrowRight, BriefcaseBusiness, Check, ClipboardList, LockKeyhole, Send, TextQuote } from 'lucide-react';
 import { isRoomLockedForPlan } from '../billing/plans.js';
+import { EXECUTIVE_COMMAND_EVENT, takeExecutiveCommand } from '../executiveCommand.js';
 import { useSocket, type AssignmentResult } from '../hooks/useSocket.js';
 import { ROOM_BY_ID } from '../office/layout.js';
 import { ROOM_DISPLAY } from '../office/presentation.js';
@@ -86,6 +87,22 @@ export function DirectorOffice({ focusInput, onCampus, onUpgrade }: { focusInput
   useEffect(() => {
     mounted.current = true;
     return () => { mounted.current = false; };
+  }, []);
+  useEffect(() => {
+    const apply = (brief: string) => {
+      const clean = brief.trim().slice(0, TASK_BRIEF_LIMIT);
+      if (!clean) return;
+      takeExecutiveCommand();
+      setPending(null); setError(''); setUncertain(false); setDraft(clean);
+      requestAnimationFrame(() => input.current?.focus({ preventScroll: true }));
+    };
+    apply(takeExecutiveCommand());
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<string>).detail;
+      if (typeof detail === 'string') apply(detail);
+    };
+    window.addEventListener(EXECUTIVE_COMMAND_EVENT, handler);
+    return () => window.removeEventListener(EXECUTIVE_COMMAND_EVENT, handler);
   }, []);
   useEffect(() => { if (focusInput) input.current?.focus({ preventScroll: true }); }, [focusInput]);
   useEffect(() => { if (pending) proposalCard.current?.focus({ preventScroll: true }); }, [pending]);

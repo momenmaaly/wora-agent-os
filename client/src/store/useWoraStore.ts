@@ -673,10 +673,18 @@ export const useWoraStore = create<WoraState>()(
             ].slice(0, MAX_ACTIVITY),
           })),
 
-        triggerHandoff: (fromAgentId, toAgentId) =>
+        triggerHandoff: (fromAgentId, toAgentId) => {
+          const from = fromAgentId ? get().agents[fromAgentId] : undefined;
+          const to = toAgentId ? get().agents[toAgentId] : undefined;
+          if (!from || !to || from.id === to.id) return;
           set((s) => ({
-            officeCommand: { seq: ++cmdSeq, kind: 'handoff', fromAgentId, toAgentId },
-          })),
+            officeCommand: { seq: ++cmdSeq, kind: 'handoff', fromAgentId: from.id, toAgentId: to.id },
+            activityLog: [
+              makeActivityItem(`أمر تحويل بين الوكلاء: ${from.displayName} يتجه إلى قسم ${to.displayName}`),
+              ...s.activityLog,
+            ].slice(0, MAX_ACTIVITY),
+          }));
+        },
 
         focusRoomCamera:  (roomId)  => set({ followAgentId: null, officeCommand: { seq: ++cmdSeq, kind: 'focus-room', roomId } }),
         focusAgentCamera: (agentId) => set({ selectedAgentId: agentId, followAgentId: null, officeCommand: { seq: ++cmdSeq, kind: 'focus-agent', agentId } }),

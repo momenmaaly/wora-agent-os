@@ -13,6 +13,7 @@ import './styles/campus.css';
 import './styles/workbench.css';
 import './styles/director.css';
 import './styles/skills.css';
+import './styles/company-frame.css';
 
 const root = document.getElementById('root');
 if (!root) throw new Error('Root element #root not found');

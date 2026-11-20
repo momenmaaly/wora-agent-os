@@ -1,0 +1,517 @@
+:root {
+  --company-frame: #101a22;
+  --company-panel: #172630;
+  --company-panel-2: #1f303b;
+  --company-line: #354a56;
+  --company-ink: #eaf2f5;
+  --company-muted: #9fb3bc;
+  --company-accent: #7bd3e2;
+  --company-warm: #e8c28a;
+}
+
+/* Compact operational context: persisted workspace state only. */
+.company-status-strip {
+  flex: 0 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--subtle);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.company-status-strip > span { display: inline-flex; align-items: center; gap: 5px; min-width: 0; }
+.company-status-strip .company-operational {
+  padding: 3px 7px;
+  border: 1px solid var(--accent-line);
+  border-radius: var(--control-radius);
+  background: var(--accent-wash);
+  color: var(--accent);
+}
+.company-status-strip .company-operational .status-dot { width: 6px; height: 6px; }
+.company-status-strip bdi { font-variant-numeric: tabular-nums; color: var(--ink); }
+.company-status-strip .company-preview-note { color: var(--gold); }
+
+/* Persistent command rail — routes to the existing grounded Manager Office. */
+.executive-command-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 48px;
+  padding: 6px clamp(10px, 1.6vw, 20px);
+  border-top: 1px solid var(--company-line);
+  background: var(--company-frame);
+  color: var(--company-ink);
+}
+.executive-command-avatar {
+  display: grid;
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border: 1px solid var(--company-line);
+  border-radius: var(--control-radius);
+  background: var(--company-panel);
+  color: var(--company-accent);
+}
+.executive-command-label { display: grid; gap: 1px; min-width: 0; }
+.executive-command-label strong { font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; }
+.executive-command-label small { color: var(--company-muted); font-size: 10px; }
+.executive-command-bar input {
+  flex: 1;
+  min-width: 0;
+  min-height: 36px;
+  padding: 7px 10px;
+  border: 1px solid var(--company-line);
+  border-radius: var(--control-radius);
+  background: var(--company-panel);
+  color: var(--company-ink);
+  font: inherit;
+  font-size: 12px;
+}
+.executive-command-bar input::placeholder { color: var(--company-muted); }
+.executive-command-bar input:focus { outline: 2px solid var(--company-accent); outline-offset: 1px; border-color: var(--company-accent); }
+.executive-command-submit {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 7px;
+  min-height: 36px;
+  padding: 6px 12px;
+  border: 1px solid transparent;
+  border-radius: var(--control-radius);
+  background: var(--company-accent);
+  color: #0d2430;
+  font-size: 12px;
+  font-weight: 700;
+}
+.executive-command-submit:disabled { opacity: .45; cursor: not-allowed; }
+
+/* Interactive WebGL office shell: the canvas is the workspace, not a card. */
+.office3d-shell {
+  position: relative;
+  isolation: isolate;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: #dfe6e7;
+  color: var(--company-ink);
+  direction: ltr;
+}
+.office3d-loading { display: grid; place-items: center; width: 100%; height: 100%; background: var(--company-frame); color: var(--company-muted); font-size: 12px; }
+.office3d-canvas { position: absolute; inset: 0; min-width: 0; min-height: 0; }
+.office3d-canvas canvas { display: block; outline: none; }
+.office3d-canvas canvas:focus-visible { outline: 2px solid var(--company-accent); outline-offset: -3px; }
+.office3d-hint {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  z-index: 3;
+  max-width: min(380px, calc(100% - 340px));
+  padding: 6px 8px;
+  border: 1px solid var(--company-line);
+  border-radius: var(--control-radius);
+  background: var(--company-panel);
+  color: var(--company-muted);
+  font-size: 10px;
+  letter-spacing: .01em;
+  pointer-events: none;
+}
+/* Real DOM typography stays sharp at any device pixel ratio; no text is baked into WebGL. */
+.office3d-labels {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  overflow: hidden;
+  pointer-events: none;
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+.office3d-room-label {
+  position: absolute;
+  display: grid;
+  gap: 1px;
+  align-content: center;
+  justify-items: center;
+  min-height: 34px;
+  padding: 4px 7px;
+  transform: translate(-50%, -100%);
+  border: 1px solid #9dc5cd;
+  border-radius: 3px;
+  background: #173440;
+  color: #fff;
+  box-shadow: 0 1px 0 #0a1b22;
+  font-family: var(--font-sans, 'Inter Variable', system-ui, sans-serif);
+  text-align: center;
+  line-height: 1.15;
+  cursor: pointer;
+  pointer-events: auto;
+}
+.office3d-room-label strong {
+  max-width: 100%;
+  overflow: hidden;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 760;
+  letter-spacing: .005em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.office3d-room-label small {
+  max-width: 100%;
+  overflow: hidden;
+  color: #d1eef2;
+  font-size: 9px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.office3d-room-label:hover, .office3d-room-label:focus-visible {
+  border-color: #b8f4ff;
+  background: #0b2632;
+  outline: 2px solid #7eeaff;
+  outline-offset: 1px;
+}
+.office3d-room-label.is-selected {
+  border-color: #c8f7ff;
+  background: #0c6d83;
+}
+.office3d-lobby-label {
+  position: absolute;
+  padding: 3px 8px;
+  transform: translate(-50%, -50%);
+  border: 1px solid #8eabb2;
+  border-radius: 2px;
+  background: #f7fbfb;
+  color: #173440;
+  font-size: 10px;
+  font-weight: 760;
+  letter-spacing: .1em;
+  white-space: nowrap;
+}
+.office3d-room-label[hidden], .office3d-lobby-label[hidden] { display: none !important; }
+
+.office3d-status {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  transform: translateX(-50%);
+  padding: 4px;
+  border: 1px solid var(--company-line);
+  border-radius: var(--control-radius);
+  background: var(--company-panel);
+  color: var(--company-muted);
+  font-size: 10px;
+  font-weight: 650;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.office3d-status span { display: inline-flex; align-items: center; gap: 4px; padding: 3px 6px; border-radius: 3px; background: var(--company-panel-2); }
+.office3d-status-title { color: var(--company-ink); }
+.office3d-status-title .status-dot { width: 6px; height: 6px; color: var(--company-accent); }
+.office3d-status bdi { color: var(--company-ink); font-variant-numeric: tabular-nums; }
+.office3d-status .office3d-preview-note { color: var(--company-warm); }
+
+.office3d-live, .office3d-inspector {
+  position: absolute;
+  z-index: 7;
+  width: min(292px, calc(100% - 24px));
+  max-height: min(58%, 470px);
+  overflow: auto;
+  border: 1px solid var(--company-line);
+  border-radius: var(--control-radius);
+  background: var(--company-panel);
+  scrollbar-width: thin;
+  scrollbar-color: var(--company-line) transparent;
+}
+.office3d-live { right: 12px; bottom: 56px; max-height: 36%; }
+.office3d-inspector { right: 12px; top: 48px; }
+.office3d-shell:has(.office3d-inspector) .office3d-live { top: auto; bottom: 56px; max-height: 30%; }
+.office3d-live > header, .office3d-inspector > header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 38px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--company-line);
+  background: var(--company-panel-2);
+  color: var(--company-ink);
+  font-size: 11px;
+  font-weight: 700;
+}
+.office3d-live > header > span, .office3d-inspector > header > span { display: inline-flex; align-items: center; gap: 7px; }
+.office3d-live > header button, .office3d-inspector > header button { display: grid; width: 26px; height: 26px; place-items: center; border-radius: 3px; color: var(--company-muted); }
+.office3d-live > header button:hover, .office3d-inspector > header button:hover { background: var(--company-line); color: var(--company-ink); }
+.office3d-live-status { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; padding: 8px 10px; color: var(--company-muted); font-size: 10px; border-bottom: 1px solid var(--company-line); }
+.office3d-live ul { padding: 0; }
+.office3d-live li { display: grid; gap: 3px; padding: 8px 10px; border-bottom: 1px solid var(--company-line); }
+.office3d-live li p { font-size: 11px; line-height: 1.45; overflow-wrap: anywhere; }
+.office3d-live li small, .office3d-live-tasks small { color: var(--company-muted); font-size: 9px; }
+.office3d-empty { padding: 14px 10px; color: var(--company-muted); font-size: 11px; line-height: 1.55; }
+.office3d-live-tasks { border-top: 1px solid var(--company-line); padding: 8px 10px 10px; }
+.office3d-live-tasks h3 { margin-bottom: 6px; color: var(--company-ink); font-size: 11px; }
+.office3d-live-tasks > div { display: grid; gap: 2px; padding: 6px 0; border-top: 1px solid var(--company-line); font-size: 11px; }
+
+.office3d-inspector-body { padding: 10px; }
+.office3d-profile-head, .office3d-object-head { display: flex; align-items: center; gap: 9px; padding-bottom: 10px; border-bottom: 1px solid var(--company-line); }
+.office3d-avatar, .office3d-object-code {
+  display: grid;
+  flex: 0 0 auto;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  border: 1px solid var(--company-line);
+  border-inline-start: 3px solid var(--agent-color, var(--company-accent));
+  border-radius: var(--control-radius);
+  background: var(--company-panel-2);
+  color: var(--company-ink);
+  font-size: 11px;
+  font-weight: 800;
+}
+.office3d-object-code { font-size: 9px; letter-spacing: .04em; }
+.office3d-profile-head > div, .office3d-object-head > div { min-width: 0; display: grid; gap: 2px; }
+.office3d-profile-head strong, .office3d-object-head strong { font-size: 13px; overflow-wrap: anywhere; }
+.office3d-profile-head small, .office3d-object-head small { color: var(--company-muted); font-size: 10px; line-height: 1.4; }
+.office3d-inspector dl { display: grid; gap: 0; margin: 0; }
+.office3d-inspector dl > div { display: grid; grid-template-columns: 100px minmax(0, 1fr); gap: 8px; padding: 7px 0; border-bottom: 1px solid var(--company-line); font-size: 11px; }
+.office3d-inspector dt { color: var(--company-muted); }
+.office3d-inspector dd { min-width: 0; margin: 0; display: flex; align-items: center; gap: 5px; color: var(--company-ink); overflow-wrap: anywhere; }
+.office3d-inspector-note { display: flex; align-items: flex-start; gap: 7px; margin: 10px 0 0; padding: 8px; border: 1px solid var(--company-line); border-inline-start: 3px solid var(--company-accent); border-radius: var(--control-radius); background: var(--company-panel-2); color: var(--company-muted); font-size: 10px; line-height: 1.5; }
+.office3d-inspector-note svg { flex: 0 0 auto; margin-top: 1px; color: var(--company-accent); }
+.office3d-inspector-tasks { display: grid; gap: 5px; margin-top: 9px; }
+.office3d-inspector-tasks > div { display: grid; gap: 2px; padding: 7px; border: 1px solid var(--company-line); border-radius: var(--control-radius); background: var(--company-panel-2); font-size: 10px; }
+.office3d-inspector-tasks small { color: var(--company-muted); }
+.office3d-inspector-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.office3d-inspector-actions .button { border-color: var(--company-line); background: var(--company-panel-2); color: var(--company-ink); }
+.office3d-inspector-actions .button.primary, .office3d-inspector-actions .button:hover { background: var(--company-accent); border-color: var(--company-accent); color: #0d2430; }
+
+.office3d-controls {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  z-index: 8;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--company-line);
+  border-radius: var(--control-radius);
+  background: var(--company-panel);
+}
+.office3d-controls button, .office3d-controls .office3d-active-view { display: inline-flex; align-items: center; gap: 6px; min-height: 30px; padding: 5px 8px; border-radius: 3px; color: var(--company-muted); font-size: 10px; font-weight: 650; }
+.office3d-controls .office3d-active-view { color: var(--company-accent); background: var(--company-panel-2); }
+.office3d-controls button:hover { background: var(--company-panel-2); color: var(--company-ink); }
+.office3d-controls button[aria-pressed='true'] { background: var(--company-panel-2); color: var(--company-accent); }
+ .office3d-controls .office3d-return {
+  border: 1px solid var(--company-accent);
+  background: var(--company-accent);
+  color: #0d2430;
+  font-weight: 760;
+}
+.office3d-controls .office3d-return:hover { background: #8ae9f6; color: #0d2430; }
+
+.office3d-fallback {
+  position: absolute;
+  z-index: 9;
+  top: 50%;
+  left: 50%;
+  width: min(420px, calc(100% - 28px));
+  transform: translate(-50%, -50%);
+  display: grid;
+  gap: 9px;
+  padding: 18px;
+  border: 1px solid var(--company-line);
+  border-radius: var(--control-radius);
+  background: var(--company-panel);
+}
+.office3d-fallback strong { font-size: 15px; }
+.office3d-fallback p { color: var(--company-muted); font-size: 12px; line-height: 1.55; }
+.office3d-fallback form { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 3px; }
+.office3d-fallback .button.primary { background: var(--company-accent); color: #0d2430; border-color: transparent; }
+.office3d-fallback .button { background: var(--company-panel-2); border-color: var(--company-line); color: var(--company-ink); }
+
+@media (max-width: 1180px) { .company-status-strip > span:nth-child(n+3) { display: none; } }
+@media (max-width: 1000px) { .company-status-strip { display: none; } }
+@media (max-width: 720px) {
+  .executive-command-bar { min-height: 46px; gap: 6px; padding-inline: 8px; }
+  .executive-command-avatar, .executive-command-label { display: none; }
+  .executive-command-submit span { display: none; }
+  .office3d-hint { display: none; }
+  .office3d-room-label { min-height: 30px; padding: 3px 5px; }
+  .office3d-room-label strong { font-size: 10px; }
+  .office3d-room-label small { display: none; }
+  .office3d-lobby-label { font-size: 8px; padding: 2px 5px; }
+  .office3d-controls .office3d-return span { display: none; }
+  .office3d-status { top: 7px; font-size: 9px; gap: 3px; max-width: calc(100% - 14px); overflow: hidden; }
+  .office3d-status span { padding: 2px 4px; }
+  .office3d-status span:nth-child(n+4) { display: none; }
+  .office3d-inspector { left: 8px; right: 8px; top: auto; bottom: 52px; width: auto; max-height: 43%; }
+  .office3d-live { left: 8px; right: 8px; bottom: 52px; width: auto; max-height: 36%; }
+  .office3d-shell:has(.office3d-inspector) .office3d-live { display: none; }
+  .office3d-controls { left: 8px; right: 8px; bottom: 8px; justify-content: flex-end; }
+  .office3d-controls button, .office3d-controls .office3d-active-view { padding-inline: 6px; font-size: 9px; }
+  .office3d-controls button svg, .office3d-controls .office3d-active-view svg { width: 12px; height: 12px; }
+}
+@media (max-width: 420px) {
+  .office3d-controls button, .office3d-controls .office3d-active-view { gap: 3px; padding-inline: 5px; }
+  .office3d-controls button span, .office3d-controls .office3d-active-view span { display: none; }
+}
+
+/* ------------------------------------------------------------------------- *
+ * Exact-reference Campus reconstruction: dark LTR enterprise chrome over a
+ * full-bleed, fixed-camera WebGL office. Scoped so other pages and the SVG /
+ * floor-plan fallbacks keep their existing controls.
+ * ------------------------------------------------------------------------- */
+.app-shell:has(.page-campus .office3d-shell) { direction: ltr; }
+.app-shell:has(.page-campus .office3d-shell) :is(.desktop-sidebar, .topbar, .campus-header, .campus-toolbar, .campus-footer, .campus-tour, .campus-drawer) { display: none !important; }
+.app-shell:has(.page-campus .office3d-shell) .app-scroll { overflow: hidden; }
+.app-shell:has(.page-campus .office3d-shell) .page-frame.page-campus { display: block; width: 100%; max-width: none; height: 100dvh; margin: 0; padding: 0; }
+.app-shell:has(.page-campus .office3d-shell) .campus-workbench { display: block; height: 100dvh; min-height: 0; }
+.app-shell:has(.page-campus .office3d-shell) .campus-stage { display: block; height: 100dvh; min-height: 0; border: 0; border-radius: 0; background: transparent; }
+.app-shell:has(.page-campus .office3d-shell) .campus-viewport { height: 100dvh; min-height: 0; overflow: visible; border: 0; border-radius: 0; background: transparent; }
+.app-shell:has(.page-campus .office3d-shell) .campus-viewport > :first-child { height: 100dvh; }
+.app-shell:has(.page-campus .office3d-shell) .office3d-shell { position: fixed; inset: 0; z-index: 1; width: 100vw; height: 100dvh; background: #d9e2e6; }
+.app-shell:has(.page-campus .office3d-shell) .office3d-canvas { z-index: 0; }
+.app-shell:has(.page-campus .office3d-shell) .office3d-hint { display: none; }
+.app-shell:has(.page-campus .office3d-shell) .office3d-labels { z-index: 6; }
+
+.reference-sidebar {
+  position: absolute; inset: 0 auto 0 0; z-index: 10; width: 230px;
+  display: flex; flex-direction: column;
+  padding: 0 12px 14px;
+  border-right: 1px solid #26354b;
+  background: #0d1726; color: #eaf2f8;
+  font-family: var(--font-sans, 'Inter Variable', system-ui, sans-serif);
+  pointer-events: auto;
+}
+.reference-sidebar .wora-word b { color: #f1f7fa; }
+.reference-sidebar .wora-word b span { color: #2bd5ec; }
+.reference-sidebar .wora-brand svg rect { fill: #132b39; }
+.reference-sidebar .wora-brand svg path { fill: #f1f7fa; }
+.reference-brand { display: flex; align-items: center; gap: 8px; height: 64px; flex: 0 0 auto; }
+.reference-brand > a { display: inline-flex; align-items: center; }
+.reference-enterprise { display: inline-flex; align-items: center; gap: 4px; margin-top: 2px; padding: 4px 8px; border: 1px solid #30425a; border-radius: 12px; color: #b8c8d7; background: #172539; font-size: 10px; font-weight: 650; }
+.reference-company-card { display: grid; grid-template-columns: 34px 1fr 14px; align-items: center; gap: 9px; min-height: 66px; margin: 4px 0 12px; padding: 8px 9px; border: 1px solid #2c425c; border-radius: 10px; color: #f2f7fa; background: #142337; text-decoration: none; }
+.reference-company-icon { display: grid; width: 31px; height: 31px; place-items: center; border-radius: 7px; background: #223851; color: #74ddeb; }
+.reference-company-card > span:nth-child(2) { display: grid; gap: 4px; }
+.reference-company-card strong { font-size: 13px; font-weight: 700; }
+.reference-company-card small { display: flex; align-items: center; gap: 5px; color: #8fb3a9; font-size: 10px; }
+.reference-company-card .status-dot { width: 6px; height: 6px; background: #36d399; color: #36d399; }
+.reference-nav { display: grid; gap: 3px; min-height: 0; overflow: auto; scrollbar-width: thin; scrollbar-color: #2c425c transparent; }
+.reference-nav a { display: flex; align-items: center; gap: 11px; min-height: 37px; padding: 6px 10px; border-radius: 8px; color: #aebdcc; font-size: 12px; font-weight: 560; text-decoration: none; }
+.reference-nav a svg { color: #8197ad; }
+.reference-nav a:hover { background: #17273d; color: #fff; }
+.reference-nav a.is-active { background: #173a46; color: #dff9fb; font-weight: 700; }
+.reference-nav a.is-active svg { color: #2bd5ec; }
+.reference-upgrade { display: grid; justify-items: center; gap: 4px; margin-top: auto; padding: 13px 10px 11px; border: 1px solid #30425a; border-radius: 11px; background: #15243a; text-align: center; }
+.reference-upgrade > svg { color: #e9bd57; }
+.reference-upgrade strong { font-size: 12px; }
+.reference-upgrade small { color: #9fb0c1; font-size: 10px; line-height: 1.35; }
+.reference-upgrade a { display: grid; place-items: center; width: 100%; min-height: 31px; margin-top: 5px; border-radius: 7px; background: #24405a; color: #ecf7fa; font-size: 11px; font-weight: 700; text-decoration: none; }
+
+.reference-search { position: absolute; z-index: 11; top: 10px; left: 50%; width: min(550px, 38vw); min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 0 16px; transform: translateX(-50%); border: 1px solid #33465f; border-radius: 12px; background: #111d2d; color: #8fa4b8; font-family: var(--font-sans, 'Inter Variable', system-ui, sans-serif); font-size: 13px; pointer-events: auto; }
+.reference-search:hover { border-color: #4f7892; color: #d6e7ef; }
+.reference-search svg { color: #7f98ad; }
+.reference-profile { position: absolute; z-index: 11; top: 0; right: 14px; height: 64px; display: flex; align-items: center; gap: 9px; color: #edf5f8; font-family: var(--font-sans, 'Inter Variable', system-ui, sans-serif); pointer-events: auto; }
+.reference-bell { position: relative; display: grid; width: 34px; height: 34px; place-items: center; color: #b8c8d5; }
+.reference-bell bdi { position: absolute; top: 0; right: 0; min-width: 16px; height: 16px; padding: 1px 3px; border-radius: 999px; background: #e84f5f; color: #fff; font-size: 9px; font-weight: 800; line-height: 14px; }
+.reference-profile-avatar { display: grid; width: 34px; height: 34px; place-items: center; border: 2px solid #37506a; border-radius: 999px; background: #24374d; color: #c7dbe6; }
+.reference-profile-copy { display: grid; gap: 1px; }
+.reference-profile-copy strong { font-size: 12px; font-weight: 700; }
+.reference-profile-copy small { color: #94a9ba; font-size: 9px; }
+
+.office3d-shell .office3d-status { top: 60px; left: 50%; z-index: 11; width: 612px; max-width: calc(100vw - 270px); min-height: 62px; display: grid; grid-template-columns: 1.5fr repeat(4, 1fr); align-items: center; gap: 0; padding: 5px; border: 1px solid #33465f; border-radius: 12px; background: #111d2d; box-shadow: 0 12px 30px rgb(8 15 24 / 26%); color: #e8f2f7; font-family: var(--font-sans, 'Inter Variable', system-ui, sans-serif); transform: translateX(-50%); }
+.office3d-shell .office3d-status > span { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 5px 9px; border: 0; border-right: 1px solid #2d4056; border-radius: 0; background: transparent; color: #e8f2f7; font-size: 11px; }
+.office3d-shell .office3d-status > span:last-child { border-right: 0; }
+.office3d-shell .office3d-status > span > span { display: grid; gap: 1px; padding: 0; background: transparent; color: inherit; }
+.office3d-shell .office3d-status strong { font-size: 12px; font-weight: 720; white-space: nowrap; }
+.office3d-shell .office3d-status small { color: #93a9bb; font-size: 9px; white-space: nowrap; }
+.office3d-shell .office3d-status bdi { color: #fff; font-size: 14px; font-weight: 750; font-variant-numeric: tabular-nums; }
+.office3d-shell .reference-company-status > svg { color: #cfe0e9; }
+.office3d-shell .reference-employees > svg { color: #2bd5ec; }
+.office3d-shell .reference-working .status-dot { width: 9px; height: 9px; color: #36d399; background: #36d399; }
+.office3d-shell .reference-waiting .status-dot { width: 9px; height: 9px; color: #f0b83e; background: #f0b83e; }
+.office3d-shell .reference-blocked .status-dot { width: 9px; height: 9px; color: #ee4f5b; background: #ee4f5b; }
+
+.office3d-shell .office3d-room-label { position: absolute; transform: translate(-50%, -50%) rotate(var(--label-rotation, 0deg)); display: flex; align-items: center; justify-content: flex-start; gap: 9px; min-height: 44px; padding: 7px 14px; border: 1px solid #344961; border-radius: 14px; background: #111b28; color: #fff; box-shadow: 0 6px 14px rgb(4 10 18 / 24%); font-family: var(--font-sans, 'Inter Variable', system-ui, sans-serif); text-align: left; line-height: 1.1; cursor: pointer; pointer-events: auto; }
+.office3d-shell .office3d-room-label strong { flex: 1; color: #fff; font-size: 17px; font-weight: 720; letter-spacing: -.015em; white-space: nowrap; }
+.office3d-shell .office3d-room-label small { display: none; }
+.office3d-shell .office3d-label-icon { flex: 0 0 auto; width: 25px; height: 25px; color: #2bd5ec; }
+.office3d-shell .office3d-room-label[data-room-id='executive'] .office3d-label-icon { color: #f2c44d; }
+.office3d-shell .office3d-room-label:hover, .office3d-shell .office3d-room-label:focus-visible { border-color: #74ddeb; background: #17273a; outline: 2px solid #2bd5ec; outline-offset: 2px; }
+.office3d-shell .office3d-room-label.is-selected { border-color: #9ff3ff; background: #123d4b; }
+.office3d-shell .office3d-room-label[hidden], .office3d-shell .office3d-medallion-label[hidden] { display: none !important; }
+.office3d-medallion-label { position: absolute; z-index: 5; width: 260px; height: 96px; display: grid; place-items: center; align-content: center; gap: 0; color: #111b27; font-family: var(--font-sans, 'Inter Variable', system-ui, sans-serif); pointer-events: none; user-select: none; }
+.office3d-medallion-label svg { width: 84px; height: 41px; margin-bottom: -2px; }
+.office3d-medallion-label strong { font-size: 34px; font-weight: 820; letter-spacing: .15em; -webkit-font-smoothing: antialiased; }
+
+.office3d-shell .office3d-live { top: 80px; right: 14px; bottom: auto; z-index: 11; width: 240px; min-height: 250px; max-height: 272px; border: 1px solid #30445e; border-radius: 13px; background: #111b2a; box-shadow: 0 14px 32px rgb(5 12 22 / 30%); color: #edf5f8; font-family: var(--font-sans, 'Inter Variable', system-ui, sans-serif); }
+.office3d-shell .office3d-live > header { min-height: 40px; padding: 8px 12px; border-bottom: 1px solid #2d4056; background: transparent; color: #f1f7fa; font-size: 12px; }
+.office3d-shell .office3d-live > header > span { gap: 8px; }
+.reference-live-dot { width: 7px; height: 7px; border-radius: 999px; background: #36d399; }
+.office3d-shell .office3d-live-status { display: none; }
+.office3d-shell .office3d-live li { padding: 9px 12px; border-bottom: 1px solid #24354a; }
+.office3d-shell .office3d-live li p { color: #e5eff5; font-size: 11px; }
+.office3d-shell .office3d-live li small, .office3d-shell .office3d-live-tasks small { color: #8fa4b8; }
+.office3d-shell .office3d-empty { padding: 18px 12px; color: #96aabd; font-size: 11px; }
+.office3d-shell:has(.office3d-inspector) .office3d-live { display: none; }
+.office3d-shell .office3d-inspector { top: 80px; right: 14px; z-index: 14; width: 292px; max-height: calc(100dvh - 200px); border-radius: 12px; background: #111b2a; }
+
+.office3d-shell .office3d-controls { right: 14px; bottom: 14px; z-index: 12; gap: 6px; padding: 0; border: 0; border-radius: 0; background: transparent; }
+.office3d-shell .office3d-controls button, .office3d-shell .office3d-controls .office3d-active-view { display: grid; place-items: center; align-content: center; gap: 3px; width: 88px; min-height: 52px; padding: 5px 4px; border: 1px solid #2c4057; border-radius: 10px; background: #111b2a; color: #aebfcd; font-family: var(--font-sans, 'Inter Variable', system-ui, sans-serif); font-size: 10px; font-weight: 650; }
+.office3d-shell .office3d-controls button svg, .office3d-shell .office3d-controls .office3d-active-view svg { width: 16px; height: 16px; }
+.office3d-shell .office3d-controls .office3d-active-view { border-color: #2bd5ec; background: #187d8f; color: #fff; }
+.office3d-shell .office3d-controls button:hover, .office3d-shell .office3d-controls button[aria-pressed='true'] { background: #1d3447; color: #fff; }
+.office3d-shell .office3d-controls .office3d-return { width: auto; min-width: 138px; border-color: #2bd5ec; background: #2bd5ec; color: #082633; }
+
+.app-shell:has(.page-campus .office3d-shell) .executive-command-bar { position: fixed; z-index: 16; left: calc(50% + 70px); bottom: 12px; width: min(840px, calc(100vw - 520px)); min-height: 96px; display: grid; grid-template-columns: 46px minmax(0, 1fr) 46px; grid-template-rows: auto auto; align-items: center; gap: 4px 12px; padding: 11px 14px; transform: translateX(-50%); border: 1px solid #30445e; border-radius: 14px; background: #101b2b; box-shadow: 0 14px 36px rgb(5 12 22 / 34%); font-family: var(--font-sans, 'Inter Variable', system-ui, sans-serif); }
+.app-shell:has(.page-campus .office3d-shell) .executive-command-avatar { grid-column: 1; grid-row: 1 / 3; width: 42px; height: 42px; border-radius: 999px; background: #17384a; color: #69dced; }
+.app-shell:has(.page-campus .office3d-shell) .executive-command-label { grid-column: 2; grid-row: 1; display: block; }
+.app-shell:has(.page-campus .office3d-shell) .executive-command-label strong { color: #f4f9fb; font-size: 13px; letter-spacing: 0; text-transform: none; }
+.app-shell:has(.page-campus .office3d-shell) .executive-command-label small { display: none; }
+.app-shell:has(.page-campus .office3d-shell) .executive-command-bar input { grid-column: 2; grid-row: 2; width: 100%; min-height: 36px; border: 1px solid #2d4056; border-radius: 7px; background: #15243a; color: #edf5f8; font-size: 12px; }
+.app-shell:has(.page-campus .office3d-shell) .executive-command-submit { grid-column: 3; grid-row: 1 / 3; width: 42px; min-width: 42px; height: 42px; min-height: 42px; padding: 0; justify-content: center; border-radius: 999px; background: #2bd5ec; color: #082633; }
+.app-shell:has(.page-campus .office3d-shell) .executive-command-submit span { display: none; }
+
+@media (max-width: 1500px) {
+  .reference-sidebar { width: 190px; }
+  .office3d-shell .office3d-status { width: 510px; max-width: calc(100vw - 230px); }
+  .office3d-shell .office3d-live { right: 8px; width: 210px; min-height: 210px; max-height: 240px; }
+  .office3d-shell .office3d-controls { right: 8px; bottom: 10px; }
+  .office3d-shell .office3d-controls button, .office3d-shell .office3d-controls .office3d-active-view { width: 70px; min-height: 46px; }
+  .app-shell:has(.page-campus .office3d-shell) .executive-command-bar { left: calc(50% + 20px); width: min(760px, calc(100vw - 620px)); }
+}
+
+@media (max-width: 1100px) {
+  .reference-sidebar { width: 190px; }
+  .office3d-shell .office3d-status { width: 510px; max-width: calc(100vw - 220px); }
+  .app-shell:has(.page-campus .office3d-shell) .executive-command-bar { left: 55%; width: min(720px, calc(100vw - 260px)); }
+}
+@media (max-width: 860px) {
+  .app-shell:has(.page-campus .office3d-shell) :is(.reference-sidebar, .reference-profile, .office3d-status, .office3d-live) { display: none; }
+  .reference-search { left: 12px; width: calc(100vw - 24px); transform: none; }
+  .office3d-shell .office3d-controls { left: 8px; right: 8px; justify-content: flex-end; }
+  .office3d-shell .office3d-controls button, .office3d-shell .office3d-controls .office3d-active-view { width: 58px; min-height: 46px; }
+  .app-shell:has(.page-campus .office3d-shell) .executive-command-bar { left: 50%; bottom: 8px; width: calc(100vw - 16px); min-height: 68px; grid-template-columns: 38px minmax(0, 1fr) 38px; padding: 8px; }
+  .app-shell:has(.page-campus .office3d-shell) .executive-command-avatar { width: 36px; height: 36px; }
+  .app-shell:has(.page-campus .office3d-shell) .executive-command-submit { width: 36px; min-width: 36px; height: 36px; min-height: 36px; }
+}
+
+.office3d-shell .office3d-live-summary { display: grid; gap: 6px; padding: 10px 12px; border-bottom: 1px solid #24354a; }
+.office3d-shell .office3d-live-summary > div { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 27px; padding: 5px 8px; border: 1px solid #22354a; border-radius: 8px; background: #152437; color: #a9bdcc; font-size: 10px; }
+.office3d-shell .office3d-live-summary bdi { color: #f3fafc; font-size: 12px; font-weight: 760; font-variant-numeric: tabular-nums; }
+.office3d-shell .office3d-live-all { display: block; padding: 9px 12px; border-top: 1px solid #24354a; color: #63d7ea; font-size: 10px; font-weight: 700; text-align: center; text-decoration: none; }
+.office3d-shell .office3d-live-all:hover { background: #17283c; color: #b7f3ff; }

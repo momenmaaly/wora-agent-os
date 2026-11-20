@@ -116,3 +116,183 @@
   .workspace-canvas-footer svg { width: 13px; }
 }
 @media (max-width: 375px) { .workspace-canvas-controls .canvas-fit { min-height: 35px; font-size: 11px; padding-inline: 5px; } }
+
+/* ─── CAMPUS OVERHAUL: workspace-first operating environment ─────────────── */
+.page-campus {
+  height: 100%;
+  min-height: 0;
+  max-width: none;
+  padding: 10px clamp(8px, 1.1vw, 14px) 12px;
+  gap: 8px;
+  grid-template-rows: minmax(0, 1fr);
+  align-content: stretch;
+}
+.campus-workbench {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 8px;
+}
+.campus-workbench:has(.campus-tour) { grid-template-rows: auto auto minmax(0, 1fr); }
+.campus-header {
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 7px 12px;
+}
+.campus-heading { min-width: 0; display: grid; gap: 1px; }
+.campus-kicker { color: var(--accent); font-size: 9px; font-weight: 750; letter-spacing: .14em; text-transform: uppercase; }
+.campus-heading > div { display: flex; align-items: center; gap: 9px; }
+.campus-heading h1 { font-size: 19px; line-height: 1.25; font-weight: 700; margin: 0; }
+.campus-header-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; }
+.campus-tour {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--control-radius);
+  background: var(--surface-color);
+  color: var(--subtle);
+  font-size: 11px;
+}
+.campus-tour > span { margin-inline-end: auto; }
+.campus-stage {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--panel-radius);
+  background: var(--surface-color);
+}
+.campus-toolbar {
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-color);
+}
+.workspace-view { border-radius: var(--control-radius); background: var(--raised); }
+.workspace-view button { border-radius: 3px; }
+.workspace-view button.is-3d, .workspace-view button[aria-pressed='true'] { color: var(--accent); }
+.workspace-room-picker .field { min-height: 34px; width: clamp(118px, 12vw, 165px); padding: 4px 8px; background: var(--panel); font-size: 12px; }
+.campus-toolbar-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; margin-inline-start: auto; }
+.campus-toolbar-actions .button { min-height: 34px; }
+.campus-viewport { position: relative; min-width: 0; min-height: 0; overflow: hidden; background: var(--company-frame, #101a22); }
+.campus-stage:has(.office3d-shell) { border: 0; border-radius: 0; background: #dfe6e7; }
+.campus-viewport:has(.office3d-shell) { background: #dfe6e7; }
+.campus-viewport > :first-child { min-width: 0; min-height: 0; height: 100%; border: 0; border-radius: 0; }
+.campus-viewport .spatial-stage, .campus-viewport .map-canvas { height: 100%; min-height: 0; }
+.campus-viewport .map-diagram { max-height: 100%; }
+.campus-footer {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  padding: 4px 9px;
+  border-top: 1px solid var(--line);
+  background: var(--surface-color);
+  color: var(--subtle);
+  font-size: 11px;
+}
+.campus-footer .canvas-tasks { margin-inline-start: auto; }
+.campus-footer .workspace-location svg { color: var(--accent); }
+
+/* Drawer keeps team/activity tools available without shrinking the workspace. */
+.campus-drawer {
+  position: absolute;
+  z-index: 11;
+  inset-block: 9px;
+  inset-inline-end: 9px;
+  width: min(296px, calc(100% - 18px));
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  border: 1px solid var(--line);
+  border-radius: var(--panel-radius);
+  background: var(--surface-color);
+  overflow: hidden;
+}
+.campus-drawer > header {
+  min-height: 39px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 9px;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+}
+.campus-drawer > header .icon-button { min-width: 30px; min-height: 30px; }
+.campus-drawer-body { min-height: 0; overflow: auto; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+.campus-tool-card { display: grid; gap: 8px; padding: 10px; border-bottom: 1px solid var(--line); }
+.campus-tool-card h3 { font-size: 12px; font-weight: 700; }
+.campus-tool-card p { margin: 0; color: var(--subtle); font-size: 10px; line-height: 1.5; }
+.campus-tool-actions { display: flex; flex-wrap: wrap; gap: 5px; }
+.campus-tool-actions .button { min-height: 32px; font-size: 11px; }
+.campus-handoff-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+.campus-handoff-fields .label { gap: 4px; font-size: 11px; }
+.campus-handoff-fields .field { min-height: 34px; padding: 5px 7px; font-size: 11px; }
+.campus-tool-notice { color: var(--accent) !important; font-size: 10px !important; }
+.campus-drawer .workspace-people-list { max-height: none; }
+.campus-drawer .workspace-team-chat { min-height: 36px; }
+.campus-activity-list { display: grid; gap: 8px; padding: 10px; }
+.campus-activity-list h2 { font-size: 12px; }
+.campus-activity-list ul { display: grid; }
+.campus-activity-list li { display: grid; gap: 2px; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 11px; line-height: 1.5; }
+.campus-activity-list li p { overflow-wrap: anywhere; }
+.campus-activity-list small { color: var(--subtle); font-size: 10px; }
+.campus-empty { padding: 12px 0; color: var(--subtle); font-size: 11px; line-height: 1.6; }
+.campus-recorded-tasks { display: grid; gap: 4px; border-top: 1px solid var(--line); padding-top: 8px; }
+.campus-recorded-tasks h3 { font-size: 11px; }
+.campus-recorded-tasks button { display: grid; gap: 2px; width: 100%; padding: 7px; text-align: start; border: 1px solid var(--line); border-radius: var(--control-radius); background: var(--raised); }
+.campus-recorded-tasks button:hover { border-color: var(--accent-line); }
+.campus-recorded-tasks span { font-size: 11px; overflow-wrap: anywhere; }
+.campus-recorded-tasks small { color: var(--subtle); font-size: 10px; }
+
+.app-shell:has(.campus-workbench.is-expanded) :is(.desktop-sidebar, .topbar, .executive-command-bar) { display: none; }
+.page-campus:has(.campus-workbench.is-expanded) { height: 100dvh; padding: 6px; }
+.campus-workbench.is-expanded .campus-header { min-height: 36px; }
+.campus-workbench.is-expanded .campus-kicker { display: none; }
+.campus-workbench.is-expanded .campus-heading h1 { font-size: 16px; }
+.campus-workbench.is-expanded .campus-drawer { inset-block: 6px; inset-inline-end: 6px; }
+
+@media (max-width: 760px) {
+  .page-campus { height: auto; min-height: 100%; grid-template-rows: auto; padding: 8px 6px 12px; }
+  .campus-workbench { height: auto; min-height: calc(100dvh - 128px); }
+  .campus-header { min-height: 40px; }
+  .campus-kicker { display: none; }
+  .campus-heading h1 { font-size: 16px; }
+  .campus-header-actions .button { padding-inline: 7px; font-size: 11px; }
+  .campus-stage { height: auto; min-height: 62dvh; grid-template-rows: auto minmax(340px, 1fr) auto; }
+  .campus-toolbar { padding: 5px; gap: 4px; }
+  .workspace-room-picker > svg { display: none; }
+  .workspace-room-picker .field { width: 112px; }
+  .workspace-view button { padding-inline: 6px; font-size: 11px; }
+  .workspace-view button svg { width: 13px; }
+  .campus-footer { min-height: 38px; padding-inline: 7px; }
+  .campus-drawer { inset: auto 0 0 0; width: auto; max-height: 54%; border-radius: 8px 8px 0 0; }
+  .campus-handoff-fields { grid-template-columns: 1fr; }
+  .app-shell:has(.campus-workbench.is-expanded) .executive-command-bar { display: flex; }
+  .page-campus:has(.campus-workbench.is-expanded) { height: auto; }
+  .campus-workbench.is-expanded { min-height: calc(100dvh - 112px); }
+}
+@media (max-width: 420px) {
+  .campus-header-actions .button.ghost { font-size: 0; gap: 0; padding-inline: 8px; }
+  .campus-header-actions .button.ghost svg { width: 16px; height: 16px; }
+  .campus-toolbar-actions .workspace-expand { font-size: 0; gap: 0; padding-inline: 8px; }
+  .campus-toolbar-actions .workspace-expand svg { width: 15px; height: 15px; }
+  .campus-footer { gap: 3px 7px; font-size: 10px; }
+}

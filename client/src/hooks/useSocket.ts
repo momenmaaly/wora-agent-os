@@ -472,6 +472,16 @@ function recordWorkspaceEntry(entry: SharedWorkspaceEntry) {
   const target = entry.targetAgentId ? state.agents[entry.targetAgentId] : undefined;
   const scope = isLocalTask(entry) ? 'local' : state.serverMode ?? 'server';
   if (!previous && target && entry.type === 'task') state.pushActivity(`أُسندت إلى ${target.displayName}: ${entry.title}`, scope);
+  if (
+    previous && entry.type === 'task' && previous.targetAgentId && entry.targetAgentId
+    && previous.targetAgentId !== entry.targetAgentId
+    && state.agents[previous.targetAgentId] && state.agents[entry.targetAgentId]
+  ) {
+    // A recorded task changed assignee: route the previous owner through the real
+    // office corridor network toward the new owner's department. No task progress is invented.
+    state.triggerHandoff(previous.targetAgentId, entry.targetAgentId);
+    state.pushActivity(`تحويل مهمة مسجّلة: ${entry.title} → ${state.agents[entry.targetAgentId]!.displayName}`, scope);
+  }
   if (previous && previous.status !== entry.status) {
     if (isFinished(entry)) state.pushActivity(`اكتملت: ${entry.title}`, scope);
     else if (typeof entry.payload['directorResponse'] === 'string' && entry.status === 'review_pending') state.pushActivity(`ردّ الوكيل جاهز: ${entry.title}`, scope);
