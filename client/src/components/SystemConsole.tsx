@@ -18,8 +18,8 @@ const CAPABILITIES: Array<{ name: string; status: 'live' | 'config' | 'missing';
   { name: 'الذاكرة الدائمة (scopes + Provenance + حذف مدقق)', status: 'live', note: 'SQLite عبر data/wora-os.db' },
   { name: 'تدقيق الأحداث (audit log)', status: 'live', note: 'كل عملية أدوات/وكيل/ذاكرة تُسجل' },
   { name: 'الموافقات البشرية للأدوات عالية الخطورة (balanced افتراضيًا)', status: 'live', note: 'التوقيع على الحمولة الدقيقة → استئناف المهمة تلقائيًا' },
-  { name: 'اتصالات أجهزة قابلة للإلغاء (اقتران برمز لمرة واحدة)', status: 'live', note: 'البنية التحتية جاهزة ومدققة؛ الوكيل المحلي نفسه غير مُرفق بعد' },
-  { name: 'الوكيل المحلي للجهاز (Local Device Agent)', status: 'missing', note: 'البيناي غير مُرفق — WORA لا يدّعي فحص جهازك. الاقتران/الإلغاء يعملان فعلًا.' },
+  { name: 'اتصالات أجهزة قابلة للإلغاء (اقتران برمز لمرة واحدة)', status: 'live', note: 'الاقتران/النبض/الإلغاء يعملون فعلًا ومدققون' },
+  { name: 'وكيل الجهاز المحلي المرجعي (pair + heartbeat، بلا قناة أوامر)', status: 'live', note: 'التشخيص محلي فقط ولا يُرسل؛ الإلغاء يُنهي الوكيل نهائيًا' },
   { name: 'أتمتة المتصفح الحقيقية (Playwright)', status: 'missing', note: 'البنية جاهزة في سجل الأدوات؛ التنفيذ يتطلب بيئة متصفح مخصصة' },
   { name: 'نماذج سحابية للاستدلال', status: 'config', note: 'تحتاج STUDIO_PROVIDER + مفتاح على الخادم — بلا مفاتيح لا تُرسل بيانات لنماذج' },
   { name: 'PostgreSQL/pgvector بدل SQLite', status: 'config', note: 'طبقة الوصول معزولة في os/db.ts وقابلة للاستبدال' },
@@ -247,7 +247,7 @@ export function SystemConsole() {
 
           <div className="panel panel-pad">
             <h2 className="os-section-title"><Laptop size={16} aria-hidden="true" /> الأجهزة الموثوقة</h2>
-            <p className="subtle">اتصال جهازك بنظافة: طلب اقتران ← رمز لمرة واحدة ← وكيل محلي يتفادى بالرمز من جهازك. لا يوجد وكيل محلي مُرفق بعد، ولن يُدّعى فحصه لجهازك حتى يقترن فعلًا. الاتصال قابل للإلغاء في أي لحظة ويُسجل في التدقيق.</p>
+            <p className="subtle">اتصال جهازك بنظافة: طلب اقتران ← رمز لمرة واحدة ← الوكيل المرجعي في <code dir="ltr">device-agent/</code> يتفادى بالرمز من جهازك. التشخيص محلي ولا يُرفع — لا توجد قناة أوامر بعد. الإلغاء يُنهي الوكيل نهائيًا ويُسجل في التدقيق.</p>
             <form className="os-memory-row" onSubmit={(e) => void requestPairing(e)}>
               <input dir="auto" value={pairName} onChange={(e) => setPairName(e.target.value)} placeholder="اسم الجهاز (مثال: MacBook الخاص بي)" maxLength={80} required aria-label="اسم الجهاز" />
               <select value={pairPlatform} onChange={(e) => setPairPlatform(e.target.value)} aria-label="المنصة">

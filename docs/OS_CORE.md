@@ -110,15 +110,18 @@ The **Executive Command bar** at the bottom of every screen now launches a real 
 | Agents | `#agents` | Real — registry, create/pause/archive/delete, specializations, org builder |
 | Execution | `#execution` | Real — mission lifecycle, evidence, handoffs, approvals, resume |
 | Intelligence | `#intelligence` | Real — HiGHS MIP, Monte Carlo, decision matrix, tool registry |
-| System | `#system` | Real — state, governance, memory, audit, capability honesty matrix |
+| System | `#system` | Real — state, governance, memory, audit, device pairing UI, live capability honesty matrix |
 
 The persistent **Executive Command** bar (bottom of every screen) launches `POST /api/os/missions` and opens مركز التنفيذ.
 
 ## What is NOT implemented (explicitly)
 
-- **Local Device Agent** (inspect *your* computer): pairing infrastructure ships (one-time hashed codes,
-  redeem, revoke, audit) but the agent binary itself is not implemented — nothing marks a device inspected
-  until a real redemption happens, and the UI says exactly that.
+- **Local Device Agent** (interact with *your* computer): foundation ships and is verified end-to-end —
+  one-time hashed pairing codes, single-use redeem, fingerprint-scoped heartbeats, terminal revoke, full
+  audit trail, and a working zero-dependency reference agent (`device-agent/wora-device-agent.mjs`): it
+  redeems, collects **local-only** diagnostics (never uploaded), heartbeats, and exits permanently on revoke.
+  There is intentionally **no remote command channel** yet — nothing can run anything on your machine.
+  `system.diagnostics` inside missions always reports the machine running the API runtime, never your device.
 - **Playwright browser automation**: tool contract and permission slot exist; no browser runtime is bundled.
 - **pgvector / semantic retrieval**: memory uses deterministic TF-IDF scoring; vector retrieval is a drop-in
   replacement inside `os/memory.ts` when a Postgres deployment is provisioned.

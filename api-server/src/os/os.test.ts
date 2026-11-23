@@ -269,3 +269,20 @@ test('governance: device pairing is one-time, redeemable and revocable', async (
   assert.throws(() => redeemDevicePairing(WS, { deviceId: device.id, code: pairingCode, fingerprint: 'fp-y' }, 'test'), /revoked/);
   assert.ok(listDevices(WS).some((d) => d.id === device.id));
 });
+
+/* ─── Governance: device heartbeat loop ─── */
+test('governance: heartbeat requires paired state + matching fingerprint, and stops after revoke', async () => {
+  const { requestDevicePairing, redeemDevicePairing, revokeDevice, deviceHeartbeat } = await import('./governance.js');
+  const { device, pairingCode } = requestDevicePairing(WS, { name: 'QA Laptop', platform: 'linux' }, 'test');
+  // heartbeat before pairing → rejected
+  assert.throws(() => deviceHeartbeat(device.id, { fingerprint: 'fp-hb-1' }), /not paired/);
+  redeemDevicePairing(WS, { deviceId: device.id, code: pairingCode, fingerprint: 'fp-hb-1' }, 'test');
+  // wrong fingerprint → rejected
+  assert.throws(() => deviceHeartbeat(device.id, { fingerprint: 'fp-WRONG' }), /Fingerprint mismatch/);
+  // correct → updates last_seen
+  const beat = deviceHeartbeat(device.id, { fingerprint: 'fp-hb-1' });
+  assert.equal(beat.ok, true);
+  // revoke → terminal
+  revokeDevice(WS, device.id, 'test');
+  assert.throws(() => deviceHeartbeat(device.id, { fingerprint: 'fp-hb-1' }), /revoked/);
+});

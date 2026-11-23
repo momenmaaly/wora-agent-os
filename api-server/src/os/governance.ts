@@ -125,10 +125,13 @@ export function requestDevicePairing(workspaceId: string, input: { name: string;
 }
 
 /** The future local agent redeems the one-time code to complete pairing. Codes are single-use. */
-export function redeemDevicePairing(workspaceId: string, input: { deviceId: string; code: string; fingerprint: string }, actor: string): DeviceRecord {
+export function redeemDevicePairing(workspaceId: string, input: { deviceId: string; code: string; fingerprint: string }, actor: string, global = false): DeviceRecord {
   const db = getOsDb();
-  const row = db.prepare('SELECT * FROM os_devices WHERE workspace_id = ? AND id = ?').get(workspaceId, input.deviceId) as Record<string, string> | undefined;
+  const row = (global
+    ? db.prepare('SELECT * FROM os_devices WHERE id = ?').get(input.deviceId)
+    : db.prepare('SELECT * FROM os_devices WHERE workspace_id = ? AND id = ?').get(workspaceId, input.deviceId)) as Record<string, string> | undefined;
   if (!row) throw new Error('Device not found');
+  workspaceId = String(row['workspace_id']);
   if (row['status'] === 'revoked') throw new Error('Device connection was revoked — request a new pairing');
   if (row['status'] === 'paired') throw new Error('Device already paired');
   const candidate = Buffer.from(sha256(input.code.trim().toUpperCase()));
@@ -151,6 +154,27 @@ export function revokeDevice(workspaceId: string, deviceId: string, actor: strin
   db.prepare("UPDATE os_devices SET status = 'revoked', revoked_at = ? WHERE id = ?").run(nowIso(), deviceId);
   audit(db, { workspaceId, actor, action: 'device.revoke', subject: deviceId, detail: { name: row['name'] } });
   return deviceView(db.prepare('SELECT * FROM os_devices WHERE id = ?').get(deviceId) as Record<string, string>);
+}
+
+/** Global device lookup by id (id is an unguessable record locator, not an authority). */
+export function findDeviceById(deviceId: string): DeviceRecord | null {
+  const row = getOsDb().prepare('SELECT * FROM os_devices WHERE id = ?').get(deviceId) as Record<string, string> | undefined;
+  return row ? deviceView(row) : null;
+}
+
+/** Heartbeat from an already-paired device agent; the fingerprint is the credential. */
+export function deviceHeartbeat(deviceId: string, input: { fingerprint: string }): { ok: true; lastSeenAt: string; workspaceId: string } {
+  const db = getOsDb();
+  const row = db.prepare('SELECT * FROM os_devices WHERE id = ?').get(deviceId) as Record<string, string> | undefined;
+  if (!row) throw new Error('Device not found');
+  const workspaceId = String(row['workspace_id']);
+  if (row['status'] === 'revoked') { const err = new Error('Connection revoked by user') as Error & { code?: string }; err.code = 'revoked'; throw err; }
+  if (row['status'] !== 'paired') { const err = new Error('Device not paired yet') as Error & { code?: string }; err.code = 'not_paired'; throw err; }
+  if (String(row['fingerprint'] ?? '') !== input.fingerprint.trim()) { const err = new Error('Fingerprint mismatch') as Error & { code?: string }; err.code = 'fingerprint'; throw err; }
+  const now = nowIso();
+  db.prepare('UPDATE os_devices SET last_seen_at = ? WHERE id = ?').run(now, deviceId);
+  audit(db, { workspaceId, actor: `device:${input.fingerprint.slice(0, 16)}`, action: 'device.heartbeat', subject: deviceId, detail: {} });
+  return { ok: true, lastSeenAt: now, workspaceId };
 }
 
 export function listDevices(workspaceId: string): DeviceRecord[] {

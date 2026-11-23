@@ -27,7 +27,7 @@ import { solveAssignment, solveEmployeeSchedule, solveLp } from './ortools.js';
 import { sampleEmployeeInput } from './orchestrator.js';
 import {
   getAutonomyPolicy, setAutonomyPolicy, listApprovals, decideApproval,
-  requestDevicePairing, redeemDevicePairing, revokeDevice, listDevices,
+  requestDevicePairing, redeemDevicePairing, revokeDevice, listDevices, deviceHeartbeat, findDeviceById,
 } from './governance.js';
 import { logger } from '../lib/logger.js';
 
@@ -85,7 +85,24 @@ export function createOsRouter(options: { production?: boolean } = {}): Router {
   router.use((req, res, next) => { res.setHeader('Cache-Control', 'no-store'); next(); });
 
   // Workspace scope for every route
+  /* The device agent holds no web session: the one-time pairing code and the
+     device fingerprint are its credentials for redeem/heartbeat only. Everything
+     else stays session-gated in production. */
+  const isDeviceCredentialRoute = (req: express.Request) => {
+    const p = req.path.replace(/\/+$/, '');
+    return (req.method === 'POST' && (/^\/devices\/[^/]+\/(redeem|heartbeat)$/.test(p)));
+  };
   router.use((req, res, next) => {
+    if (isDeviceCredentialRoute(req)) {
+      // Workspace authority comes from the device record itself, never from the caller.
+      const deviceId = req.path.split('/')[2] ?? '';
+      const device = findDeviceById(deviceId);
+      if (!device) { res.status(404).json({ error: 'Device not found' }); return; }
+      res.locals['workspaceId'] = (getOsDb().prepare('SELECT workspace_id FROM os_devices WHERE id = ?').get(deviceId) as { workspace_id: string }).workspace_id;
+      res.locals['actor'] = 'device-agent';
+      next();
+      return;
+    }
     const ws = resolveWorkspace(req, res, production);
     if (!ws) return;
     res.locals['workspaceId'] = ws;
@@ -257,6 +274,18 @@ export function createOsRouter(options: { production?: boolean } = {}): Router {
     res.json(listDevices(workspace(res)));
   }));
 
+  router.post('/devices/:id/heartbeat', asyncWrap((req, res) => {
+    if (!rateLimit(workspace(res), 30)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    const body = z.object({ fingerprint: z.string().trim().min(4).max(128) }).strict().parse(req.body ?? {});
+    try {
+      res.json(deviceHeartbeat(param(req, 'id'), { fingerprint: body.fingerprint }));
+    } catch (err) {
+      const code = ((err as { code?: string }).code) ?? 'error';
+      const status = code === 'revoked' ? 409 : code === 'not_paired' ? 409 : code === 'fingerprint' ? 403 : 404;
+      res.status(status).json({ error: err instanceof Error ? err.message : 'تعذر تسجيل نبض الجهاز' });
+    }
+  }));
+
   router.post('/devices/pair', asyncWrap((req, res) => {
     if (!rateLimit(workspace(res), 10)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
     const body = z.object({
@@ -275,7 +304,7 @@ export function createOsRouter(options: { production?: boolean } = {}): Router {
       fingerprint: z.string().trim().min(4).max(128),
     }).strict().parse(req.body ?? {});
     try {
-      res.json(redeemDevicePairing(workspace(res), { deviceId: param(req, 'id'), code: body.code, fingerprint: body.fingerprint }, actor(res)));
+      res.json(redeemDevicePairing(workspace(res), { deviceId: param(req, 'id'), code: body.code, fingerprint: body.fingerprint }, actor(res), true));
     } catch (err) {
       res.status(400).json({ error: err instanceof Error ? err.message : 'تعذر إتمام الاقتران' });
     }
