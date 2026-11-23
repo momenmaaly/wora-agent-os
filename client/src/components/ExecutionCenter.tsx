@@ -176,6 +176,20 @@ export function ExecutionCenter() {
     }
   }
 
+  async function resumeMission() {
+    if (!selectedId || busy) return;
+    setBusy(true);
+    try {
+      const updated = await osApi.resumeMission(selectedId);
+      setDetail(updated);
+      await refreshMissions();
+    } catch (err) {
+      setError(err instanceof OsApiError ? err.message : 'تعذر استئناف المهمة.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function decideApproval(approvalId: string, decision: 'approved' | 'denied') {
     try {
       await osApi.decideApproval(approvalId, decision);
@@ -266,6 +280,11 @@ export function ExecutionCenter() {
                 <h2 dir="auto">{detail.objective}</h2>
                 <div className="os-detail-meta">
                   <StatusPill status={detail.status} />
+                  {(detail.status === 'failed' || detail.status === 'awaiting_approval') && (
+                    <button type="button" className="button ghost small" onClick={() => void resumeMission()} disabled={busy}>
+                      <Play size={12} aria-hidden="true" /> استئناف
+                    </button>
+                  )}
                   {taskProgress && <span className="subtle">{taskProgress.done}/{taskProgress.total} مهام مكتملة</span>}
                   <small className="subtle mono">{detail.id}</small>
                 </div>

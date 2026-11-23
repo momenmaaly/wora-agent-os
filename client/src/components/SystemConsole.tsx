@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import {
   Check, CheckCircle2, CircleAlert, Database, History, LoaderCircle, MemoryStick, MonitorSmartphone, Plug2, Search, ServerCog, ShieldCheck, Trash2, Copy, Laptop, X,
 } from 'lucide-react';
-import { OsApiError, osApi, type ApprovalRecord, type DeviceRecord, type OsState } from '../os/api.js';
+import { OsApiError, osApi, type AiUsageSummary, type ApprovalRecord, type DeviceRecord, type OsState } from '../os/api.js';
 
 type Tab = 'overview' | 'memory' | 'audit' | 'governance';
 const SCOPES = ['workspace', 'user', 'project', 'agent', 'organization', 'execution', 'episodic', 'semantic'] as const;
@@ -45,6 +45,8 @@ export function SystemConsole() {
   const [pairPlatform, setPairPlatform] = useState('linux');
   const [pairCode, setPairCode] = useState<string | null>(null);
   const [govBusy, setGovBusy] = useState(false);
+  const [usage, setUsage] = useState<AiUsageSummary | null>(null);
+  const [usageLocked, setUsageLocked] = useState(false);
 
   useEffect(() => {
     osApi.state().then(setState).catch((err) => setError(err instanceof OsApiError ? err.message : 'تعذر قراءة حالة النظام.'));
@@ -66,6 +68,12 @@ export function SystemConsole() {
       setDevices(deviceList);
     } catch (err) {
       setError(err instanceof OsApiError ? err.message : 'تعذر تحميل الحوكمة.');
+    }
+    try {
+      setUsage(await osApi.usage(30));
+      setUsageLocked(false);
+    } catch (err) {
+      if (err instanceof OsApiError && (err.status === 401 || err.status === 403)) setUsageLocked(true);
     }
   }, []);
   useEffect(() => { if (tab === 'governance' && policy === null) void loadGovernance(); }, [tab, policy, loadGovernance]);
@@ -274,6 +282,42 @@ export function SystemConsole() {
               ))}
               {devices?.length === 0 && <li className="subtle">لا توجد أجهزة — WORA لم يلمس جهازك. اطلب اقترانًا عندما يصبح الوكيل المحلي متاحًا.</li>}
             </ul>
+          </div>
+
+          <div className="panel panel-pad">
+            <h2 className="os-section-title"><Database size={16} aria-hidden="true" /> استهلاك نماذج الذكاء الاصطناعي (تقديري)</h2>
+            {usageLocked && <p className="subtle">مخفية في الإنتاج — يتطلب عرضها مفتاح المدير (<code dir="ltr">ADMIN_API_KEY</code> عبر ترويسة x-admin-key). في المعاينة تظهر بيانات المعاينة فقط.</p>}
+            {!usageLocked && usage === null && <p className="os-loading"><LoaderCircle size={16} className="os-spin" aria-hidden="true" /> جارٍ التحميل…</p>}
+            {usage && (
+              <>
+                <div className="os-stat-cards os-usage-cards">
+                  {[
+                    ['طلبات', usage.totals.calls],
+                    ['رموز دخل (تقريبي)', usage.totals.inputTokens],
+                    ['رموز خرج (تقريبي)', usage.totals.outputTokens],
+                    ['التكلفة المقدرة (USD)', usage.totals.costUsd.toFixed(4)],
+                  ].map(([label, value]) => (
+                    <div key={String(label)} className="os-stat"><small>{label}</small><strong>{String(value)}</strong></div>
+                  ))}
+                </div>
+                {usage.byProvider.length > 0 && (
+                  <table className="os-table">
+                    <thead><tr><th>المزوّد</th><th>النموذج</th><th>طلبات</th><th>تكلفة ≈</th></tr></thead>
+                    <tbody>
+                      {usage.byProvider.map((row) => (
+                        <tr key={`${String(row['provider'])}-${String(row['model'])}`}>
+                          <td>{String(row['provider'])}</td>
+                          <td dir="ltr">{String(row['model'])}</td>
+                          <td>{String(row['calls'])}</td>
+                          <td>${Number(row['costUsd'] ?? 0).toFixed(4)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+                <p className="subtle os-policy-note">{usage.pricingNote}</p>
+              </>
+            )}
           </div>
         </div>
       )}

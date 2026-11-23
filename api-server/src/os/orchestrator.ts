@@ -12,9 +12,11 @@ import path from 'node:path';
 import { getOsDb, newId, nowIso, parseJson, audit } from './db.js';
 import { runTool, getTool, type ToolContext } from './tools.js';
 import { requiresHumanApproval, createApproval, getTaskApproval, listMissionApprovals } from './governance.js';
+import { maybeDistillPlaybook } from './playbooks.js';
 import { listAgents, pickAgent, ensureSeedAgents, type AgentRecord } from './registry.js';
 import { addMemory } from './memory.js';
 import { workspacePath } from './workspace.js';
+import { logger } from '../lib/logger.js';
 
 export type MissionStatus = 'planning' | 'running' | 'awaiting_approval' | 'completed' | 'failed';
 export type TaskStatus = 'created' | 'planned' | 'assigned' | 'running' | 'reviewing' | 'completed' | 'failed' | 'blocked';
@@ -363,7 +365,9 @@ export async function executeMission(missionId: string, actor = 'orchestrator'):
   const db = getOsDb();
   const mission = db.prepare('SELECT * FROM os_missions WHERE id = ?').get(missionId) as { id: string; workspace_id: string; objective: string; status: string } | undefined;
   if (!mission) throw new Error(`Mission ${missionId} not found`);
-  if (mission.status === 'completed' || mission.status === 'failed') return; // awaiting_approval re-enters: approved tasks execute now
+  // Completed missions never re-run. Failed/awaiting missions re-enter: completed tasks are skipped,
+  // the failed/blocked ones re-plan from their stored objective (retry after a fix or a restart).
+  if (mission.status === 'completed') return;
   db.prepare('UPDATE os_missions SET status = ?, updated_at = ? WHERE id = ?').run('running', nowIso(), missionId);
 
   const tasks = db.prepare('SELECT * FROM os_tasks WHERE mission_id = ? ORDER BY order_index ASC').all(missionId) as unknown as TaskRow[];
@@ -494,6 +498,12 @@ export async function executeMission(missionId: string, actor = 'orchestrator'):
   }
 
   finalizeMission(missionId, actor);
+  // Self-building intelligence: distill this mission's validated OR runs into reusable playbooks.
+  try {
+    await maybeDistillPlaybook({ workspaceId: mission.workspace_id, missionId, objective: mission.objective, actor });
+  } catch (err) {
+    logger.warn({ err, missionId }, 'playbook distillation failed (mission unaffected)');
+  }
 }
 
 function summarizeDeliverables(tool: string | null, output: unknown): string[] {
@@ -567,6 +577,27 @@ function finalizeMission(missionId: string, actor: string): void {
   db.prepare('UPDATE os_missions SET status = ?, summary = ?, artifact_id = ?, updated_at = ? WHERE id = ?')
     .run(status, allDone ? `${tasks.length} task(s) completed with evidence.` : `Finished with unresolved tasks — see failed/blocked below.`, artifactId, nowIso(), missionId);
   audit(db, { workspaceId: mission.workspace_id, actor, action: 'mission.finalize', subject: missionId, detail: { status, tasks: tasks.length } });
+}
+
+/**
+ * Restart recovery: a mission that was mid-flight when the process died can
+ * never finish on its own — nothing is executing it. Mark it and its running
+ * tasks honestly so operators can resume via POST /missions/:id/execute
+ * (re-entry is idempotent: completed tasks are skipped).
+ */
+export function markInterruptedMissions(): number {
+  const db = getOsDb();
+  const stale = db.prepare("SELECT id, workspace_id FROM os_missions WHERE status IN ('running', 'planning')").all() as Array<{ id: string; workspace_id: string }>;
+  for (const mission of stale) {
+    db.prepare("UPDATE os_tasks SET status = 'blocked', detail = 'interrupted_by_restart — resume the mission to re-execute this task', updated_at = ? WHERE mission_id = ? AND status IN ('running', 'assigned', 'reviewing', 'planned', 'created')")
+      .run(nowIso(), mission.id);
+    db.prepare("UPDATE os_runs SET status = 'interrupted', finished_at = ?, summary = 'Interrupted by process restart' WHERE mission_id = ? AND status = 'running'")
+      .run(nowIso(), mission.id);
+    db.prepare("UPDATE os_missions SET status = 'failed', summary = 'Interrupted by a process restart — resume the mission to continue from completed tasks.', updated_at = ? WHERE id = ?")
+      .run(nowIso(), mission.id);
+    audit(db, { workspaceId: mission.workspace_id, actor: 'system', action: 'mission.interrupted', subject: mission.id, detail: { reason: 'process restart' } });
+  }
+  return stale.length;
 }
 
 /* ─── Read models ───────────────────────────────────────── */

@@ -286,3 +286,52 @@ test('governance: heartbeat requires paired state + matching fingerprint, and st
   revokeDevice(WS, device.id, 'test');
   assert.throws(() => deviceHeartbeat(device.id, { fingerprint: 'fp-hb-1' }), /revoked/);
 });
+
+/* ─── Self-building intelligence: playbooks distill from validated OR runs ─── */
+test('playbooks: validated OR mission distills a reusable playbook; a similar mission reinforces it', { timeout: 90_000 }, async () => {
+  const { listPlaybooks } = await import('./playbooks.js');
+  const objective = 'Optimize the allocation of 20 employees across 5 shifts respecting availability and minimizing labor cost';
+  const first = createMission({ workspaceId: WS, objective, actor: 'test' });
+  await executeMission(first, 'test');
+  let books = listPlaybooks(WS).filter((p) => p.toolId === 'or.employee_schedule');
+  assert.equal(books.length, 1, 'expected exactly one distilled playbook');
+  assert.equal(books[0]!.status, 'validated');
+  assert.ok(books[0]!.validation.ok, 'playbook must carry a passing re-validation');
+  const runsBefore = books[0]!.successRuns;
+
+  const second = createMission({ workspaceId: WS, objective, actor: 'test' });
+  await executeMission(second, 'test');
+  books = listPlaybooks(WS).filter((p) => p.toolId === 'or.employee_schedule');
+  assert.equal(books.length, 1, 'similar mission must reinforce, not duplicate');
+  assert.ok(books[0]!.successRuns > runsBefore, `expected successRuns to grow (${runsBefore} → ${books[0]!.successRuns})`);
+});
+
+/* ─── AI usage ledger ─── */
+test('usage ledger: records estimates and aggregates them (never throws on write)', async () => {
+  const { recordAiUsage, getAiUsageSummary } = await import('./usage.js');
+  recordAiUsage({ provider: 'groq', model: 'llama-3.3-70b-versatile', inputTokens: 400, outputTokens: 200, agentId: 'agent-test', auditId: 'audit-test' });
+  const summary = getAiUsageSummary(1);
+  assert.ok(summary.totals.calls >= 1);
+  assert.ok(summary.totals.outputTokens >= 200);
+  assert.ok(summary.byProvider.some((row) => String(row['provider']) === 'groq'));
+  assert.ok(summary.totals.costUsd > 0, 'known model must carry a cost estimate');
+});
+
+/* ─── Restart recovery ─── */
+test('restart recovery: in-flight missions are marked interrupted, then resumable idempotently', async () => {
+  const { markInterruptedMissions, getOsState } = await import('./orchestrator.js');
+  const missionId = createMission({ workspaceId: WS, objective: 'Optimize the allocation of 20 employees across 5 shifts respecting availability and minimizing labor cost', actor: 'test' });
+  // Simulate a crash: mission row stuck in 'running' with no process behind it.
+  const db = (await import('./db.js')).getOsDb();
+  db.prepare("UPDATE os_missions SET status = 'running' WHERE id = ?").run(missionId);
+  db.prepare("UPDATE os_tasks SET status = 'running' WHERE mission_id = ? AND order_index = 0").run(missionId);
+  const marked = markInterruptedMissions();
+  assert.ok(marked >= 1);
+  const detail = getMissionDetail(WS, missionId)!;
+  assert.equal(detail.status, 'failed');
+  assert.match(detail.summary, /restart/);
+  // Resume: completed tasks skip; the interrupted one re-executes to green.
+  await executeMission(missionId, 'test');
+  const resumed = getMissionDetail(WS, missionId)!;
+  assert.equal(resumed.status, 'completed');
+});

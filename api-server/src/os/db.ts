@@ -196,6 +196,37 @@ CREATE TABLE IF NOT EXISTS os_settings (
   updated_at TEXT NOT NULL,
   PRIMARY KEY (workspace_id, key)
 );
+
+CREATE TABLE IF NOT EXISTS os_playbooks (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  tool_id TEXT NOT NULL,
+  keywords TEXT NOT NULL DEFAULT '[]',
+  tool_input TEXT NOT NULL DEFAULT '{}',
+  validation TEXT NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT 'validated',
+  success_runs INTEGER NOT NULL DEFAULT 1,
+  created_from_mission TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_os_playbooks_ws ON os_playbooks(workspace_id, tool_id);
+
+CREATE TABLE IF NOT EXISTS os_ai_usage (
+  id TEXT PRIMARY KEY,
+  actor TEXT NOT NULL DEFAULT 'brain',
+  agent_id TEXT NOT NULL DEFAULT '',
+  provider TEXT NOT NULL,
+  model TEXT NOT NULL,
+  input_tokens_est INTEGER NOT NULL DEFAULT 0,
+  output_tokens_est INTEGER NOT NULL DEFAULT 0,
+  cost_usd REAL,
+  audit_id TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_os_ai_usage_created ON os_ai_usage(created_at);
+CREATE INDEX IF NOT EXISTS idx_os_ai_usage_provider ON os_ai_usage(provider, model);
 `;
 
 export function nowIso(): string {

@@ -13,13 +13,15 @@ import { z, ZodError } from 'zod';
 import { verifySessionToken, safeEqual } from '../lib/session.js';
 import { isProductionEnv, sanitizeEnv } from '../lib/config.js';
 import { getOsDb, parseJson } from './db.js';
+import { getAiUsageSummary } from './usage.js';
+import { listPlaybooks, deletePlaybook } from './playbooks.js';
 import { listTools, runTool, getTool } from './tools.js';
 import { SPECIALIZATIONS } from './specializations.js';
 import {
   createAgent, listAgents, getAgent, updateAgent, deleteAgent, ensureSeedAgents,
 } from './registry.js';
 import {
-  createMission, executeMission, getMissionDetail, listMissions, getOsState,
+  createMission, executeMission, getMissionDetail, listMissions, getOsState, markInterruptedMissions,
 } from './orchestrator.js';
 import { addMemory, listMemories, searchMemories, deleteMemory, MEMORY_SCOPES, type MemoryScope } from './memory.js';
 import { buildOrganization, listOrganizations } from './orgs.js';
@@ -111,6 +113,9 @@ export function createOsRouter(options: { production?: boolean } = {}): Router {
 
   const workspace = (res: Response) => res.locals['workspaceId'] as string;
   const actor = (res: Response) => (res.locals['actor'] as string) ?? 'user';
+
+  // Interrupted-mission recovery runs once per process boot (idempotent).
+  try { markInterruptedMissions(); } catch (err) { logger.warn({ err }, 'interrupted-mission recovery failed'); }
 
   router.get('/state', asyncWrap((_req, res) => {
     res.json(getOsState(workspace(res)));
@@ -233,6 +238,29 @@ export function createOsRouter(options: { production?: boolean } = {}): Router {
     if (!detail) { res.status(404).json({ error: 'Mission not found' }); return; }
     await executeMission(detail.id, actor(res));
     res.json(getMissionDetail(workspace(res), detail.id));
+  }));
+
+  /* ─── AI usage ledger (operator-facing) ─── */
+  router.get('/usage', asyncWrap((req, res) => {
+    const days = Math.min(Math.max(Number(req.query['days']) || 30, 1), 90);
+    if (production) {
+      // Deployment-level spend is operator data: requires the admin key.
+      if (!ADMIN_API_KEY) { res.status(403).json({ error: 'Set ADMIN_API_KEY to expose the usage ledger in production' }); return; }
+      const key = req.header('x-admin-key') ?? '';
+      if (!key || !safeEqual(key, ADMIN_API_KEY)) { res.status(401).json({ error: 'x-admin-key required' }); return; }
+    }
+    res.json(getAiUsageSummary(days));
+  }));
+
+  /* ─── Self-built playbooks ─── */
+  router.get('/playbooks', asyncWrap((_req, res) => {
+    res.json(listPlaybooks(workspace(res)));
+  }));
+
+  router.delete('/playbooks/:id', asyncWrap((req, res) => {
+    if (!rateLimit(workspace(res), 30)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    const ok = deletePlaybook(workspace(res), param(req, 'id'), actor(res));
+    res.status(ok ? 204 : 404).end();
   }));
 
   /* ─── Governance: approvals, autonomy policy, devices ─── */

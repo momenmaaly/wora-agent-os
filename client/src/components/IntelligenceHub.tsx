@@ -7,7 +7,7 @@ import {
   type DecisionResult, type MonteCarloResult, type ScheduleRequest, type ScheduleResult, type ToolInfo,
 } from '../os/api.js';
 
-type Tab = 'schedule' | 'montecarlo' | 'decision' | 'tools';
+type Tab = 'schedule' | 'montecarlo' | 'decision' | 'tools' | 'playbooks';
 
 type EditableEmployee = ScheduleRequest['employees'][number] & { name: string };
 
@@ -125,12 +125,18 @@ export function IntelligenceHub() {
     if (tab !== 'tools' || tools) return;
     osApi.tools().then(setTools).catch((err) => setError(err instanceof OsApiError ? err.message : 'تعذر تحميل سجل الأدوات.'));
   }, [tab, tools]);
+  const [playbooks, setPlaybooks] = useState<import('../os/api.js').Playbook[] | null>(null);
+  useEffect(() => {
+    if (tab !== 'playbooks' || playbooks) return;
+    osApi.playbooks().then(setPlaybooks).catch((err) => setError(err instanceof OsApiError ? err.message : 'تعذر تحميل الـ playbooks.'));
+  }, [tab, playbooks]);
 
   const tabs: Array<{ id: Tab; label: string; icon: typeof BrainCircuit }> = [
     { id: 'schedule', label: 'الجدولة التشغيلية', icon: BarChart3 },
     { id: 'montecarlo', label: 'مونتي كارلو', icon: FlaskConical },
     { id: 'decision', label: 'مصفوفة القرار', icon: Scale },
     { id: 'tools', label: 'سجل الأدوات', icon: Wrench },
+    { id: 'playbooks', label: 'Playbooks', icon: CheckCircle2 },
   ];
 
   return (
@@ -319,6 +325,25 @@ export function IntelligenceHub() {
               <p className="subtle os-disclaimer">{decisionResult.methodology}</p>
             </div>
           )}
+        </div>
+      )}
+
+      {tab === 'playbooks' && (
+        <div className="os-playbooks">
+          <p className="subtle os-playbooks-intro">WORA يبني هذه الوصفات بنفسه: بعد كل مهمة عمليات بحوث تكتمل بنجاح، يُعيد تشغيل المُحلِّ على نفس البيانات — لا تثق إلا بما أُعيد التحقق منه — ويحفظها كـ «playbook» يعيد استعمالها ويُعزز عداد نجاحه مع كل مهمة مشابهة.</p>
+          {playbooks === null && <p className="os-loading"><LoaderCircle size={16} className="os-spin" aria-hidden="true" /> جارٍ التحميل…</p>}
+          <div className="os-tool-grid">
+            {playbooks?.map((playbook) => (
+              <article key={playbook.id} className="os-tool-card panel">
+                <div className="os-tool-head"><code>{playbook.toolId}</code><span className="os-risk os-risk-low">validated</span></div>
+                <h3 dir="auto">{playbook.name}</h3>
+                <p className="subtle">{playbook.validation.detail}</p>
+                <small className="subtle">{playbook.successRuns} تشغيل ناجح · آخر تحديث {new Date(playbook.updatedAt).toLocaleDateString('ar')}</small>
+                <button type="button" className="button ghost small danger" onClick={() => { void osApi.deletePlaybook(playbook.id).then(() => setPlaybooks((current) => current?.filter((item) => item.id !== playbook.id) ?? null)); }} aria-label="حذف الـ playbook"><Trash2 size={13} aria-hidden="true" /> حذف</button>
+              </article>
+            ))}
+          </div>
+          {playbooks?.length === 0 && <div className="os-empty"><CheckCircle2 size={24} aria-hidden="true" /><p>لا توجد playbooks بعد — أكمل مهمة جدولة/تحسين من مركز التنفيذ، وستظهر هنا بعد أن يعيد WORA التحقق منها.</p></div>}
         </div>
       )}
 

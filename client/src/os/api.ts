@@ -57,6 +57,18 @@ export interface ApprovalRecord {
   decisionNote: string; decidedBy: string | null; decidedAt: string | null; createdAt: string;
 }
 
+export interface Playbook {
+  id: string; name: string; toolId: string; keywords: string[];
+  validation: { ok: boolean; detail: string };
+  status: 'validated'; successRuns: number; createdFromMission: string | null; createdAt: string; updatedAt: string;
+}
+
+export interface AiUsageSummary {
+  since: string; days: number; pricingNote: string;
+  totals: { calls: number; inputTokens: number; outputTokens: number; costUsd: number };
+  byProvider: Array<Record<string, unknown>>;
+}
+
 export interface DeviceRecord {
   id: string; name: string; platform: string; status: 'pending' | 'paired' | 'revoked';
   fingerprint: string; permissions: string[];
@@ -184,6 +196,7 @@ export const osApi = {
 
   missions: () => request<MissionSummary[]>('/missions'),
   mission: (id: string) => request<MissionDetail>(`/missions/${encodeURIComponent(id)}`),
+  resumeMission: (id: string) => request<MissionDetail>(`/missions/${encodeURIComponent(id)}/execute`, { method: 'POST', body: '{}' }),
   launchMission: (objective: string) =>
     request<MissionDetail>('/missions', { method: 'POST', body: JSON.stringify({ objective }) }),
   artifact: (id: string) => request<{ id: string; name: string; kind: string; content: string }>(`/artifacts/${encodeURIComponent(id)}`),
@@ -214,6 +227,10 @@ export const osApi = {
   autonomy: () => request<{ policy: 'balanced' | 'autopilot' }>('/settings/autonomy'),
   setAutonomy: (policy: 'balanced' | 'autopilot') =>
     request<{ policy: 'balanced' | 'autopilot' }>('/settings/autonomy', { method: 'POST', body: JSON.stringify({ policy }) }),
+
+  playbooks: () => request<Playbook[]>('/playbooks'),
+  deletePlaybook: (id: string) => request<void>(`/playbooks/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  usage: (days = 30) => request<AiUsageSummary>(`/usage?days=${days}`),
 
   devices: () => request<DeviceRecord[]>('/devices'),
   pairDevice: (body: { name: string; platform: string }) =>

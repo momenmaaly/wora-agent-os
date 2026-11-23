@@ -17,6 +17,7 @@
 import { randomUUID } from 'node:crypto';
 import { AgentModel } from '../models/Agent.js';
 import { logger } from '../lib/logger.js';
+import { recordAiUsage } from '../os/usage.js';
 import {
   BrainProvider as BP,
   BRAIN_MODELS,
@@ -478,6 +479,17 @@ export class BrainAdapterFactory {
       temperature,
       onChunk: opts.onChunk,
       signal:  opts.signal,
+    });
+
+    /* Operational ledger: non-blocking, never fails the completion. */
+    const inputChars = opts.systemPrompt.length + turns.reduce((acc, turn) => acc + turn.content.length, 0);
+    recordAiUsage({
+      provider: adapter.provider,
+      model: adapter.model,
+      agentId: opts.taskContext.agentId,
+      auditId,
+      inputTokens: Math.ceil(inputChars / 4),
+      outputTokens: Math.ceil(rawText.length / 4),
     });
 
     return {
