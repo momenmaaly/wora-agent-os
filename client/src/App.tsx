@@ -17,7 +17,10 @@ import { useOfficeMotion, useOfficeSimulation } from './office/useOfficeSimulati
 import { DIRECTOR_ROOM_ID } from './office/work.js';
 import { officeHash, workspaceRoute, PAGES, type PageId } from './pages.js';
 import { useWoraStore } from './store/useWoraStore.js';
+import { initBoardSync } from './store/boardSync.js';
 import { osApi } from './os/api.js';
+
+initBoardSync(); // pull the durable workspace board once per boot (server wins); safe to call before React mounts
 
 const Campus = lazy(() => import('./components/Campus.js').then((module) => ({ default: module.Campus })));
 const Director = lazy(() => import('./components/DirectorOffice.js').then((module) => ({ default: module.DirectorOffice })));

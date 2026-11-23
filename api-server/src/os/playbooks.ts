@@ -19,8 +19,9 @@ const OR_TOOLS = new Set(['or.employee_schedule', 'or.assignment', 'or.solve_lp'
 
 export interface PlaybookRecord {
   id: string; name: string; toolId: string; keywords: string[];
+  toolInput: Record<string, unknown>;
   validation: { ok: boolean; detail: string };
-  status: 'validated'; successRuns: number; createdFromMission: string | null; createdAt: string; updatedAt: string;
+  status: 'validated'; successRuns: number; reuseCount: number; createdFromMission: string | null; createdAt: string; updatedAt: string;
 }
 
 const tokenize = (text: string): string[] =>
@@ -41,13 +42,32 @@ const playbookView = (row: Record<string, string | number>): PlaybookRecord => (
   name: String(row['name']),
   toolId: String(row['tool_id']),
   keywords: parseJson<string[]>(String(row['keywords']), []),
+  toolInput: parseJson<Record<string, unknown>>(String(row['tool_input']), {}),
   validation: parseJson<{ ok: boolean; detail: string }>(String(row['validation']), { ok: false, detail: 'unknown' }),
   status: 'validated',
   successRuns: Number(row['success_runs']),
+  reuseCount: Number(row['reuse_count'] ?? 0),
   createdFromMission: (row['created_from_mission'] as string | null) ?? null,
   createdAt: String(row['created_at']),
   updatedAt: String(row['updated_at']),
 });
+
+export function findPlaybookFor(workspaceId: string, toolId: string, objective: string): PlaybookRecord | null {
+  const keywords = tokenize(objective);
+  const rows = getOsDb().prepare('SELECT * FROM os_playbooks WHERE workspace_id = ? AND tool_id = ?').all(workspaceId, toolId) as unknown as Array<Record<string, string | number>>;
+  let best: { row: Record<string, string | number>; score: number } | null = null;
+  for (const row of rows) {
+    const score = jaccard(keywords, parseJson<string[]>(String(row['keywords']), []));
+    if (score >= 0.5 && (!best || score > best.score)) best = { row, score };
+  }
+  return best ? playbookView(best.row) : null;
+}
+
+export function recordPlaybookReuse(workspaceId: string, playbookId: string, actor: string): void {
+  const db = getOsDb();
+  db.prepare('UPDATE os_playbooks SET reuse_count = COALESCE(reuse_count, 0) + 1, updated_at = ? WHERE id = ?').run(nowIso(), playbookId);
+  audit(db, { workspaceId, actor, action: 'playbook.reuse', subject: playbookId, detail: {} });
+}
 
 export function listPlaybooks(workspaceId: string): PlaybookRecord[] {
   const rows = getOsDb().prepare('SELECT * FROM os_playbooks WHERE workspace_id = ? ORDER BY updated_at DESC LIMIT 50').all(workspaceId) as unknown as Array<Record<string, string | number>>;

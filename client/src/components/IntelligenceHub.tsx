@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  BarChart3, BrainCircuit, CheckCircle2, CircleAlert, FlaskConical, LoaderCircle, Play, Plus, Scale, ShieldAlert, Trash2, Wrench,
+  BarChart3, Boxes, BrainCircuit, CheckCircle2, CircleAlert, FlaskConical, LoaderCircle, Play, Plus, Scale, ShieldAlert, Trash2, Wrench,
 } from 'lucide-react';
 import {
   OsApiError, osApi,
   type DecisionResult, type MonteCarloResult, type ScheduleRequest, type ScheduleResult, type ToolInfo,
+  type TwinRecord, type TwinScenarioResult, type TwinDriverInput,
 } from '../os/api.js';
 
-type Tab = 'schedule' | 'montecarlo' | 'decision' | 'tools' | 'playbooks';
+type Tab = 'schedule' | 'montecarlo' | 'decision' | 'tools' | 'playbooks' | 'twins';
 
 type EditableEmployee = ScheduleRequest['employees'][number] & { name: string };
 
@@ -119,6 +120,88 @@ export function IntelligenceHub() {
     }
   };
 
+  /* ─── Digital twins ─── */
+  const [twins, setTwins] = useState<TwinRecord[] | null>(null);
+  const [selectedTwinId, setSelectedTwinId] = useState<string | null>(null);
+  const [twinName, setTwinName] = useState('');
+  const [twinEntityType, setTwinEntityType] = useState('operation');
+  const [twinDrivers, setTwinDrivers] = useState<TwinDriverInput[]>([
+    { name: 'العجلة اليومية', optimistic: 80, likely: 120, pessimistic: 160 },
+  ]);
+  const [twinBusy, setTwinBusy] = useState(false);
+  const [observationText, setObservationText] = useState('');
+  const [scenarioName, setScenarioName] = useState('سيناريو توسعة');
+  const [scenarioAdjustments, setScenarioAdjustments] = useState<Record<string, { op: 'mul' | 'add'; value: number } | undefined>>({});
+  const [scenarioResult, setScenarioResult] = useState<TwinScenarioResult | null>(null);
+  const [scenarioBusy, setScenarioBusy] = useState(false);
+
+  const refreshTwins = useCallback(async () => {
+    try {
+      const list = await osApi.twins();
+      setTwins(list);
+      setSelectedTwinId((current) => current ?? list[0]?.id ?? null);
+    } catch (err) {
+      setError(err instanceof OsApiError ? err.message : 'تعذر تحميل التوائم الرقمية.');
+    }
+  }, []);
+
+  useEffect(() => {
+    if (tab !== 'twins' || twins !== null) return;
+    void refreshTwins();
+  }, [tab, twins, refreshTwins]);
+
+  const selectedTwin = twins?.find((twin) => twin.id === selectedTwinId) ?? null;
+
+  const createTwin = async () => {
+    const drivers = twinDrivers.filter((driver) => driver.name.trim());
+    if (!twinName.trim() || drivers.length === 0) { setError('سمِّ التوأم وأضف محركًا واحدًا على الأقل.'); return; }
+    setTwinBusy(true);
+    setError(null);
+    try {
+      const created = await osApi.createTwin({ name: twinName.trim(), entityType: twinEntityType, drivers });
+      setTwinName('');
+      setTwinDrivers([{ name: 'محرك جديد', optimistic: 1, likely: 2, pessimistic: 4 }]);
+      await refreshTwins();
+      setSelectedTwinId(created.id);
+    } catch (err) {
+      setError(err instanceof OsApiError ? err.message : 'تعذر إنشاء التوأم.');
+    } finally {
+      setTwinBusy(false);
+    }
+  };
+
+  const recordObservation = async () => {
+    if (!selectedTwin || !observationText.trim()) return;
+    setTwinBusy(true);
+    try {
+      await osApi.recordTwinObservation(selectedTwin.id, { note: observationText.trim() });
+      setObservationText('');
+      await refreshTwins();
+    } catch (err) {
+      setError(err instanceof OsApiError ? err.message : 'تعذر تسجيل الملاحظة.');
+    } finally {
+      setTwinBusy(false);
+    }
+  };
+
+  const runScenario = async () => {
+    if (!selectedTwin) return;
+    const adjustments = Object.entries(scenarioAdjustments)
+      .filter((entry): entry is [string, { op: 'mul' | 'add'; value: number }] => Boolean(entry[1]) && Number.isFinite(entry[1]!.value))
+      .map(([driver, adj]) => ({ driver, op: adj.op, value: adj.value }));
+    if (adjustments.length === 0) { setError('اضبط محركًا واحدًا على الأقل للسيناريو.'); return; }
+    setScenarioBusy(true);
+    setError(null);
+    try {
+      setScenarioResult(await osApi.runTwinScenario(selectedTwin.id, { name: scenarioName.trim() || 'سيناريو', adjustments, trials: 5000, seed: 42 }));
+      await refreshTwins();
+    } catch (err) {
+      setError(err instanceof OsApiError ? err.message : 'تعذر تشغيل السيناريو.');
+    } finally {
+      setScenarioBusy(false);
+    }
+  };
+
   /* ─── Tool registry ─── */
   const [tools, setTools] = useState<ToolInfo[] | null>(null);
   useEffect(() => {
@@ -137,6 +220,7 @@ export function IntelligenceHub() {
     { id: 'decision', label: 'مصفوفة القرار', icon: Scale },
     { id: 'tools', label: 'سجل الأدوات', icon: Wrench },
     { id: 'playbooks', label: 'Playbooks', icon: CheckCircle2 },
+    { id: 'twins', label: 'التوائم الرقمية', icon: Boxes },
   ];
 
   return (
@@ -328,6 +412,128 @@ export function IntelligenceHub() {
         </div>
       )}
 
+      {tab === 'twins' && (
+        <div className="os-twins">
+          <div className="os-schedule-head">
+            <div>
+              <h2>التوأم الرقمي — نموذج حي للكيان التشغيلي</h2>
+              <p className="subtle">عرّف كيانًا تشغيليًا حقيقيًا (متجر، مستودع، خط إنتاج…) بمحركات PERT ثلاثية النقاط وسجل ملاحظات فعلية. سيناريوهات «ماذا لو» تُعيد تشغيل مونتي كارلو المُبذورة — النتائج محاكاة موسومة، وليست قياسًا لأنظمة حية.</p>
+            </div>
+          </div>
+
+          <div className="os-decision-grid">
+            <div className="os-table-wrap panel">
+              <h3>إنشاء توأم جديد</h3>
+              <label className="label">الاسم<input dir="auto" className="field" value={twinName} onChange={(e) => setTwinName(e.target.value)} placeholder="مثال: فرع المعادي" maxLength={120} /></label>
+              <label className="label">نوع الكيان
+                <select className="field" value={twinEntityType} onChange={(e) => setTwinEntityType(e.target.value)}>
+                  <option value="operation">عملية تشغيلية</option>
+                  <option value="store">متجر</option>
+                  <option value="warehouse">مستودع</option>
+                  <option value="pipeline">خط إنتاج</option>
+                  <option value="service">خدمة</option>
+                  <option value="custom">مخصص</option>
+                </select>
+              </label>
+              <h4>المحركات (متفائل / محتمل / متشائم)</h4>
+              {twinDrivers.map((driver, index) => (
+                <div className="os-twin-driver" key={index}>
+                  <input dir="auto" className="field" value={driver.name} onChange={(e) => setTwinDrivers((cur) => cur.map((d, i) => i === index ? { ...d, name: e.target.value } : d))} aria-label="اسم المحرك" />
+                  {(['optimistic', 'likely', 'pessimistic'] as const).map((key) => (
+                    <input key={key} className="os-cost-input" type="number" step={0.5} value={driver[key]} onChange={(e) => setTwinDrivers((cur) => cur.map((d, i) => i === index ? { ...d, [key]: Number(e.target.value) || 0 } : d))} aria-label={key} />
+                  ))}
+                  <button type="button" className="icon-button" aria-label="إزالة المحرك" onClick={() => setTwinDrivers((cur) => cur.filter((_, i) => i !== index))}><Trash2 size={14} /></button>
+                </div>
+              ))}
+              <button type="button" className="button small ghost" onClick={() => setTwinDrivers((cur) => [...cur, { name: `محرك ${cur.length + 1}`, optimistic: 1, likely: 2, pessimistic: 4 }])}><Plus size={14} aria-hidden="true" /> محرك</button>
+              <button type="button" className="button primary" disabled={twinBusy} onClick={() => void createTwin()}>{twinBusy ? <LoaderCircle size={16} className="os-spin" aria-hidden="true" /> : <Plus size={16} aria-hidden="true" />} أنشئ التوأم</button>
+            </div>
+
+            <div className="os-table-wrap panel">
+              <h3>التوائم ({twins?.length ?? 0})</h3>
+              {twins === null && <p className="os-loading"><LoaderCircle size={16} className="os-spin" aria-hidden="true" /> جارٍ التحميل…</p>}
+              <div className="os-twin-list">
+                {twins?.map((twin) => (
+                  <button key={twin.id} type="button" className={`os-twin-item${twin.id === selectedTwinId ? ' is-active' : ''}`} onClick={() => { setSelectedTwinId(twin.id); setScenarioResult(null); setScenarioAdjustments({}); }}>
+                    <strong dir="auto">{twin.name}</strong>
+                    <small>{twin.entityType} · {twin.params.drivers.length} محركات · {twin.events.length} أحداث</small>
+                  </button>
+                ))}
+                {twins?.length === 0 && <div className="os-empty"><Boxes size={22} aria-hidden="true" /><p>لا توجد توائم بعد — أنشئ أول توأم من النموذج.</p></div>}
+              </div>
+            </div>
+          </div>
+
+          {selectedTwin && (
+            <div className="os-result panel panel-pad">
+              <div className="os-result-head">
+                <Boxes size={18} className="os-ok" aria-hidden="true" />
+                <h3 dir="auto">{selectedTwin.name} — اختبار «ماذا لو»</h3>
+                <button type="button" className="button ghost small danger" onClick={() => { void osApi.deleteTwin(selectedTwin.id).then(() => { setSelectedTwinId(null); setScenarioResult(null); void refreshTwins(); }); }}><Trash2 size={13} aria-hidden="true" /> حذف التوأم</button>
+              </div>
+
+              <div className="os-twin-scenario-grid">
+                <div>
+                  <h4>ملاحظة فعلية (تُسجَّل في سجل التوأم)</h4>
+                  <div className="os-mc-foot">
+                    <input dir="auto" className="field" value={observationText} onChange={(e) => setObservationText(e.target.value)} placeholder="مثال: الإنتاج الفعلي اليوم 118 قطعة" maxLength={500} aria-label="الملاحظة" />
+                    <button type="button" className="button small primary" disabled={twinBusy || !observationText.trim()} onClick={() => void recordObservation()}>سجّل</button>
+                  </div>
+                  <h4>السيناريو</h4>
+                  <label className="label">اسم السيناريو<input dir="auto" className="field" value={scenarioName} onChange={(e) => setScenarioName(e.target.value)} maxLength={120} /></label>
+                  <table className="os-table">
+                    <thead><tr><th>المحرك</th><th>العملية</th><th>القيمة</th></tr></thead>
+                    <tbody>{selectedTwin.params.drivers.map((driver) => {
+                      const adj = scenarioAdjustments[driver.name];
+                      return (
+                        <tr key={driver.name}>
+                          <td dir="auto">{driver.name}</td>
+                          <td>
+                            <select className="field" value={adj?.op ?? 'none'} onChange={(e) => setScenarioAdjustments((cur) => {
+                              const next = { ...cur };
+                              if (e.target.value === 'none') delete next[driver.name];
+                              else next[driver.name] = { op: e.target.value as 'mul' | 'add', value: next[driver.name]?.value ?? 1 };
+                              return next;
+                            })} aria-label={`عملية ${driver.name}`}>
+                              <option value="none">بدون تغيير</option>
+                              <option value="mul">× (ضرب)</option>
+                              <option value="add">+ (جمع)</option>
+                            </select>
+                          </td>
+                          <td><input className="os-cost-input" type="number" step={0.1} value={adj?.value ?? 1} disabled={!adj} onChange={(e) => setScenarioAdjustments((cur) => adj ? { ...cur, [driver.name]: { ...adj, value: Number(e.target.value) || 0 } } : cur)} aria-label={`قيمة ${driver.name}`} /></td>
+                        </tr>
+                      );
+                    })}</tbody>
+                  </table>
+                  <button type="button" className="button primary" disabled={scenarioBusy} onClick={() => void runScenario()}>{scenarioBusy ? <LoaderCircle size={16} className="os-spin" aria-hidden="true" /> : <Play size={16} aria-hidden="true" />} شغّل السيناريو (5000 محاكاة)</button>
+                </div>
+                <div>
+                  <h4>آخر الأحداث</h4>
+                  <ul className="os-validation">{[...selectedTwin.events].slice(-6).reverse().map((event) => <li key={event.id}><CheckCircle2 size={12} aria-hidden="true" /><span dir="auto">{event.type === 'scenario' ? `سيناريو: ${String(event.payload['name'] ?? '')} — p50 ${String((event.payload as { scenario?: { p50?: number } })['scenario']?.p50 ?? '—')}` : String(event.payload['note'] ?? JSON.stringify(event.payload)).slice(0, 140)}</span></li>)}</ul>
+                  {scenarioResult && (
+                    <>
+                      <h4>النتيجة (محاكاة، وليست قياسًا)</h4>
+                      <div className="os-stat-cards">
+                        {([
+                          ['p50 أساسي', scenarioResult.baseline.p50],
+                          ['p50 السيناريو', scenarioResult.scenario.p50],
+                          ['Δp50', scenarioResult.deltaP50],
+                          ['Δp90', scenarioResult.deltaP90],
+                          ['Δ المتوسط %', scenarioResult.deltaMeanPct],
+                        ] as Array<[string, number]>).map(([label, value]) => (
+                          <div key={label} className="os-stat"><small>{label}</small><strong>{Number(value).toLocaleString('en-US', { maximumFractionDigits: 2 })}</strong></div>
+                        ))}
+                      </div>
+                      <p className="subtle os-disclaimer">محاكاة مُبذورة (seed {scenarioResult.seed}، {scenarioResult.trials} محاكاة) من مدخلات PERT — ليست وعدًا بالأداء الفعلي.</p>
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {tab === 'playbooks' && (
         <div className="os-playbooks">
           <p className="subtle os-playbooks-intro">WORA يبني هذه الوصفات بنفسه: بعد كل مهمة عمليات بحوث تكتمل بنجاح، يُعيد تشغيل المُحلِّ على نفس البيانات — لا تثق إلا بما أُعيد التحقق منه — ويحفظها كـ «playbook» يعيد استعمالها ويُعزز عداد نجاحه مع كل مهمة مشابهة.</p>
@@ -338,7 +544,7 @@ export function IntelligenceHub() {
                 <div className="os-tool-head"><code>{playbook.toolId}</code><span className="os-risk os-risk-low">validated</span></div>
                 <h3 dir="auto">{playbook.name}</h3>
                 <p className="subtle">{playbook.validation.detail}</p>
-                <small className="subtle">{playbook.successRuns} تشغيل ناجح · آخر تحديث {new Date(playbook.updatedAt).toLocaleDateString('ar')}</small>
+                <small className="subtle">{playbook.successRuns} تشغيل ناجح · {playbook.reuseCount ?? 0} إعادة استعمال من المخطط · آخر تحديث {new Date(playbook.updatedAt).toLocaleDateString('ar')}</small>
                 <button type="button" className="button ghost small danger" onClick={() => { void osApi.deletePlaybook(playbook.id).then(() => setPlaybooks((current) => current?.filter((item) => item.id !== playbook.id) ?? null)); }} aria-label="حذف الـ playbook"><Trash2 size={13} aria-hidden="true" /> حذف</button>
               </article>
             ))}

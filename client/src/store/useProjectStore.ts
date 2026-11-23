@@ -83,12 +83,14 @@ export const COLUMN_META: Record<TaskColumn,{ labelAr:string; icon:string; color
 
 interface ProjectState {
   projects: Project[];
-  activeProjectId: string;
+  activeProjectId: string | null;
+  isDemo: boolean; // true only while the bundled demo seed is untouched/uncleared
   products: Product[];
   ideas: Idea[];
   tasks: KanbanTask[];
   // actions
   setActiveProject: (id:string)=>void;
+  clearDemoData: ()=>void;
   createProject: (p: Omit<Project,'id'|'createdAt'|'updatedAt'|'stats'>)=>Project;
   updateProjectStage: (id:string, stage:ProjectStage)=>void;
   addProduct: (p: Omit<Product,'id'|'createdAt'|'sold'>)=>void;
@@ -104,10 +106,12 @@ interface ProjectState {
 export const useProjectStore = create<ProjectState>()(persist((set,get)=>({
   projects: DEMO_PROJECTS,
   activeProjectId: 'proj-1',
+  isDemo: true,
   products: DEMO_PRODUCTS,
   ideas: DEMO_IDEAS,
   tasks: DEMO_TASKS,
 
+  clearDemoData: ()=> set({ projects: [], activeProjectId: null, products: [], ideas: [], tasks: [], isDemo: false }),
   setActiveProject: (id)=> set({ activeProjectId:id }),
   createProject: (p)=>{
     const proj: Project = { ...p, id: uid('proj'), createdAt:new Date().toISOString(), updatedAt:new Date().toISOString(), stats:{products:0,ideas:0,tasks:0,revenue:0} };
@@ -165,4 +169,4 @@ export const useProjectStore = create<ProjectState>()(persist((set,get)=>({
     return { tasks, projects: s.projects.map(project => project.id === task.projectId
       ? { ...project, stats: { ...project.stats, tasks: tasks.filter(item => item.projectId === project.id).length } } : project) };
   }),
-}), { name:'wora:projectOS:v6', partialize: s=>({ projects:s.projects, activeProjectId:s.activeProjectId, products:s.products, ideas:s.ideas, tasks:s.tasks }) }));
+}), { name:'wora:projectOS:v6', partialize: s=>({ projects:s.projects, activeProjectId:s.activeProjectId, isDemo:s.isDemo, products:s.products, ideas:s.ideas, tasks:s.tasks }) }));

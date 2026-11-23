@@ -12,7 +12,7 @@ import path from 'node:path';
 import { getOsDb, newId, nowIso, parseJson, audit } from './db.js';
 import { runTool, getTool, type ToolContext } from './tools.js';
 import { requiresHumanApproval, createApproval, getTaskApproval, listMissionApprovals } from './governance.js';
-import { maybeDistillPlaybook } from './playbooks.js';
+import { maybeDistillPlaybook, findPlaybookFor, recordPlaybookReuse } from './playbooks.js';
 import { listAgents, pickAgent, ensureSeedAgents, type AgentRecord } from './registry.js';
 import { addMemory } from './memory.js';
 import { workspacePath } from './workspace.js';
@@ -95,7 +95,7 @@ function extractUrls(objective: string): string[] {
   return (objective.match(/https?:\/\/[^\s)"'\]]+/g) ?? []).slice(0, 3);
 }
 
-export function buildPlan(objective: string, track?: string): PlanTask[] {
+export function buildPlan(objective: string, track?: string, workspaceId = 'wora-preview'): PlanTask[] {
   const text = objective.trim();
   // 'generic' forces the grounded fallback pipeline (used for kickoff missions so org building never recurses).
   if (track === 'generic') {
@@ -151,16 +151,26 @@ export function buildPlan(objective: string, track?: string): PlanTask[] {
   if (/optimi[sz]e|schedul|allocat|assignment|linear program|shift|employee|مخزون|جدولة|توزيع|تخصيص/i.test(text)) {
     const wantsEmployees = /employee|shift|staff|workforce|وردية|موظف/i.test(text);
     const sample = sampleEmployeeInput();
+    // A validated playbook distilled from an earlier mission outranks the bundled sample.
+    const playbook = findPlaybookFor(workspaceId, 'or.employee_schedule', text);
+    const playbookEmployees = playbook?.toolInput as { employees: typeof sample.employees; shifts: typeof sample.shifts } | undefined;
+    const provenanceDetail = playbook
+      ? `Reused validated playbook ${playbook.id} (${playbook.successRuns} successful re-solve${playbook.successRuns === 1 ? '' : 's'}) distilled from an earlier mission. Same data as before — for a fresh roster use Intelligence → الجدولة التشغيلية.`
+      : 'No operational roster was embedded in the instruction, so this run used the bundled SAMPLE roster (20 employees × 5 shifts, labeled "sample"). For operational use, solve with real data in Intelligence → الجدولة التشغيلية.';
+    const employeeToolInput = playbookEmployees && Array.isArray(playbookEmployees.employees) && Array.isArray(playbookEmployees.shifts)
+      ? playbookEmployees
+      : { employees: sample.employees, shifts: sample.shifts };
+    if (playbook) recordPlaybookReuse(workspaceId, playbook.id, 'orchestrator');
     const task: PlanTask = wantsEmployees
       ? {
           title: 'Formulate and solve the employee/shift allocation',
           objective: text,
           specialization: 'operations_research',
           tool: 'or.employee_schedule',
-          toolInput: { employees: sample.employees, shifts: sample.shifts },
+          toolInput: employeeToolInput,
           dependsOn: [],
           acceptance: ['Feasible MIP solution (HiGHS)', 'Demand met per shift', 'Availability respected', 'Min labor cost achieved', 'Constraints independently revalidated'],
-          detail: 'No operational roster was embedded in the instruction, so this run used the bundled SAMPLE roster (20 employees × 5 shifts, labeled "sample"). For operational use, solve with real data in Intelligence → الجدولة التشغيلية.',
+          detail: provenanceDetail,
         }
       : {
           title: 'Solve the assignment problem',
@@ -284,7 +294,7 @@ export function createMission(input: { workspaceId: string; objective: string; a
   if (!objective) throw new Error('Objective is required');
   ensureSeedAgents(input.workspaceId);
   const db = getOsDb();
-  const plan = buildPlan(objective, input.track);
+  const plan = buildPlan(objective, input.track, input.workspaceId);
   const missionId = newId('msn');
   const ts = nowIso();
   db.exec('BEGIN');
