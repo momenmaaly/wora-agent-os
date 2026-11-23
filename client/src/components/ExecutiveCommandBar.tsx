@@ -1,12 +1,14 @@
 import { useState, type FormEvent } from 'react';
-import { Bot, Send } from 'lucide-react';
+import { ArrowUp } from 'lucide-react';
+import { useI18n } from '../i18n/I18nContext.js';
 
 /**
- * Persistent Command Center. Every submission launches a real WORA mission
- * (understand → plan → route → execute → review) and opens مركز التنفيذ.
+ * Persistent command bar — every submission launches a real WORA mission
+ * (understand → plan → route → execute → review) and opens Tasks & Executions.
  */
 export function ExecutiveCommandBar({ onSubmit }: { onSubmit: (brief: string) => void }) {
   const [draft, setDraft] = useState('');
+  const { t, dir } = useI18n();
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const brief = draft.trim();
@@ -14,18 +16,19 @@ export function ExecutiveCommandBar({ onSubmit }: { onSubmit: (brief: string) =>
     setDraft('');
     onSubmit(brief);
   }
-  return <form className="executive-command-bar" onSubmit={submit} aria-label="Executive Command">
-    <span className="executive-command-avatar" aria-hidden="true"><Bot size={20} strokeWidth={1.8} /></span>
-    <span className="executive-command-label"><strong>Executive Command</strong><small>ينشئ مهمة تنفيذ حقيقية ويتتبعها في مركز التنفيذ</small></span>
-    <input
-      type="text"
-      dir="auto"
-      maxLength={1200}
-      value={draft}
-      onChange={(event) => setDraft(event.target.value)}
-      aria-label="اكتب هدفك لـ WORA"
-      placeholder="اكتب هدفك — مثال: افحص جهازي وحدد المشاكل…"
-    />
-    <button type="submit" className="executive-command-submit" disabled={!draft.trim()}><Send size={15} aria-hidden="true" /><span>نفّذ الآن</span></button>
+  return <form className="executive-command-bar" onSubmit={submit} aria-label={t('commandBar.label')}>
+    <div className="executive-command-field">
+      <span className="executive-command-label">{t('commandBar.label')}<small>{t('commandBar.hint')}</small></span>
+      <input
+        type="text"
+        dir="auto"
+        maxLength={1200}
+        value={draft}
+        onChange={(event) => setDraft(event.target.value)}
+        aria-label={t('commandBar.ariaLabel')}
+        placeholder={t('commandBar.placeholder')}
+      />
+      <button type="submit" className="executive-command-submit" disabled={!draft.trim()} aria-label={t('commandBar.submit')}><ArrowUp size={17} aria-hidden="true" /><span>{t('commandBar.submit')}</span></button>
+    </div>
   </form>;
 }

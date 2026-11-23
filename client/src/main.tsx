@@ -5,6 +5,7 @@ import '@fontsource/ibm-plex-sans-arabic/arabic-600.css';
 import '@fontsource/ibm-plex-sans-arabic/arabic-700.css';
 import '@fontsource-variable/inter';
 import App from './App.js';
+import { LanguageProvider } from './i18n/I18nContext.js';
 import './index.css';
 import './styles/shell.css';
 import './styles/floorplan.css';
@@ -15,7 +16,8 @@ import './styles/director.css';
 import './styles/skills.css';
 import './styles/company-frame.css';
 import './styles/os.css';
+import './styles/command-center.css';
 
 const root = document.getElementById('root');
 if (!root) throw new Error('Root element #root not found');
-createRoot(root).render(<App />);
+createRoot(root).render(<LanguageProvider><App /></LanguageProvider>);

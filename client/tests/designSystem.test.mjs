@@ -16,8 +16,9 @@ test('the product-wide design system stays restrained and defines desktop/mobile
   ok(!styles.includes('text-shadow:'), 'no glow text treatment');
 
   const tokens = read('index.css');
-  match(tokens, /--panel-radius:\s*6px/);
-  match(tokens, /--control-radius:\s*5px/);
+  // Product reset 2026-11: intentional, restrained radii (8px panels / 6px controls)
+  match(tokens, /--panel-radius:\s*8px/);
+  match(tokens, /--control-radius:\s*6px/);
   match(tokens, /--font-sans:\s*'Inter Variable'/);
   match(tokens, /\.page-heading h1[^}]*font-size:\s*clamp\(23px/);
 

@@ -1,12 +1,12 @@
 :root {
-  --company-frame: #101a22;
-  --company-panel: #172630;
-  --company-panel-2: #1f303b;
-  --company-line: #354a56;
-  --company-ink: #eaf2f5;
-  --company-muted: #9fb3bc;
-  --company-accent: #7bd3e2;
-  --company-warm: #e8c28a;
+  --company-frame: var(--panel);
+  --company-panel: var(--raised);
+  --company-panel-2: var(--bg);
+  --company-line: var(--line-strong);
+  --company-ink: var(--ink);
+  --company-muted: var(--subtle);
+  --company-accent: var(--lime);
+  --company-warm: var(--gold);
 }
 
 /* Compact operational context: persisted workspace state only. */
@@ -84,7 +84,7 @@
   border: 1px solid transparent;
   border-radius: var(--control-radius);
   background: var(--company-accent);
-  color: #0d2430;
+  color: var(--button-ink);
   font-size: 12px;
   font-weight: 700;
 }
@@ -98,7 +98,7 @@
   height: 100%;
   min-height: 0;
   overflow: hidden;
-  background: #dfe6e7;
+  background: var(--bg);
   color: var(--company-ink);
   direction: ltr;
 }
@@ -318,7 +318,7 @@
  .office3d-controls .office3d-return {
   border: 1px solid var(--company-accent);
   background: var(--company-accent);
-  color: #0d2430;
+  color: var(--button-ink);
   font-weight: 760;
 }
 .office3d-controls .office3d-return:hover { background: #8ae9f6; color: #0d2430; }

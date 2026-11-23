@@ -1,10 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
-  Bot, Building2, CheckCircle2, CircleAlert, LoaderCircle, Plus, Search, Trash2, Users, Workflow, X,
+  Bot, CircleAlert, LoaderCircle, Plus, Search, Trash2, Users, X,
 } from 'lucide-react';
-import { OsApiError, osApi, type Agent, type Organization, type OrgBuildResult, type Specialization } from '../os/api.js';
-
-type Tab = 'agents' | 'organizations';
+import { OsApiError, osApi, type Agent, type Specialization } from '../os/api.js';
 
 function CreateAgentDialog({ specializations, onClose, onCreated }: { specializations: Specialization[]; onClose: () => void; onCreated: (agent: Agent) => void }) {
   const [name, setName] = useState('');
@@ -62,20 +60,13 @@ function CreateAgentDialog({ specializations, onClose, onCreated }: { specializa
 }
 
 export function AgentRegistry() {
-  const [tab, setTab] = useState<Tab>('agents');
   const [specializations, setSpecializations] = useState<Specialization[]>([]);
   const [agents, setAgents] = useState<Agent[] | null>(null);
-  const [organizations, setOrganizations] = useState<Organization[] | null>(null);
   const [query, setQuery] = useState('');
   const [specializationFilter, setSpecializationFilter] = useState('');
   const [showCreate, setShowCreate] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
-
-  const [orgObjective, setOrgObjective] = useState('');
-  const [orgName, setOrgName] = useState('');
-  const [orgBusy, setOrgBusy] = useState(false);
-  const [orgResult, setOrgResult] = useState<OrgBuildResult | null>(null);
 
   const loadAgents = useCallback(async () => {
     try {
@@ -88,17 +79,7 @@ export function AgentRegistry() {
     }
   }, [query, specializationFilter]);
 
-  const loadOrgs = useCallback(async () => {
-    try {
-      setOrganizations(await osApi.organizations());
-      setError(null);
-    } catch (err) {
-      setError(err instanceof OsApiError ? err.message : 'تعذر تحميل المنظمات.');
-    }
-  }, []);
-
-  useEffect(() => { if (tab === 'agents') void loadAgents(); }, [tab, loadAgents]);
-  useEffect(() => { if (tab === 'organizations') void loadOrgs(); }, [tab, loadOrgs]);
+  useEffect(() => { void loadAgents(); }, [loadAgents]);
 
   async function toggleStatus(agent: Agent) {
     setBusyId(agent.id);
@@ -125,41 +106,20 @@ export function AgentRegistry() {
     }
   }
 
-  async function buildOrg(event: React.FormEvent) {
-    event.preventDefault();
-    if (orgBusy || orgObjective.trim().length < 10) return;
-    setOrgBusy(true);
-    setError(null);
-    setOrgResult(null);
-    try {
-      const result = await osApi.buildOrganization({ objective: orgObjective.trim(), name: orgName.trim() || undefined });
-      setOrgResult(result);
-      await Promise.all([loadOrgs(), loadAgents()]);
-    } catch (err) {
-      setError(err instanceof OsApiError ? err.message : 'تعذر بناء المنظمة.');
-    } finally {
-      setOrgBusy(false);
-    }
-  }
-
   const specLabel = new Map(specializations.map((s) => [s.id, s.label]));
 
   return (
     <div className="os-page">
       <header className="os-page-head">
         <div>
-          <h1><Users size={20} aria-hidden="true" /> الوكلاء والمنظمات</h1>
-          <p className="subtle">وكلاء دائمون حقيقيون (تنفيذيون، ليسوا بطاقات) — أو منظمة افتراضية كاملة تبنى من هدف واحد.</p>
-        </div>
-        <div className="os-tabs" role="tablist">
-          <button type="button" role="tab" aria-selected={tab === 'agents'} className={`os-tab${tab === 'agents' ? ' is-active' : ''}`} onClick={() => setTab('agents')}>الوكلاء</button>
-          <button type="button" role="tab" aria-selected={tab === 'organizations'} className={`os-tab${tab === 'organizations' ? ' is-active' : ''}`} onClick={() => setTab('organizations')}>المنظمات</button>
+          <h1><Users size={20} aria-hidden="true" /> الوكلاء</h1>
+          <p className="subtle">وكلاء دائمون حقيقيون — تنفيذيون، ليسوا بطاقات عرض. للمنظمات الكاملة: صفحة «المنظمات».</p>
         </div>
       </header>
 
       {error && <div role="alert" className="os-alert"><CircleAlert size={16} aria-hidden="true" />{error}</div>}
 
-      {tab === 'agents' && <>
+      <>
         <div className="os-toolbar">
           <label className="os-search"><Search size={15} aria-hidden="true" /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="ابحث بالاسم أو الدور…" aria-label="بحث في الوكلاء" /></label>
           <select value={specializationFilter} onChange={(e) => setSpecializationFilter(e.target.value)} aria-label="تصفية حسب التخصص">
@@ -197,41 +157,7 @@ export function AgentRegistry() {
           {agents.length === 0 && <p className="os-empty">لا توجد نتائج مطابقة.</p>}
         </div>}
         {showCreate && <CreateAgentDialog specializations={specializations} onClose={() => setShowCreate(false)} onCreated={() => { setShowCreate(false); void loadAgents(); }} />}
-      </>}
-
-      {tab === 'organizations' && <>
-        <form className="os-org-builder panel panel-pad" onSubmit={(e) => void buildOrg(e)}>
-          <h2><Building2 size={17} aria-hidden="true" /> ابنِ منظمة افتراضية من هدف واحد</h2>
-          <p className="subtle">WORA يحدد الأقسام والقيادة والأدوار والوكلاء وعلاقات الإبلاغ ومشروع التسليم ومهمة انطلاق — ثم يبدأ العمل فعليًا ويتتبعه.</p>
-          <textarea dir="auto" rows={2} required minLength={10} maxLength={4000} value={orgObjective} onChange={(e) => setOrgObjective(e.target.value)} placeholder="مثال: Build an organization to develop and operate an online marketplace for local services…" aria-label="هدف المنظمة" />
-          <div className="os-org-builder-foot">
-            <input dir="auto" maxLength={120} value={orgName} onChange={(e) => setOrgName(e.target.value)} placeholder="اسم المنظمة (اختياري)" aria-label="اسم المنظمة" />
-            <button type="submit" className="button primary" disabled={orgBusy || orgObjective.trim().length < 10}>{orgBusy ? <LoaderCircle size={15} className="os-spin" aria-hidden="true" /> : <Workflow size={15} aria-hidden="true" />} ابنِ المنظمة</button>
-          </div>
-        </form>
-
-        {orgResult && (
-          <div className="os-org-result panel panel-pad" role="status">
-            <h3><CheckCircle2 size={16} aria-hidden="true" /> تم بناء «{orgResult.name}» <span className="os-spec-chip">{orgResult.template}</span></h3>
-            <p className="subtle">{orgResult.agentsCreated} وكيلًا جديدًا · {orgResult.agentsReused} معاد استخدامه · مشروع {orgResult.projectId}</p>
-            <div className="os-dept-chips">{orgResult.departments.map((d) => <span key={d.id} className="os-chip">{d.name}</span>)}</div>
-            <p className="subtle">مهمة انطلاق نفذت تلقائيًا في «مركز التنفيذ» (id: <span className="mono">{orgResult.kickoffMissionId}</span>).</p>
-          </div>
-        )}
-
-        {organizations === null && <p className="os-loading"><LoaderCircle size={16} className="os-spin" aria-hidden="true" /> جارٍ التحميل…</p>}
-        <div className="os-org-grid">
-          {organizations?.map((org) => (
-            <article key={org.id} className="os-org-card panel panel-pad">
-              <h3 dir="auto">{org.name}</h3>
-              <p className="subtle" dir="auto">{org.objective}</p>
-              <div className="os-dept-chips">{org.departments.map((d) => <span key={d.id} className="os-chip" title={d.kpis.join(' · ')}>{d.name}</span>)}</div>
-              <small className="subtle mono">{org.id} · {org.template}</small>
-            </article>
-          ))}
-          {organizations?.length === 0 && <p className="os-empty">لا توجد منظمات بعد. ابنِ أول منظمة من الأعلى.</p>}
-        </div>
-      </>}
+      </>
     </div>
   );
 }
