@@ -69,6 +69,10 @@ services:
       MAX_SOCKETS: ${MAX_SOCKETS:-6000}
       AI_CONCURRENCY: ${AI_CONCURRENCY:-30}
       AI_REQUEST_TIMEOUT_MS: ${AI_REQUEST_TIMEOUT_MS:-90000}
+      WORA_OS_DB: /app/data/wora-os.db
+      WORA_WORKSPACE: /app/data/workspace
+    volumes:
+      - os-data:/app/data
     depends_on:
       redis:
         condition: service_healthy
@@ -167,6 +171,7 @@ services:
 
 volumes:
   redis-data:
+  os-data:
 
 networks:
   wora-net:

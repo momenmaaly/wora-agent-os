@@ -17,10 +17,15 @@ import { useOfficeMotion, useOfficeSimulation } from './office/useOfficeSimulati
 import { DIRECTOR_ROOM_ID } from './office/work.js';
 import { officeHash, workspaceRoute, PAGES, type PageId } from './pages.js';
 import { useWoraStore } from './store/useWoraStore.js';
+import { osApi } from './os/api.js';
 
 const Campus = lazy(() => import('./components/Campus.js').then((module) => ({ default: module.Campus })));
 const Director = lazy(() => import('./components/DirectorOffice.js').then((module) => ({ default: module.DirectorOffice })));
 const Projects = lazy(() => import('./components/ProjectOSBoard.js').then((module) => ({ default: module.ProjectOSBoard })));
+const Agents = lazy(() => import('./components/AgentRegistry.js').then((module) => ({ default: module.AgentRegistry })));
+const Execution = lazy(() => import('./components/ExecutionCenter.js').then((module) => ({ default: module.ExecutionCenter })));
+const Intelligence = lazy(() => import('./components/IntelligenceHub.js').then((module) => ({ default: module.IntelligenceHub })));
+const SystemConsole = lazy(() => import('./components/SystemConsole.js').then((module) => ({ default: module.SystemConsole })));
 const Studio = lazy(() => import('./components/ProductStudio.js').then((module) => ({ default: module.ProductStudio })));
 const Models = lazy(() => import('./components/ModelHub.js').then((module) => ({ default: module.ModelHub })));
 const Integrations = lazy(() => import('./components/IntegrationsHub.js').then((module) => ({ default: module.IntegrationsHub })));
@@ -71,6 +76,18 @@ export default function App() {
   const toCampus = useCallback(() => navigate('campus'), [navigate]);
   const toDirector = useCallback(() => navigate('director'), [navigate]);
   const assign = useCallback(() => navigateHash('#director/task'), [navigateHash]);
+  const launchCommand = useCallback((brief: string) => {
+    void (async () => {
+      try {
+        await osApi.launchMission(brief);
+        try { sessionStorage.removeItem('wora:os:launchError'); } catch { /* ignore */ }
+      } catch (err) {
+        try { sessionStorage.setItem('wora:os:launchError', err instanceof Error ? err.message : 'تعذر إطلاق المهمة.'); } catch { /* ignore */ }
+      } finally {
+        navigateHash('#execution');
+      }
+    })();
+  }, [navigateHash]);
   const toPricing = useCallback(() => navigate('pricing'), [navigate]);
   const toProjects = useCallback(() => navigate('projects'), [navigate]);
   const toStudio = useCallback(() => navigate('studio'), [navigate]);
@@ -129,6 +146,10 @@ export default function App() {
           <WorkspacePage>
             {page === 'campus' && <Campus roomId={roomId} tourIndex={tourIndex} onVisit={visit} onAssign={assign} onDirector={toDirector} />}
             {page === 'projects' && <Projects onUpgrade={toPricing} onIntegrations={toIntegrations} />}
+            {page === 'agents' && <Agents />}
+            {page === 'execution' && <Execution />}
+            {page === 'intelligence' && <Intelligence />}
+            {page === 'system' && <SystemConsole />}
             {page === 'studio' && <Studio onUpgrade={toPricing} onProjects={toProjects} />}
             {page === 'settings' && <WorkspaceSettings onNavigate={navigate} />}
             {page === 'models' && <Models onUpgrade={toPricing} />}
@@ -142,12 +163,12 @@ export default function App() {
           </WorkspacePage>
         </div>}
       </main>
-      <ExecutiveCommandBar onSubmit={() => { setVisitedDirector(true); navigateHash('#director/task'); }} />
+      <ExecutiveCommandBar onSubmit={launchCommand} />
     </div>
     {overlay === 'menu' && <Dialog key="menu" title="التنقل" variant="navigation" onClose={() => setOverlay(null)}><div className="company-sidebar"><CompanySidebar page={page} onNavigate={navigate} onHelp={() => setOverlay('help')} /></div></Dialog>}
     {overlay === 'search' && <QuickSearch onClose={() => setOverlay(null)} onNavigate={navigate} onAgent={openAgent} onRoom={visit} />}
     {overlay === 'help' && <Dialog key="help" icon={CircleHelp} title="استخدام مساحة العمل" onClose={() => setOverlay(null)}>
-      <div className="field-stack"><p>اختَر قسمًا أو وكيلًا من الساحة. استخدم «تكبير الساحة» للتركيز، واضغط Esc للرجوع.</p><p>من مكتب المدير اطلب «ملخص الساحة» أو اكتب مهمة جديدة لإسنادها.</p><p>شريط «Executive Command» السفلي يرسل طلبك إلى مكتب المدير لمراجعته وإسناده؛ لا ينفّذ محاكاة.</p><button type="button" className="button" onClick={() => visit(null, true)}>جولة الأقسام</button></div>
+      <div className="field-stack"><p>اختَر قسمًا أو وكيلًا من الساحة. استخدم «تكبير الساحة» للتركيز، واضغط Esc للرجوع.</p><p>من مكتب المدير اطلب «ملخص الساحة» أو اكتب مهمة جديدة لإسنادها.</p><p>شريط «Executive Command» السفلي ينشئ مهمة تنفيذ حقيقية (تحليل → تخطيط → توجيه → تنفيذ → مراجعة) ويفتح مركز التنفيذ لتتبعها بحالة وأدلة.</p><button type="button" className="button" onClick={() => visit(null, true)}>جولة الأقسام</button></div>
     </Dialog>}
     <ChatDrawer />
     <WorkspaceBoard />

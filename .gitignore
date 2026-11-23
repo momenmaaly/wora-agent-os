@@ -33,3 +33,6 @@ Thumbs.db
 
 # Railway
 .railway/
+
+# WORA OS runtime data (SQLite, generated workspaces, mission reports)
+data/

@@ -18,6 +18,8 @@ ENV NODE_ENV=production
 COPY --from=builder --chown=node:node /workspace/api-server/dist ./dist
 COPY --from=builder --chown=node:node /workspace/api-server/node_modules ./node_modules
 COPY --from=builder --chown=node:node /workspace/api-server/package.json ./
+# WORA OS core persists missions/agents/memory here (mounted volume in compose).
+RUN mkdir -p /app/data && chown node:node /app/data
 
 USER node
 EXPOSE 4000

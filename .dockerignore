@@ -6,3 +6,4 @@
 **/*.log
 **/.npmrc
 nginx/ssl
+**/data

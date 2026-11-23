@@ -1,4 +1,4 @@
-import { BriefcaseBusiness, Cpu, CreditCard, FolderKanban, LayoutGrid, Plug2, Settings, Sparkles } from 'lucide-react';
+import { Bot, BrainCircuit, BriefcaseBusiness, Cpu, CreditCard, FolderKanban, LayoutGrid, Plug2, ServerCog, Settings, Sparkles, Workflow } from 'lucide-react';
 import { ROOM_BY_ID } from './office/layout.js';
 import { TOUR_STOPS } from './office/visits.js';
 import { DIRECTOR_ROOM_ID } from './office/work.js';
@@ -7,6 +7,10 @@ export const NAV_ITEMS = [
   { id: 'campus', label: 'ساحة العمل', icon: LayoutGrid },
   { id: 'director', label: 'مكتب المدير', icon: BriefcaseBusiness },
   { id: 'projects', label: 'المشاريع', icon: FolderKanban },
+  { id: 'agents', label: 'الوكلاء', icon: Bot },
+  { id: 'execution', label: 'مركز التنفيذ', icon: Workflow },
+  { id: 'intelligence', label: 'الذكاء التشغيلي', icon: BrainCircuit },
+  { id: 'system', label: 'النظام', icon: ServerCog },
   { id: 'studio', label: 'استوديو المنتج', icon: Sparkles },
   { id: 'settings', label: 'الإعدادات', icon: Settings },
 ] as const;

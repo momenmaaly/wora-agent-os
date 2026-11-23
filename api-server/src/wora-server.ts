@@ -45,6 +45,7 @@ import { safeEqual, verifySessionToken } from './lib/session.js';
 import { configuredOrigins, isProductionEnv, productionConfigProblems, sanitizeEnv } from './lib/config.js';
 import { generateStudioPack, resolveStudioBrain } from './studio/drafts.js';
 import { createStudioRouter } from './studio/router.js';
+import { createOsRouter } from './os/router.js';
 import { createGitHubImporter } from './skills/github.js';
 import { createSkillsRouter } from './skills/router.js';
 import { createMongoSkillStore } from './models/AgentSkills.js';
@@ -650,6 +651,7 @@ export async function bootWoraServer(app: Express, port = DEFAULT_PORT) {
     store: skillStore,
     publish: (event) => io.to(skillChannel(event.roomId)).emit('agent:skills-updated', event),
   }));
+  app.use('/api/os', createOsRouter());
   app.use(express.json({ limit: '16kb' }));
 
   const serverMode = IS_PRODUCTION ? 'production' : 'development';
