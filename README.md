@@ -2,6 +2,21 @@
 
 Wora is an Arabic-first workspace for operating an AI team. It opens directly in the working area: a ten-department model or floor plan, the live roster, and the department task board. **Enlarge workspace** hides the surrounding navigation and gives the map the available screen; **Escape** or the same control restores it. On narrow screens, the enlarged model is horizontally scrollable. The optional tour is under **Help**. The director's office is available from the map and the main navigation.
 
+## WORA OS core (execution platform)
+
+Beyond the workspace UI, this branch includes the **WORA OS core** — a real execution platform: a persistent agent registry (18 seeded specializations + custom agents), a mission orchestrator with review gates and mandatory handoff contracts, 16 permissioned tools (HiGHS LP/MIP, Hungarian assignment, Monte Carlo, host diagnostics, sandboxed code generation with green `node --test` evidence, security scanning), scoped memory with audit, virtual organization building, and four new worlds in the UI: **مركز التنفيذ** (`#execution`), **الوكلاء والمنظمات** (`#agents`), **الذكاء التشغيلي** (`#intelligence`) and **النظام** (`#system`). The persistent **Executive Command** bar launches real missions.
+
+Verified end-to-end on this branch: computer-diagnostics mission, agent creation mission, web-app build mission (generate → scan → independent QA, all green), organization build from one objective, and the 20 employees × 5 shifts cost-minimizing schedule (total cost 480). See **docs/OS_CORE.md** for the full engineering record, architecture decisions, security model and honest list of what is not implemented.
+
+```bash
+# exercise the OS API directly
+curl -X POST http://localhost:4000/api/os/missions -H 'content-type: application/json' \
+  -d '{"objective":"Inspect my computer and identify potential problems"}'
+curl http://localhost:4000/api/os/state
+```
+
+State is persisted under `WORA_OS_DB` (default `api-server/data/wora-os.db`, SQLite via `node:sqlite`); generated apps, reports and mission artifacts live under `WORA_WORKSPACE` (default `api-server/data/workspace`). Both are git- and docker-ignored.
+
 ## Run the workspace
 
 Use Node.js 22.18 or later and npm. To explore the client without external services:
@@ -35,10 +50,11 @@ wora-agent-os/
 │       ├── skills/         # Typed GitHub skill registry client
 │       └── styles/         # Responsive RTL layout, light/dark themes and shared UI
 ├── api-server/             # Express 5, Socket.IO, Redis, BullMQ and MongoDB
+│   └── src/os/             # WORA OS core: orchestrator, registry, tools, OR solvers, memory, organizations
 ├── shared/types/           # Shared backend contracts and model registry
 ├── design-concepts/        # Original office design references
 ├── nginx/                  # Reverse proxy configuration
-└── docker-compose.prod.yml
+└── docker-compose.prod.yml   # includes the persistent `os-data` volume for WORA OS records
 ```
 
 ## Verification

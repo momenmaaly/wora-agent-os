@@ -25,6 +25,7 @@ import { SEED_AGENTS } from './seed.js';
 import { EXAMPLE_ZONES } from '../zones.js';
 import { workspaceSignalSchema, type ReplyToAssignment } from '../core/taskSignal.js';
 import { createStudioRouter } from '../studio/router.js';
+import { createOsRouter } from '../os/router.js';
 import { verifySessionToken } from '../lib/session.js';
 import { createGitHubImporter } from '../skills/github.js';
 import { createSkillsRouter } from '../skills/router.js';
@@ -266,6 +267,7 @@ app.use('/api/agents/:agentId/skills', createSkillsRouter({
   store: skillStore,
   publish: (event) => io.to(event.roomId).emit('agent:skills-updated', event),
 }));
+app.use('/api/os', createOsRouter({ production: false }));
 app.use(express.json({ limit: '16kb' }));
 
 let connectionCount = 0;
