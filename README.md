@@ -13,6 +13,8 @@ Verified end-to-end on this branch: computer-diagnostics mission, agent creation
 curl -X POST http://localhost:4000/api/os/missions -H 'content-type: application/json' \
   -d '{"objective":"Inspect my computer and identify potential problems"}'
 curl http://localhost:4000/api/os/state
+curl http://localhost:4000/api/os/playbooks   # WORA-built, re-validated optimization playbooks
+curl http://localhost:4000/api/os/usage       # AI token/cost ledger (admin-key in production)
 ```
 
 State is persisted under `WORA_OS_DB` (default `api-server/data/wora-os.db`, SQLite via `node:sqlite`); generated apps, reports and mission artifacts live under `WORA_WORKSPACE` (default `api-server/data/workspace`). Both are git- and docker-ignored.
