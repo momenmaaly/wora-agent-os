@@ -209,14 +209,14 @@ function readInitialTheme(): 'light' | 'dark' {
   } catch {
     // ignore storage errors
   }
-  return 'light';
+  return 'dark';
 }
 
 function applyDomTheme(theme: 'light' | 'dark'): void {
   if (typeof document === 'undefined') return;
   document.documentElement.dataset.theme = theme;
   document.documentElement.classList.toggle('dark', theme === 'dark');
-  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'dark' ? '#17202a' : '#f2f4f5');
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'dark' ? '#070d1a' : '#f2f4f5');
   try {
     window.localStorage.setItem(THEME_STORAGE_KEY, theme);
   } catch {
