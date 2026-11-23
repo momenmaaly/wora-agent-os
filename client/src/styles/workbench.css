@@ -189,7 +189,7 @@
 .workspace-room-picker .field { min-height: 34px; width: clamp(118px, 12vw, 165px); padding: 4px 8px; background: var(--panel); font-size: 12px; }
 .campus-toolbar-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; margin-inline-start: auto; }
 .campus-toolbar-actions .button { min-height: 34px; }
-.campus-viewport { position: relative; min-width: 0; min-height: 0; overflow: hidden; background: var(--company-frame, #101a22); }
+.campus-viewport { position: relative; min-width: 0; min-height: 0; overflow: hidden; background: var(--company-frame); }
 .campus-stage:has(.office3d-shell) { border: 0; border-radius: 0; background: #dfe6e7; }
 .campus-viewport:has(.office3d-shell) { background: #dfe6e7; }
 .campus-viewport > :first-child { min-width: 0; min-height: 0; height: 100%; border: 0; border-radius: 0; }

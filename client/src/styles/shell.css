@@ -74,3 +74,18 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
   .page-frame { padding: 12px 9px 20px; }
   .dialog-heading, .dialog-body, .dialog-footer { padding-inline: 12px; }
 }
+
+/* ── Language switcher (hybrid — Arabic default, English LTR) ─────────── */
+.language-toggle { display: inline-flex; align-items: center; gap: 7px; min-height: 38px; padding: 6px 11px; border: 1px solid var(--line); border-radius: 7px; background: var(--bg); color: var(--ink); font-size: 12px; font-weight: 700; }
+.language-toggle:hover { border-color: var(--accent-line); background: var(--accent-wash); color: var(--accent-quiet); }
+.language-toggle svg { color: var(--accent-quiet); }
+@media (max-width: 580px) { .language-toggle > span { display: none; } }
+
+/* ── Executive command field (label + input + lime submit) ───────────── */
+.executive-command-field { display: flex; flex: 1 1 auto; align-items: center; gap: clamp(10px, 1.4vw, 18px); min-width: 0; }
+.executive-command-field .executive-command-label { flex: 0 0 auto; }
+.executive-command-field .executive-command-label small { display: block; max-width: 30ch; }
+.executive-command-field input { flex: 1 1 auto; }
+.executive-command-submit { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 6px 14px; }
+.executive-command-submit span { line-height: 1; }
+@media (max-width: 680px) { .executive-command-field .executive-command-label { display: none; } }

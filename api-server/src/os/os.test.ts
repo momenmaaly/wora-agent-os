@@ -335,3 +335,131 @@ test('restart recovery: in-flight missions are marked interrupted, then resumabl
   const resumed = getMissionDetail(WS, missionId)!;
   assert.equal(resumed.status, 'completed');
 });
+
+test('forecast.linear: backtests honestly on a synthetic trend and refuses tiny series', async () => {
+  const trend = Array.from({ length: 24 }, (_, i) => 100 + 2.5 * i + Math.sin(i) * 3);
+  const result = await runTool('forecast.linear', { series: trend, steps: 3 }, { workspaceId: 'wora-test-forecast', actor: 'test', permissions: new Set() });
+  assert.ok(result.ok);
+  const out = result.output as { r2: number; holdoutMae: number; projections: Array<{ point: number }>; disclaimer: string };
+  assert.ok(out.r2 > 0.9, 'clear synthetic trend fits well');
+  assert.ok(out.holdoutMae < 10, 'holdout error is small on clean synthetic data');
+  assert.equal(out.projections.length, 3);
+  assert.match(out.disclaimer, /not a promise/i);
+  const tooSmall = await runTool('forecast.linear', { series: [1, 2, 3], steps: 1 }, { workspaceId: 'wora-test-forecast', actor: 'test', permissions: new Set() });
+  assert.equal(tooSmall.ok, false);
+});
+
+/* ─── RBAC v1 ─── */
+test('roles: first actor bootstraps as owner; non-members default to viewer', async () => {
+  const { getWorkspaceRole, roleRank } = await import('./roles.js');
+  const ws = 'wora-test-roles';
+  assert.equal(getWorkspaceRole(ws, 'first-user'), 'owner');
+  assert.equal(getWorkspaceRole(ws, 'second-user'), 'viewer');
+  assert.ok(roleRank('owner') > roleRank('admin') && roleRank('admin') > roleRank('member') && roleRank('member') > roleRank('viewer'));
+});
+
+test('roles: admin cannot grant owner; owner can; remove respects actor rank', async () => {
+  const { setWorkspaceRole, removeWorkspaceRole, getWorkspaceRole } = await import('./roles.js');
+  const ws = 'wora-test-roles2';
+  assert.equal(getWorkspaceRole(ws, 'boss'), 'owner');
+  setWorkspaceRole(ws, 'captain', 'admin', 'boss');
+  assert.throws(() => setWorkspaceRole(ws, 'lieutenant', 'owner', 'captain'));
+  assert.throws(() => setWorkspaceRole(ws, 'lieutenant', 'admin', 'captain'));
+  setWorkspaceRole(ws, 'lieutenant', 'member', 'captain'); // admin can grant member
+  assert.equal(getWorkspaceRole(ws, 'lieutenant'), 'member');
+  assert.throws(() => removeWorkspaceRole(ws, 'boss', 'captain')); // admin cannot remove owner
+  assert.throws(() => setWorkspaceRole(ws, 'boss', 'viewer', 'boss')); // owner cannot demote themselves
+  assert.throws(() => removeWorkspaceRole(ws, 'boss', 'boss')); // owner cannot remove themselves
+  assert.ok(removeWorkspaceRole(ws, 'lieutenant', 'captain'));
+});
+
+/* ─── Memory ACL + versioning ─── */
+test('memory: owner-visibility records are hidden from other actors; workspace records visible to all', async () => {
+  const ws = 'wora-test-acl';
+  const secret = addMemory({ workspaceId: ws, scope: 'workspace', content: 'owner-only salary band', visibility: 'owner', actor: 'alice' });
+  addMemory({ workspaceId: ws, scope: 'workspace', content: 'shared onboarding checklist', actor: 'alice' });
+  assert.deepEqual(listMemories(ws, { actor: 'bob' }).map((m) => m.content), ['shared onboarding checklist']);
+  assert.equal(searchMemories(ws, 'salary', { actor: 'bob' }).length, 0);
+  assert.equal(listMemories(ws, { actor: 'alice' }).length, 2);
+  assert.equal(deleteMemory(ws, secret.id, 'bob'), false); // other actor cannot delete owner record
+  assert.ok(deleteMemory(ws, secret.id, 'alice'));
+});
+
+test('memory: writes snapshot create/delete versions; TTL hides expired records', async () => {
+  const { listMemoryVersions } = await import('./memory.js');
+  const ws = 'wora-test-memver';
+  const record = addMemory({ workspaceId: ws, scope: 'project', scopeId: 'p1', content: 'v1 content', actor: 'qa' });
+  const versions = listMemoryVersions(ws, record.id, 'qa');
+  assert.ok(versions.some((v) => v.action === 'create'));
+  const expiring = addMemory({ workspaceId: ws, scope: 'episodic', content: 'temporary note', ttlDays: 1, actor: 'qa' });
+  const db = (await import('./db.js')).getOsDb();
+  db.prepare("UPDATE os_memory SET expires_at = ? WHERE id = ?").run(new Date(Date.now() - 1000).toISOString(), expiring.id);
+  assert.equal(listMemories(ws, { actor: 'qa' }).some((m) => m.id === expiring.id), false);
+});
+
+/* ─── Agent versioning ─── */
+test('agents: update snapshots the previous definition and bumps version', async () => {
+  const { updateAgent, listAgentVersions, ensureSeedAgents } = await import('./registry.js');
+  const ws = 'wora-test-agentver';
+  ensureSeedAgents(ws);
+  const [first] = listAgents(ws, { specialization: 'qa_engineer' });
+  assert.ok(first);
+  const updated = updateAgent(ws, first.id, { instructions: 'Tightened review checklist v2' }, 'qa-lead');
+  assert.ok(updated);
+  const versions = listAgentVersions(ws, first.id);
+  assert.equal(versions.length, 1);
+  assert.equal(versions[0]!.version, 1);
+  assert.equal(versions[0]!.snapshot.instructions, first.instructions);
+  assert.equal(versions[0]!.changedBy, 'qa-lead');
+});
+
+/* ─── Boards ─── */
+test('board: put/get round-trips state, oversized payload rejected, clear wipes', async () => {
+  const { getBoard, putBoard, clearBoard } = await import('./boards.js');
+  const ws = 'wora-test-board';
+  assert.equal(getBoard(ws), null);
+  putBoard(ws, { projects: [{ id: 'p1', name: 'لوحة' }], tasks: [] }, 'tester');
+  const board = getBoard(ws);
+  assert.equal((board!.state as { projects: Array<{ name: string }> }).projects[0]!.name, 'لوحة');
+  assert.throws(() => putBoard(ws, { blob: 'x'.repeat(600 * 1024) }, 'tester'));
+  clearBoard(ws, 'tester');
+  assert.equal(getBoard(ws), null);
+});
+
+/* ─── Digital twins ─── */
+test('twins: create, observe, run an adjusted what-if scenario, events recorded', async () => {
+  const { createTwin, getTwin, recordObservation, runScenario } = await import('./twins.js');
+  const ws = 'wora-test-twin';
+  const twin = createTwin({
+    workspaceId: ws, name: 'خط إنتاج الفرن', entityType: 'pipeline',
+    drivers: [{ name: 'العجلة اليومية', optimistic: 80, likely: 120, pessimistic: 160 }],
+    kpis: [{ id: 'output', label: 'الإنتاج اليومي', unit: 'قطعة', target: 100 }],
+    actor: 'tester',
+  });
+  recordObservation(ws, twin.id, { outputToday: 118 }, 'tester');
+  const scenario = await runScenario(ws, twin.id, {
+    name: 'توسعة المورد', adjustments: [{ driver: 'العجلة اليومية', op: 'mul', value: 0.8 }],
+    trials: 500, seed: 7, actor: 'tester',
+  });
+  assert.equal(scenario.simulated, true);
+  assert.ok(scenario.scenario.mean < scenario.baseline.mean, 'improving a driver lowers the expected total');
+  const after = getTwin(ws, twin.id)!;
+  assert.equal(after.events.length, 2);
+  assert.ok(after.events.some((e) => e.type === 'scenario'));
+});
+
+/* ─── Playbook reuse accounting ─── */
+test('playbooks: planner prefers a validated playbook over the bundled sample', async () => {
+  const { buildPlan } = await import('./orchestrator.js');
+  const { getOsDb } = await import('./db.js');
+  const ws = 'wora-test-playbook-plan';
+  const db = getOsDb();
+  const ts = new Date().toISOString();
+  const toolInput = { employees: [{ id: 'e1', name: 'سارة', hourlyCost: 30, availability: ['صباحي'] }], shifts: [{ id: 's1', name: 'صباحي', demand: 1 }] };
+  db.prepare('INSERT INTO os_playbooks (id, workspace_id, name, tool_id, keywords, tool_input, validation, status, success_runs, reuse_count, created_from_mission, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    .run('pb_testplan_1', ws, 'employee-schedule', 'or.employee_schedule', JSON.stringify(['schedule', 'employee', 'shift']), JSON.stringify(toolInput), JSON.stringify({ ok: true, detail: 'revalidated' }), 'validated', 3, 0, null, ts, ts);
+  const plan = buildPlan('employee shift schedule', undefined, ws);
+  const task = plan.find((t) => t.tool === 'or.employee_schedule')!;
+  assert.deepEqual((task.toolInput as { employees: unknown[] }).employees, toolInput.employees);
+  assert.match(task.detail, /playbook/i);
+});

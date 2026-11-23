@@ -213,6 +213,59 @@ CREATE TABLE IF NOT EXISTS os_playbooks (
 );
 CREATE INDEX IF NOT EXISTS idx_os_playbooks_ws ON os_playbooks(workspace_id, tool_id);
 
+CREATE TABLE IF NOT EXISTS os_memory_versions (
+  id TEXT PRIMARY KEY,
+  memory_id TEXT NOT NULL,
+  workspace_id TEXT NOT NULL,
+  scope TEXT NOT NULL,
+  content TEXT NOT NULL,
+  tags TEXT NOT NULL DEFAULT '[]',
+  action TEXT NOT NULL,
+  actor TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_os_memory_versions_ws ON os_memory_versions(workspace_id, memory_id, created_at);
+
+CREATE TABLE IF NOT EXISTS os_workspace_roles (
+  workspace_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  role TEXT NOT NULL,
+  granted_by TEXT NOT NULL DEFAULT 'system',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (workspace_id, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS os_agent_versions (
+  id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  workspace_id TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  snapshot TEXT NOT NULL,
+  changed_by TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_os_agent_versions ON os_agent_versions(workspace_id, agent_id, version);
+
+CREATE TABLE IF NOT EXISTS os_boards (
+  workspace_id TEXT PRIMARY KEY,
+  state TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS os_twins (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  entity_type TEXT NOT NULL,
+  params TEXT NOT NULL DEFAULT '{}',
+  kpis TEXT NOT NULL DEFAULT '[]',
+  events TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_os_twins_ws ON os_twins(workspace_id, entity_type);
+
 CREATE TABLE IF NOT EXISTS os_ai_usage (
   id TEXT PRIMARY KEY,
   actor TEXT NOT NULL DEFAULT 'brain',
@@ -228,6 +281,17 @@ CREATE TABLE IF NOT EXISTS os_ai_usage (
 CREATE INDEX IF NOT EXISTS idx_os_ai_usage_created ON os_ai_usage(created_at);
 CREATE INDEX IF NOT EXISTS idx_os_ai_usage_provider ON os_ai_usage(provider, model);
 `;
+
+/** Guarded, idempotent column additions for databases created before these columns existed. */
+function migrate(db: OsDatabase): void {
+  const has = (table: string, column: string) =>
+    (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).some((c) => c.name === column);
+  if (!has('os_playbooks', 'reuse_count')) db.exec('ALTER TABLE os_playbooks ADD COLUMN reuse_count INTEGER NOT NULL DEFAULT 0');
+  if (!has('os_memory', 'visibility')) db.exec("ALTER TABLE os_memory ADD COLUMN visibility TEXT NOT NULL DEFAULT 'workspace'");
+  if (!has('os_memory', 'owner_id')) db.exec("ALTER TABLE os_memory ADD COLUMN owner_id TEXT NOT NULL DEFAULT ''");
+  if (!has('os_memory', 'expires_at')) db.exec('ALTER TABLE os_memory ADD COLUMN expires_at TEXT');
+  if (!has('os_agents', 'version')) db.exec('ALTER TABLE os_agents ADD COLUMN version INTEGER NOT NULL DEFAULT 1');
+}
 
 export function nowIso(): string {
   return new Date().toISOString();
@@ -247,6 +311,7 @@ export function getOsDb(): OsDatabase {
   db.exec('PRAGMA journal_mode = WAL;');
   db.exec('PRAGMA foreign_keys = ON;');
   db.exec(SCHEMA);
+  migrate(db);
   instance = db;
   return db;
 }

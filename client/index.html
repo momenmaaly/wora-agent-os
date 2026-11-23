@@ -1,12 +1,20 @@
 <!doctype html>
-<html lang="ar" dir="rtl" data-theme="dark">
+<html lang="ar" dir="rtl" data-theme="light">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#070d1a" />
-    <script>document.documentElement.dataset.theme = localStorage.getItem('wora:hqTheme') || 'dark';</script>
-    <meta name="description" content="مقر رقمي لفريقك الذكي. تابع وكلاءك، نظّم مشاريعك، وتعاون من مساحة عمل واحدة." />
-    <title>Wora — مساحة عمل فريقك الذكي</title>
+    <meta name="theme-color" content="#f7f7f5" />
+    <script>
+      (function () {
+        var lang = localStorage.getItem('wora:lang') === 'en' ? 'en' : 'ar';
+        var root = document.documentElement;
+        root.lang = lang;
+        root.dir = lang === 'ar' ? 'rtl' : 'ltr';
+        root.dataset.theme = localStorage.getItem('wora:hqTheme') || 'light';
+      })();
+    </script>
+    <meta name="description" content="منصة الذكاء التشغيلي والتنفيذ — كلّف وكلاء ذكاء اصطناعي بمهام حقيقية ونفّذها وتابعها بأدلة." />
+    <title>Wora — منصة الذكاء التشغيلي والتنفيذ</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   </head>
   <body>

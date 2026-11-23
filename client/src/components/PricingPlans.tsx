@@ -15,7 +15,7 @@ export function PricingPlans({ onStudio }: { onStudio: () => void }) {
   return (
     <>
       <PageHeader icon={CreditCard} eyebrow="إدارة المساحة" title="خطط Wora" description="اختَر مساحة العمل المناسبة لفريقك، وجرب مميزات كل خطة قبل اتخاذ القرار." />
-      <Notice>تغيير الخطة في هذه النسخة <strong>تجريبي ومحلي</strong>؛ لا ينشئ اشتراكاً ولا يتطلب أي بيانات دفع.</Notice>
+      <Notice>لا توجد بوابة دفع متصلة في هذا الإصدار. تغيير الخطة هنا <strong>محلي وتجريبي فقط</strong> — لا ينشئ اشتراكًا ولا يُفرض أي حد على استخدامك، ولا يُحاكى الدفع أو الفوترة.</Notice>
       <div className="price-grid">
         {(['free', 'pro'] as const).map((id) => {
           const config = PLANS[id];

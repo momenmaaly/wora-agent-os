@@ -32,7 +32,21 @@ export interface AgentRecord {
 interface AgentRow {
   id: string; workspace_id: string; name: string; role: string; specialization: string;
   skills: string; tools: string; permissions: string; model: string; limits: string;
-  instructions: string; status: string; source: string; created_at: string; updated_at: string;
+  instructions: string; status: string; source: string; version: number; created_at: string; updated_at: string;
+}
+
+const AGENT_VERSION_CAP = 20;
+function snapshotAgent(db: ReturnType<typeof getOsDb>, row: AgentRow, changedBy: string): void {
+  db.prepare(
+    'INSERT INTO os_agent_versions (id, agent_id, workspace_id, version, snapshot, changed_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+  ).run(newId('agntv'), row.id, row.workspace_id, Number(row.version ?? 1), JSON.stringify(rowToAgent(row)), changedBy, nowIso());
+  const excess = db.prepare('SELECT id FROM os_agent_versions WHERE agent_id = ? ORDER BY created_at DESC LIMIT -1 OFFSET ?').all(row.id, AGENT_VERSION_CAP) as Array<{ id: string }>;
+  for (const oldRow of excess) db.prepare('DELETE FROM os_agent_versions WHERE id = ?').run(oldRow.id);
+}
+
+export function listAgentVersions(workspaceId: string, agentId: string): Array<{ id: string; version: number; changedBy: string; createdAt: string; snapshot: AgentRecord }> {
+  const rows = getOsDb().prepare('SELECT * FROM os_agent_versions WHERE workspace_id = ? AND agent_id = ? ORDER BY created_at DESC, version DESC LIMIT 50').all(workspaceId, agentId) as Array<{ id: string; version: number; changed_by: string; created_at: string; snapshot: string }>;
+  return rows.map((row) => ({ id: row.id, version: Number(row.version), changedBy: row.changed_by, createdAt: row.created_at, snapshot: parseJson(row.snapshot, {} as AgentRecord) }));
 }
 
 function rowToAgent(row: AgentRow): AgentRecord {
@@ -159,8 +173,9 @@ export function updateAgent(workspaceId: string, id: string, patch: UpdateAgentI
   const existing = getAgent(workspaceId, id);
   if (!existing) return null;
   const db = getOsDb();
+  snapshotAgent(db, db.prepare('SELECT * FROM os_agents WHERE workspace_id = ? AND id = ?').get(workspaceId, id) as unknown as AgentRow, actor);
   db.prepare(
-    `UPDATE os_agents SET name = ?, role = ?, skills = ?, tools = ?, permissions = ?, instructions = ?, status = ?, model = ?, updated_at = ? WHERE workspace_id = ? AND id = ?`
+    `UPDATE os_agents SET name = ?, role = ?, skills = ?, tools = ?, permissions = ?, instructions = ?, status = ?, model = ?, version = version + 1, updated_at = ? WHERE workspace_id = ? AND id = ?`
   ).run(
     (patch.name ?? existing.name).slice(0, 80),
     (patch.role ?? existing.role).slice(0, 500),

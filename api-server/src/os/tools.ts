@@ -311,6 +311,68 @@ const monteCarloTool: ToolDefinition = {
   },
 };
 
+/* ─── forecast.linear ──────────────────────────────────── */
+const forecastSchema = z.object({
+  series: z.array(z.number().finite()).min(8).max(10_000),
+  steps: z.number().int().min(1).max(90).default(3),
+}).strict();
+
+const forecastTool: ToolDefinition = {
+  id: 'forecast.linear',
+  name: 'Linear Trend Forecast with Backtest',
+  description: 'Naive least-squares trend projection with an honest holdout backtest (last 20% of points predicted vs observed). Reports R², holdout MAE and residual-stddev bands. NOT a guarantee — a transparent baseline to beat, never presented as causal prediction.',
+  inputSchema: { type: 'object', properties: { series: { type: 'array', items: { type: 'number' } }, steps: { type: 'number', minimum: 1, maximum: 90 } }, required: ['series'], additionalProperties: false },
+  schema: forecastSchema,
+  permission: null,
+  risk: 'low',
+  environment: 'host',
+  timeoutMs: 5_000,
+  execute(input: z.infer<typeof forecastSchema>) {
+    const xs = [...input.series];
+    const n = xs.length;
+    const xMean = (n - 1) / 2;
+    const yMean = xs.reduce((a, b) => a + b, 0) / n;
+    let num = 0, den = 0;
+    for (let i = 0; i < n; i++) { num += (i - xMean) * (xs[i]! - yMean); den += (i - xMean) ** 2; }
+    const slope = den === 0 ? 0 : num / den;
+    const intercept = yMean - slope * xMean;
+    const predict = (i: number) => intercept + slope * i;
+    // R² over the fitted window
+    let ssRes = 0, ssTot = 0;
+    for (let i = 0; i < n; i++) { ssRes += (xs[i]! - predict(i)) ** 2; ssTot += (xs[i]! - yMean) ** 2; }
+    const r2 = ssTot === 0 ? 0 : Math.max(0, 1 - ssRes / ssTot);
+    // Honest holdout backtest: fit on the first 80%, measure error on the last 20%
+    const holdoutStart = Math.max(2, Math.floor(n * 0.8));
+    const fitN = holdoutStart;
+    const fxMean = (fitN - 1) / 2;
+    const fyMean = xs.slice(0, fitN).reduce((a, b) => a + b, 0) / fitN;
+    let fNum = 0, fDen = 0;
+    for (let i = 0; i < fitN; i++) { fNum += (i - fxMean) * (xs[i]! - fyMean); fDen += (i - fxMean) ** 2; }
+    const fSlope = fDen === 0 ? 0 : fNum / fDen;
+    const fIntercept = fyMean - fSlope * fxMean;
+    const holdout = xs.slice(fitN);
+    const holdoutMae = holdout.reduce((acc, v, j) => acc + Math.abs(v - (fIntercept + fSlope * (fitN + j))), 0) / holdout.length;
+    const residuals = xs.map((v, i) => v - predict(i));
+    const residualStddev = Math.sqrt(residuals.reduce((acc, v) => acc + v * v, 0) / n);
+    const round = (v: number) => Math.round(v * 1000) / 1000;
+    const projections = Array.from({ length: input.steps }, (_, s) => {
+      const i = n + s;
+      const point = predict(i);
+      return { step: s + 1, index: i, point: round(point), bandLow: round(point - residualStddev), bandHigh: round(point + residualStddev) };
+    });
+    return {
+      method: 'least-squares linear trend with 80/20 holdout backtest',
+      slope: round(slope),
+      intercept: round(intercept),
+      r2: round(r2),
+      holdoutMae: round(holdoutMae),
+      residualStddev: round(residualStddev),
+      projections,
+      disclaimer: 'Naive linear extrapolation from the provided series. R²/holdout MAE describe fit on THIS series only; they are not a promise of future accuracy. For anything with stakes, compare against a domain forecaster with real exogenous data.',
+    };
+  },
+};
+
 /* ─── stats.describe ───────────────────────────────────── */
 const statsSchema = z.object({ series: z.array(z.number().finite()).min(2).max(100_000) }).strict();
 
@@ -624,6 +686,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   lpTool,
   monteCarloTool,
   statsTool,
+  forecastTool,
   decisionTool,
   summaryTool,
   fetchReadTool,

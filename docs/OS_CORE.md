@@ -13,17 +13,42 @@ An in-process execution platform behind the product surface:
 - **Persistent agent registry** (`os/registry.ts`): 18 seeded specializations plus user-created and
   organization-created agents. Agents carry identity, role, skills, tools, permissions, model config,
   limits, instructions, status and evaluation criteria. They are executable entities, not profile cards.
-- **Unified tool registry** (`os/tools.ts`, `os/scaffold.ts`, `os/ortools.ts`): 16 tools, each with a
+- **Unified tool registry** (`os/tools.ts`, `os/scaffold.ts`, `os/ortools.ts`): 17 tools, each with a
   JSON-schema contract, risk tier, required permission, environment and timeout; audited on every call.
 - **Operations Research** (`os/ortools.ts`): HiGHS (WASM LP/MIP solver) behind `or.solve_lp` and
   `or.employee_schedule`; Hungarian algorithm behind `or.assignment`; seeded triangular PERT Monte
-  Carlo behind `sim.monte_carlo`. Solver output is **independently revalidated in code** (demand,
+  Carlo behind `sim.monte_carlo`; `forecast.linear` (least-squares trend with an 80/20 holdout
+  backtest reporting R², holdout MAE and residual-stddev projection bands — a labeled baseline, never
+  presented as a causal forecast). Solver output is **independently revalidated in code** (demand,
   availability, max-workload) before it is accepted.
 - **Memory & knowledge** (`os/memory.ts`): scoped records (user/workspace/project/agent/organization/
-  execution/episodic/semantic) with provenance, deterministic TF-IDF-ish retrieval, audited write/delete.
+  execution/episodic/semantic) with provenance, deterministic TF-IDF-ish retrieval, audited write/delete,
+  **ownership/visibility ACL** (`workspace` vs `owner`), **TTL expiry** (`expires_at`), and **version
+  snapshots** (`os_memory_versions`) on create/delete — owner-scoped records are invisible to other actors
+  in list/search/get and cannot be deleted by them.
 - **Virtual organizations** (`os/orgs.ts`): objective → template (commerce-marketplace / software-product /
   general-business) → departments, leadership spine, persistent agents, reporting lines, one project and a
   kickoff mission that starts real work.
+- **Workspace roles / RBAC v1** (`os/roles.ts`): ranked roles `viewer < member < admin < owner`. Viewer is
+  read-only (mutations return 403); member runs day-to-day OS work; admin adds settings-class mutations
+  (autonomy policy, device pair/revoke, agent & playbook deletion, board/twin deletion) and manages
+  member/viewer roles; owner manages everything including admin. Bootstrap: a workspace with no role rows
+  grants its first actor `owner`; unknown actors in a roled workspace default to `viewer`. Self role changes
+  are refused (ask another owner). Enforced in the OS router, not the UI.
+- **Agent versioning** (`os/registry.ts`): every `updateAgent` snapshots the previous definition into
+  `os_agent_versions` (cap 20) and bumps `os_agents.version`; `GET /agents/:id/versions` lists history.
+- **Durable Project OS board** (`os/boards.ts` + `client/src/store/boardSync.ts`): the zustand Project OS
+  store syncs to `os_boards` (one JSON document per workspace, 512 KB cap, audited). Server wins on boot;
+  mutations push debounced (800 ms). Demo seed is labeled `بيانات تجريبية · Demo` in the UI with a
+  one-click clear that empties local + server state.
+- **Digital twins** (`os/twins.ts`): persistent workspace-scoped operational models (store, warehouse,
+  pipeline, service, custom) with PERT three-point drivers, KPI definitions, an append-only event log
+  (observations + scenario runs, cap 200) and what-if scenarios that re-run the seeded Monte Carlo
+  simulator with adjusted drivers — baseline-vs-scenario p10/p50/p90/mean deltas, always labeled
+  `simulated: true`. Intelligence → التوائم الرقمية wires the full flow.
+- **Playbook planner preference** (`os/playbooks.ts` + planner): the OR planner checks validated playbooks
+  (Jaccard ≥ 0.5 on tokens) before falling back to the bundled SAMPLE roster; reuses are counted
+  (`reuse_count`) and surfaced in the Intelligence playbooks tab.
 - **Governance** (`os/governance.ts`): human approval gate for high-risk tools (balanced policy by default —
   `host.exec` pauses a mission until a person approves the exact payload; approving auto-resumes the mission),
   per-workspace autonomy policy (`balanced` | explicit `autopilot`) stored in `os_settings`, and revocable
@@ -41,8 +66,8 @@ An in-process execution platform behind the product surface:
 | ----- | ----- | ------- |
 | مركز التنفيذ / Execution | `#execution` | Launch objectives in natural language; live lifecycle, evidence, handoff contracts, artifact download |
 | الوكلاء / Agents & Orgs | `#agents` | Registry: create/pause/delete persistent agents; build a virtual organization from one objective |
-| الذكاء التشغيلي / Intelligence | `#intelligence` | Employee-shift MIP (20×5 sample, editable), Monte Carlo, weighted decision matrix with ±25% robustness check, tool registry |
-| النظام / System | `#system` | Runtime counts, governance (autonomy policy, pending approvals, device pairing/revoke), capability honesty matrix, memory browser, audit log |
+| الذكاء التشغيلي / Intelligence | `#intelligence` | Employee-shift MIP (20×5 sample, editable), Monte Carlo, weighted decision matrix with ±25% robustness check, tool registry, playbooks (with reuse counts), digital twins |
+| النظام / System | `#system` | Runtime counts, governance (autonomy policy, pending approvals, device pairing/revoke), RBAC roles & members, memory browser with visibility/TTL/version history, capability honesty matrix, audit log |
 
 The **Executive Command bar** at the bottom of every screen now launches a real mission
 (`POST /api/os/missions`) and opens مركز التنفيذ — it no longer just routes to the Director composer.
@@ -95,9 +120,11 @@ The **Executive Command bar** at the bottom of every screen now launches a real 
 
 ## Test results (this branch)
 
-- `api-server`: 20 OS tests (solvers, tools, memory isolation, registry, orchestrator journeys 1–5 + failure
-  path + approval pause/approve/deny paths + autonomy policy + device pairing lifecycle) — full suite
-  44 pass / 1 skipped (Mongo integration, opt-in) — `npm test`.
+- `api-server`: 30 OS tests (solvers, tools, memory isolation + ACL + TTL + version snapshots, registry
+  including agent version snapshots, orchestrator journeys 1–5 + failure path + approval pause/approve/deny
+  paths + autonomy policy + device pairing lifecycle + RBAC bootstrap/rank/grant/remove/self-change guards
+  + board round-trip/oversize/clear + digital twin create/observe/scenario + playbook planner preference) —
+  full suite 57 pass / 1 skipped (Mongo integration, opt-in) — `npm test`.
 - `client`: 27/27 pass — `npm test`; typecheck + production build green.
 - Production bundle builds: client `npm run build` (lazy chunks per world), api-server `npm run build`.
 
@@ -106,7 +133,7 @@ The **Executive Command bar** at the bottom of every screen now launches a real 
 | World | Surface | Status |
 | ----- | ------- | ------ |
 | Company | `#campus` (the HQ floor, live Three.js world with agents at desks) + `#director` (Director's Office) | Visual/operating world; OS orchestration runs behind it via مركز التنفيذ |
-| Projects | `#projects` (KANBAN-style board with custom columns and persistence) | Works; project records also created by the OS org builder land in `os_projects` |
+| Projects | `#projects` (KANBAN-style board with custom columns and persistence) | Real — localStorage for offline speed + server sync via `os_boards` (cross-device durable, demo data labeled and clearable); OS org builder records land in `os_projects` |
 | Agents | `#agents` | Real — registry, create/pause/archive/delete, specializations, org builder |
 | Execution | `#execution` | Real — mission lifecycle, evidence, handoffs, approvals, resume |
 | Intelligence | `#intelligence` | Real — HiGHS MIP, Monte Carlo, decision matrix, tool registry |
@@ -131,7 +158,11 @@ The persistent **Executive Command** bar (bottom of every screen) launches `POST
   documented scale-out path, not a current claim.
 - **Live LLM planning**: plan generation is deterministic (capability matchers). When `STUDIO_PROVIDER` +
   key are set, the existing Studio path can enrich, but the orchestrator does not require any provider.
-- **Multi-tenant production authZ roles**: signed-session workspace isolation exists; per-workspace custom
-  role catalogs (RBAC beyond owner/admin) are not implemented.
-- **Durable cross-device project Kanban sync**: projects remain browser-persisted (documented behavior);
-  OS `os_projects` records projects for the organization builder only.
+- **Multi-tenant production authZ beyond the four roles**: signed-session workspace isolation exists and
+  RBAC v1 enforces owner/admin/member/viewer, but custom role definitions and per-tool permission matrices
+  per workspace are not implemented.
+- **Project board conflict resolution**: the board sync is last-write-wins at document granularity
+  (`os_boards`), not CRDT/field-level merging. Concurrent edits on two devices race; the last PUT wins and
+  both clients converge on next boot/save. Field-level merge is future work.
+- **Custom per-workspace permission catalogs**: RBAC v1 ships four ranked roles; arbitrary permission
+  matrices per workspace are not implemented.

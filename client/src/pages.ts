@@ -1,34 +1,46 @@
-import { Bot, BrainCircuit, BriefcaseBusiness, Cpu, CreditCard, FolderKanban, LayoutGrid, Plug2, ServerCog, Settings, Sparkles, Workflow } from 'lucide-react';
+import { Bot, BrainCircuit, Building2, Boxes, CreditCard, FolderKanban, Home, Plug2, ServerCog, Settings, Cpu, Workflow, Sparkles, LayoutGrid, BriefcaseBusiness } from 'lucide-react';
 import { ROOM_BY_ID } from './office/layout.js';
 import { TOUR_STOPS } from './office/visits.js';
 import { DIRECTOR_ROOM_ID } from './office/work.js';
 
+/**
+ * WORA — final navigation (2026-11-23 product reset).
+ * Three entry paths, one product. Primary areas are task-first, not workspace-first.
+ * Labels live in the i18n dictionaries (`nav.<id>`); no hardcoded strings here.
+ */
 export const NAV_ITEMS = [
-  { id: 'campus', label: 'ساحة العمل', icon: LayoutGrid },
-  { id: 'director', label: 'مكتب المدير', icon: BriefcaseBusiness },
-  { id: 'projects', label: 'المشاريع', icon: FolderKanban },
-  { id: 'agents', label: 'الوكلاء', icon: Bot },
-  { id: 'execution', label: 'مركز التنفيذ', icon: Workflow },
-  { id: 'intelligence', label: 'الذكاء التشغيلي', icon: BrainCircuit },
-  { id: 'system', label: 'النظام', icon: ServerCog },
-  { id: 'studio', label: 'استوديو المنتج', icon: Sparkles },
-  { id: 'settings', label: 'الإعدادات', icon: Settings },
+  { id: 'home', icon: Home },
+  { id: 'execution', icon: Workflow },
+  { id: 'agents', icon: Bot },
+  { id: 'projects', icon: FolderKanban },
+  { id: 'organizations', icon: Building2 },
+  { id: 'intelligence', icon: BrainCircuit },
+  { id: 'workspaces', icon: Boxes },
+  { id: 'system', icon: ServerCog },
 ] as const;
 
 export const SETTINGS_ITEMS = [
-  { id: 'models', label: 'النماذج', icon: Cpu },
-  { id: 'integrations', label: 'التكاملات', icon: Plug2 },
-  { id: 'pricing', label: 'الخطة', icon: CreditCard },
+  { id: 'settings', icon: Settings },
+  { id: 'models', icon: Cpu },
+  { id: 'integrations', icon: Plug2 },
+  { id: 'pricing', icon: CreditCard },
 ] as const;
 
-export const PAGES = [...NAV_ITEMS, ...SETTINGS_ITEMS] as const;
+/** Kept reachable (hash-routable, documented in the audit) but deliberately outside primary nav. */
+export const LEGACY_ITEMS = [
+  { id: 'campus', icon: LayoutGrid },
+  { id: 'director', icon: BriefcaseBusiness },
+  { id: 'studio', icon: Sparkles },
+] as const;
+
+export const PAGES = [...NAV_ITEMS, ...SETTINGS_ITEMS, ...LEGACY_ITEMS] as const;
 export type PageId = (typeof PAGES)[number]['id'];
 export type SettingsPage = (typeof SETTINGS_ITEMS)[number]['id'];
 export function isSettingsPage(page: PageId): page is SettingsPage { return SETTINGS_ITEMS.some((item) => item.id === page); }
 
 export function workspaceRoute(hash: string): { page: PageId; roomId: string | null; tourIndex: number | null } {
   const [name, section, stop, ...extra] = hash.slice(1).split('/');
-  const page = PAGES.find((item) => item.id === name)?.id ?? 'campus';
+  const page = PAGES.find((item) => item.id === name)?.id ?? 'home';
   if (page === 'director') return { page, roomId: DIRECTOR_ROOM_ID, tourIndex: null };
   if (page !== 'campus') return { page, roomId: null, tourIndex: null };
   if (section === 'tour' && !extra.length) {

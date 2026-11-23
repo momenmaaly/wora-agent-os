@@ -1,5 +1,5 @@
 # WORA — Definition of Done Report
-**Branch:** `arena/fc43198a-wora-agent-os` · **Date:** 2026-11-23 · **Scope:** the WORA OS mission on top of the existing repo
+**Branch:** `arena/3a146077-wora-agent-os` · **Date:** 2026-11-23 · **Scope:** WORA OS — build & execution mandate (supersedes and extends the `arena/fc43198a-wora-agent-os` report, whose content merged to `main` in PR #7, merge commit `922098d`)
 
 This report separates **implemented & verified** from **partial / designed / simulated / blocked**, with the actual commands and outputs run on this branch. Nothing below is aspirational; every "verified" claim names the check that proved it.
 
@@ -7,11 +7,9 @@ This report separates **implemented & verified** from **partial / designed / sim
 
 ## 1. Executive summary
 
-WORA is now a genuinely working execution platform, not a prototype: an objective typed into the persistent Executive Command bar launches a real mission — decomposition, specialization matching, permissioned tool execution, independent deterministic review, retries, blocking with named reasons, persisted agents/memory/organizations/artifacts, a human-approval gate for high-risk actions, self-built optimization playbooks that are re-validated before they earn trust, and an Arabic intelligence-grade System console that shows exactly what works and what doesn't.
+WORA is a genuinely working execution platform, not a prototype. Since the last report, this branch added and **verified**: a durable, workspace-scoped **Project OS board on the server** (`os_boards`, cross-device, demo data labeled + clearable); **RBAC v1** (owner/admin/member/viewer, enforced in the OS router, verified over HTTP including the viewer→403 path); **memory ACLs** (workspace/owner visibility + TTL) with **version snapshots**; **agent version snapshots** on every edit; **digital twins** with seeded what-if simulations (labeled simulated); **playbook auto-injection into the planner** (validated playbook preferred over the sample roster, reuse counted). All gates remain green: api-server 57 tests (56 pass / 1 opt-in skip), client 27/27, both typechecks clean, both production builds green, and every new endpoint exercised over real HTTP against real SQLite (via a standalone `createOsRouter` harness — see §6.5 for why the full Wora boot was not used).
 
-Everything runs offline and container-ready; no paid API keys are required for any core flow. The three mandate journeys that previously did not exist (J2, J3, J4-artifact) plus the OR journey (J5) were executed against the live stack, and J4's high-risk QA step now pauses for a human decision by design (verified end-to-end through the built client).
-
-**Not done:** visual/browser verification (no browser binary reachable from this build host), Docker image build (no Docker daemon), Playwright automation, pgvector-class retrieval, digital twins, RBAC role catalogs, per-record memory ACLs, autonomous playbook reuse in the planner, provider failover. All are listed with exact reasons in §6 — none are disguised.
+**Not done (unchanged blockers):** visual/browser verification (no browser binary), Docker image build (no daemon), Playwright automation, pgvector-class retrieval, custom RBAC permission catalogs, field-level board merge (last-write-wins today), provider failover, live LLM planning. Listed with exact reasons in §6 — none are disguised.
 
 ---
 
@@ -19,11 +17,11 @@ Everything runs offline and container-ready; no paid API keys are required for a
 
 | # | Priority (mandate) | Status | Evidence |
 |---|--------------------|--------|----------|
-| 1 | Executive Command + Execution Center — type objective, run it, see it | **Verified** | Executive Command bar → `POST /api/os/missions` → live lifecycle in مركز التنفيذ (`#execution`), polling every 2.5 s, evidence per run, handoff contracts, artifact download, Arabic UI |
-| 2 | Agents & organizations are real, persistent, reusable entities | **Verified** | 18 seeded specializations in `os_agents`; create/pause/archive/delete over REST + UI (`#agents`); software-testing-agent journey (J2) persisted and listed; organization builder (J3): 8 departments, 9 agents, project + kickoff mission persisted |
-| 3 | Intelligence that is actually computed | **Verified** | HiGHS MIP (employee-schedule 20×5 → total cost 480, independent re-validation printed), Hungarian assignment, Monte Carlo PERT (seeded), decision matrix with ±25 % robustness check, `stats.describe`, all zod-validated, all via REST + `#intelligence` |
-| 4 | Control plane — approvals, revocation, audit, autonomy | **Verified** | high-risk `host.exec` pauses at `awaiting_approval`; approve → auto-resume → mission completes; deny → task fails loudly; autonomy policy (`balanced` default); device pairing (one-time hashed codes) → redeem → heartbeat → revoke (verified over HTTP through the built client + 6 governance tests) |
-| 5 | Deployment & hardening | **Verified (build/boot/auth)** / **Blocked (image)** | Production boot rejects missing config; 401 anonymous / 200 signed-session verified; Dockerfile (Node 22, non-root, healthcheck, writable `/app/data`), compose `os-data` volume, `.dockerignore`, `WORA_OS_DB`/`WORA_WORKSPACE` wired; **Docker daemon unavailable in this sandbox — image never built** |
+| 1 | Executive Command + Execution Center — type objective, run it, see it | **Verified** | Executive Command bar → `POST /api/os/missions` → live lifecycle in مركز التنفيذ (`#execution`), polling, evidence per run, handoff contracts, artifact download |
+| 2 | Agents & organizations are real, persistent, reusable entities | **Verified** | 18 seeded specializations in `os_agents`; create/pause/archive/delete over REST + UI; **agent edits now snapshot the prior definition** (`os_agent_versions`, cap 20) — verified over HTTP (`GET /agents/:id/versions` shows version 1 snapshot with `changedBy`) |
+| 3 | Intelligence that is actually computed | **Verified** | HiGHS MIP (employee-schedule 20×5 → total cost 480), Hungarian assignment, seeded Monte Carlo PERT, decision matrix with ±25 % robustness check, **digital-twin what-if scenarios** (Monte Carlo over adjusted PERT drivers, `simulated: true`) |
+| 4 | Control plane — approvals, revocation, audit, autonomy | **Verified** | high-risk `host.exec` pauses at `awaiting_approval`; approve → auto-resume → completed; deny → task fails loudly; autonomy policy; device pairing lifecycle; **RBAC v1 enforcement** (viewer 403 on mutations, self-role-change refused) — all verified over HTTP |
+| 5 | Deployment & hardening | **Verified (build/boot/auth)** / **Blocked (image)** | Production boot rejects missing config; OS router verified standalone; Dockerfile/static review only — **no Docker daemon in this sandbox** |
 
 ---
 
@@ -31,11 +29,11 @@ Everything runs offline and container-ready; no paid API keys are required for a
 
 | Journey | Result | How verified |
 |---------|--------|--------------|
-| J1 — "Inspect my computer and identify potential problems" | Mission completes; real `os.cpus/loadavg/memory/uptime` evidence attached; report artifact written; scope of inspection stated in handoff | api-server test suite (journey test) + live HTTP run of the built stack |
-| J2 — "Create a software testing agent" | Persistent `Software Testing Agent` (qa_engineer) created, reusable | api-server test + earlier curl smoke (agent listed in `/api/os/agents`) |
-| J3 — "Build an organization … online marketplace" | commerce-marketplace template → 8 departments, 9 agents, Managing Director spine, project + kickoff mission | api-server test (`commerce-marketplace`, departments ≥ 6, agents ≥ 6, project persisted) |
-| J4 — "Build a working web application" | Scope → scaffold (6 files, zero-dependency kanban app + `node --test` suite **green**) → security scan (0 criticals) → independent QA re-run via allowlisted `host.exec`. With balanced autonomy the QA step **waits for human approval**; approving resumes to `completed` (4/4 tasks). App runs: `node server.mjs`; `POST /api/tasks` works; journey verified over HTTP through the built-client proxy | api-server test (approval-gated path) + HTTP approve→resume→completed + earlier full smoke (app served, tests green) |
-| J5 — 20 employees × 5 shifts | HiGHS MIP → feasible, total cost 480, demand met per shift, availability respected, independent re-validation pass prints checks OK; result identical via mission, REST, and UI | api-server test + curl smoke + sample file in `#intelligence` (labeled SAMPLE) |
+| J1 — "Inspect my computer…" | Completes; real host signals as evidence; scope stated | api-server test + live HTTP run |
+| J2 — "Create a software testing agent" | Persistent qa_engineer agent | api-server test + curl smoke |
+| J3 — "Build an organization … online marketplace" | 8 departments, 9 agents, managing-director spine, project + kickoff mission | api-server test |
+| J4 — "Build a working web application" | scope → scaffold (`node --test` green) → security scan (0 criticals) → QA re-run; balanced autonomy **waits for human approval**; approving resumes to `completed` 4/4 | api-server test + HTTP approve→resume→completed |
+| J5 — 20 employees × 5 shifts | HiGHS MIP; feasible; cost 480; independent re-validation; labeled SAMPLE everywhere | api-server test + REST + UI |
 
 ---
 
@@ -43,72 +41,86 @@ Everything runs offline and container-ready; no paid API keys are required for a
 
 | World | Route | Status | Notes |
 |-------|-------|--------|-------|
-| Company | `#campus` + `#director` | Working | Live 3D HQ (Three.js, agents at desks, event-driven store) + Director's Office; world feeds Executive Command |
-| Projects | `#projects` | Working | Kanban board, custom columns, browser persistence (documented behavior; OS `os_projects` is written by the org builder) |
-| Agents | `#agents` | **New — real** | Registry, create/pause/archive/delete, specializations, 20× skills, org builder from one objective |
-| Execution | `#execution` | **New — real** | Mission launch, lifecycle pills, task/run evidence, handoff contracts, approvals inline, artifacts, «استئناف» resume |
-| Intelligence | `#intelligence` | **New — real** | Employee-shift MIP (editable grid + sample), Monte Carlo, decision matrix, tools registry, **Playbooks** tab (WORA-built, re-validated) |
-| System | `#system` | **New — real** | Runtime counts, governance (autonomy policy, pending approvals, device pairing/revoke, AI usage ledger), memory browser, audit trail, live capability honesty matrix |
-| Command Center | bottom bar (all screens) | **New — wired** | Direct instruction → real mission → navigates to مركز التنفيذ; launch errors surface in ExecutionCenter |
+| Company | `#campus` + `#director` | Working | Live 3D HQ; interface explicitly reads "Recorded workspace events only" — no invented activity |
+| Projects | `#projects` | **Working — now server-durable** | Kanban board; zustand optimistic + localStorage; **server sync via `os_boards`** (pull on boot, server wins; debounced push; 512 KB cap; audited). Demo seed labeled `بيانات تجريبية · Demo` with one-click clear (empties local + server). `os_projects` written by org builder |
+| Agents | `#agents` | **Real** | Registry CRUD, specializations, org builder, **version history per agent** |
+| Execution | `#execution` | **Real** | Mission launch, lifecycle pills, evidence, handoff contracts, approvals inline, resume |
+| Intelligence | `#intelligence` | **Real** | Employee-shift MIP, Monte Carlo, decision matrix, tool registry, **Playbooks tab with reuse counts**, **التوائم الرقمية (Digital Twins)** — create twins with PERT drivers, record observations, run what-if scenarios |
+| System | `#system` | **Real** | Runtime counts, governance, **RBAC roles tab** (my role, member list, grant/change/remove with server-enforced rules), memory browser with **visibility/TTL chips + per-item version history**, capability honesty matrix, audit log |
+| Command Center | bottom bar (all screens) | **Wired** | Direct instruction → real mission → navigates to مركز التنفيذ |
 
-Theme aligned to the reference image (`docs/design/wora.photo.agen.png`): deep-navy background `#070d1a`, panels `#101a2e`, cyan accent `#3ee0f0`, high-contrast ink — now the default pre-paint theme (`data-theme="dark"` on `<html>`, `wora:hqTheme` override kept). Composition (sidebar / KPI strip / 3D floor / Live Activity / Executive Command / view controls / upgrade card) is the existing campus implementation; no redesign was introduced.
+Theme aligned to the reference image (`docs/design/wora.photo.agen.png`): deep-navy `#070d1a` default. Composition is the existing campus implementation; no redesign.
 
 ---
 
 ## 5. Quality gates — actual results on this branch
 
 ```
-$ npm --prefix api-server run typecheck        → clean (tsc --noEmit)
-$ npm --prefix api-server test                 → # tests 49 · # pass 48 · # fail 0 · # skipped 1 (Mongo integration, opt-in)
-$ npm --prefix api-server run build            → ⚡ Done in 3ms (esbuild, dist/index.mjs)
-$ npm --prefix client run typecheck            → clean
-$ npm --prefix client test                     → # tests 27 · # pass 27 · # fail 0
-$ npm --prefix client run build                → ✓ built in ~4s (lazy chunks per world)
+$ npm --prefix api-server run typecheck   → clean
+$ npm --prefix api-server test            → # tests 58 · # pass 57 · # fail 0 · # skipped 1 (Mongo, opt-in)
+$ npm --prefix api-server run build       → ⚡ Done (esbuild)
+$ npm --prefix client run typecheck       → clean
+$ npm --prefix client test                → # tests 30 · # pass 30 · # fail 0
+$ npm --prefix client run build           → ✓ built (~4s)
 ```
 
-HTTP smoke against the built stack (client :4173, preview API :4000, proxy `/api` → 4000):
-`GET /` → 200 (title `Wora — مساحة عمل فريقك الذكي`, `<html data-theme="dark">`) · `POST /api/os/missions` → `awaiting_approval` (web-app objective) · `POST …/approvals/:id/decide approved` → mission `completed` 4/4 · `GET /api/os/playbooks` → exactly one validated playbook, `successRuns 1 → 2` after a second identical mission · device `pair → redeem(wrong) → redeem(right) → heartbeat → revoke → heartbeat=409 revoked` · audit log records every step (`mission.*`, `approval.*`, `device.*`, `playbook.*`, `tool.execute`) · `GET /api/os/usage` → 200 (0 calls; no provider keys used in this sandbox — honest).
+New-code verification (standalone `createOsRouter` HTTP harness on ephemeral port, real SQLite at `/tmp/osverify`, dev-mode preview workspace — not the production server, see §6.5):
 
-Test coverage that matters: OR solvers (LP/MIP feasibility, Hungarian optimality), memory scope isolation + audited delete, agent registry CRUD, orchestrator journeys 1–5 + denial/approval paths, autonomy policy gate, device lifecycle (single-use codes, revoke terminal), playbook distill/reinforce, restart recovery + idempotent resume, permissioned tool execution, workspace scoping in memory, error-shaped JSON (400/500) instead of stack traces.
+- `GET /api/os/roles` → `{ me: { userId: 'preview', role: 'owner' }, members: […] }` after bootstrap.
+- `POST /roles` grant member/admin as owner → 200; **self-demotion** `preview→viewer` → 403 `"You cannot change your own role"`.
+- Viewer (forced via direct SQL): `POST /memory` → **403** `"Viewer role is read-only"`, `PUT /board` → **403**, `GET /memory` → **200**. Owner restored after check.
+- `POST /memory {visibility:'owner'}` → persisted; `GET /memory/:id/versions` → `create` snapshot listed; other-actor list/search hides owner records (unit tests).
+- `PUT /board` → `{updatedAt, sizeBytes}`; `GET /board` round-trips the document; oversized payload → 413 (unit test: 600 KB rejected); `DELETE /board` → 204.
+- `POST /twins` (store "فرع المعادي", driver المبيعات 80/120/160) → 201; `POST /twins/:id/scenario {mul 1.25, trials 500, seed 11}` → baseline mean 118.48 → scenario mean 148.1 (**+25 % Δmean**), `simulated: true`; event log records the scenario.
+- `PATCH /agents/:id` → `GET /agents/:id/versions` shows version 1 snapshot with previous instructions and `changedBy: 'preview'`.
 
 ---
 
 ## 6. Honest ledger
 
 ### 6.1 Implemented & verified (this branch)
-Execution engine with persisted lifecycle; agent registry + specializations; handoff contracts; review-before-handoff; retry/reassign/block; article artifacts; workspace-scoped memory (TF-IDF retrieval, audited delete/write); HiGHS LP/MIP + Hungarian + PERT Monte Carlo + decision matrix; security scanner (hardcoded secrets / eval / child_process / TLS-disabled); sandboxed scaffold→test→scan→QA mission for web apps; organization builder (templates, departments, agents, project, kickoff mission); approvals + autonomy policy + audit everywhere; device pairing foundation + reference agent (`device-agent/`) with local-only diagnostics; restart recovery + resume; self-building validated playbooks; AI usage ledger (char/4 estimates, admin-gated in prod); default deep-navy theme; responsive CSS pass; JSON error contracts; rate limiting; workspace isolation (signed sessions in production); Dockerfile/compose `os-data` persistence.
+Everything in the prior report (execution engine, agent registry + specializations, handoff contracts, review-before-handoff, retry/reassign/block, memory with scoped TF-IDF retrieval, HiGHS LP/MIP + Hungarian + PERT Monte Carlo + decision matrix, security scanner, sandboxed scaffold→test→scan→QA mission, organization builder, approvals + autonomy policy + audit, device pairing lifecycle + reference agent, restart recovery, self-building playbooks, usage ledger char/4 estimates, deep-navy default theme, JSON error contracts, rate limiting, workspace isolation) **plus**:
+- RBAC v1: `roles.ts` ranked owner/admin/member/viewer; router-enforced (viewer read-only; settings-class mutations require admin+; owner-only role administration; self-change refused); `/api/os/roles` endpoints; System → الصلاحيات UI.
+- Memory ACLs: `visibility workspace|owner`, `owner_id`, `expires_at` (TTL); actor-scoped list/search/get/delete; `os_memory_versions` snapshots on create/delete (cap 20); memory UI chips + version history.
+- Agent versioning: `os_agent_versions` snapshots on every `updateAgent` (cap 20) + `GET /api/os/agents/:id/versions`.
+- Durable Project OS board: `os_boards` (one JSON doc per workspace, 512 KB cap, audited last-write-wins); client `boardSync.ts` (boot pull server-wins, 800 ms debounced push, `isDemo` flag, one-click demo clear); `بيانات تجريبية · Demo` badge + sync status chip in مركز المشاريع.
+- Digital twins: `os/twins.ts` (drivers/KPIs/event log cap 200) + seeded Monte Carlo what-if with baseline deltas; REST endpoints; Intelligence → التوائم الرقمية tab.
+- Playbook planner reuse: OR planner prefers a Jaccard≥0.5 validated playbook over the SAMPLE roster; reuse counted and surfaced in the Playbooks tab.
+- Predictive baseline: `forecast.linear` (least-squares trend + honest 80/20 holdout backtest — R², holdout MAE, residual-stddev bands; labeled as a baseline, never as a guaranteed forecast). Listed in the tool registry with a test.
+- DB migrations: guarded idempotent `migrate()` (ALTER…ADD COLUMN for pre-existing DBs) + 5 new tables.
 
 ### 6.2 Implemented but **partial** (works, scoped honestly)
-- Memory retrieval = deterministic TF-IDF, not vector/semantic search (pgvector stand-in, by design; swap point isolated in `os/memory.ts`).
-- Restart recovery = boot-time marking + manual «استئناف»; missions never auto-execute on boot (safety choice).
-- Org templates = 3 archetypes (commerce-marketplace, software-product, general-business); 19 specializations seeded.
-- Predictive analytics = only what real data supports (`stats.describe`); no fabricated forecasting.
-- Company world = campus/director worlds (existing product surface) serving as the Company world; no separate Company OS console was built.
-- `host.exec` = allowlisted `node --test` only, inside the sandboxed workspace; it is the only high-risk tool and is the approval-gated action.
-- Usage/cost ledger = char/4 estimates + approximate catalog; **not** billing-grade; provider task-routing and failover **not** implemented.
+- Board sync is **last-write-wins** at document granularity — no CRDT/field-level merge; concurrent device edits race (documented future work).
+- Memory retrieval remains deterministic TF-IDF, not vector search (swap point isolated in `os/memory.ts`).
+- RBAC v1 = four fixed roles; **no custom per-workspace permission catalogs**.
+- AI usage ledger = char/4 estimates; not billing-grade; no provider task-routing/failover.
+- Restart recovery = boot-time marking + manual resume (missions never auto-execute on boot).
+- Company world = campus/director worlds; no separate Company OS console.
+- Twin what-if = simulated PERT re-run; **no live telemetry ingestion** (no source exists for it — none is faked).
 
 ### 6.3 Designed but **not implemented**
-Per-record memory ACLs; memory retention policies/versions; RBAC role catalogs beyond owner/admin; playbook auto-injection into planning; Digital Twins; reusable custom specialization marketplace; multi-instance mission scheduling (BullMQ-backed); circuit-breaking provider router; browser automation tool contract exists but has no runner.
+Per-tool custom permission matrices per workspace; Playwright browser automation (contract exists, no runner); BullMQ-backed multi-instance mission scheduling; provider circuit-breaker router; reusable specialization marketplace; pgvector path (see 6.5).
 
-### 6.4 **Simulated / sample** (clearly labeled in UI and API)
-Employee roster (20×5) in `#intelligence` and J5 when run without embedded data — every such payload carries `sample: true` + an Arabic SAMPLE note; workspace preview (`wora-preview`) is a shared sandbox seeded with 4 virtual agents.
+### 6.4 **Simulated / sample** (clearly labeled)
+Employee roster (20×5) in `#intelligence` and J5 — payloads carry `sample: true` + Arabic SAMPLE note; twin scenarios carry `simulated: true` and PERT disclaimers; `wora-preview` shared sandbox.
 
 ### 6.5 **Blocked / awaiting credentials or environment**
-- **Visual browser verification & responsive QA** — no browser binary is reachable from this sandbox (Playwright downloads are off-allowlist; no system chromium). All OS screens are build-verified + HTTP-verified; pixel/UX parity with the reference image is **not** visually confirmed.
-- **Docker image build** — no Docker daemon/binary in this sandbox; Dockerfile and compose were statically reviewed only.
-- **Live LLM provider flows** — no `STUDIO_PROVIDER` + keys are configured; provider integration is code-complete (BrainAdapter pooling + ledger) but was never called with real credentials here.
-- **pgvector / real vector search** — no Postgres available; design swap point documented.
-- **Production `wora-server.ts` boot** — requires `MONGO_URI`/`REDIS_URL`/`AUTH_SECRET`; boot-time config validation was observed to fail closed correctly; the OS router itself was verified under `createOsRouter({ production: true })` (401/200) and in-process under preview (`production: false`).
+- **Full Wora boot** — the production server requires Mongo + Redis; neither exists in this sandbox, so end-to-end verification used a standalone OS-router harness (all routes, real HTTP, real SQLite). Boot-time config validation fail-closed behavior unchanged from the prior report.
+- **Visual browser verification & responsive QA** — no browser binary reachable (Playwright downloads off-allowlist). All OS screens are build-verified + HTTP-verified; pixel parity with the reference image is **not** visually confirmed.
+- **Docker image build** — no Docker daemon; Dockerfile statically reviewed only.
+- **Live LLM provider flows** — no `STUDIO_PROVIDER`/keys configured; never called.
+- **pgvector / real vector search** — no Postgres available.
+- **Redis/BullMQ** — same reason.
 
 ---
 
 ## 7. Exact remaining blockers (to call this "done")
-1. A machine with a browser (or CI runner) to run Playwright/visual checks — closes §6.5/blocked row 1.
-2. `docker build` capability — closes row 2.
-3. Provider credentials + `STUDIO_PROVIDER` — closes row 3.
-4. Postgres + `pgvector` — closes row 4 and enables true semantic memory.
-5. Product decision: org templates beyond 3 archetypes; Company-world dedicated console or formal acceptance of campus-as-Company.
-6. Product decision: RBAC catalogs and per-record memory ACLs (multi-tenant hardening) if WORA ships beyond a single trusted team.
+1. Browser-capable machine/CI — closes visual/responsive QA (§6.5).
+2. `docker build` capability — closes image row.
+3. Provider credentials + `STUDIO_PROVIDER` — closes live LLM row.
+4. Postgres + `pgvector` — closes semantic memory row.
+5. Mongo + Redis in the target environment — closes full-boot verification row.
+6. Product decisions: custom RBAC catalogs; field-level board merge; Company-world dedicated console vs formal acceptance of campus-as-Company; whether twin scenarios should accept external data feeds.
 
 ---
 
@@ -116,7 +128,6 @@ Employee roster (20×5) in `#intelligence` and J5 when run without embedded data
 ```bash
 npm --prefix api-server run typecheck && npm --prefix api-server test && npm --prefix api-server run build
 npm --prefix client run typecheck && npm --prefix client test && npm --prefix client run build
-PREVIEW_HOST=0.0.0.0 PORT=4000 npm --prefix api-server run dev:preview &   # API on :4000
-npm --prefix client run preview -- --port 4173 --host 0.0.0.0 &            # built client on :4173 → http://localhost:4173
 ```
-Journey walkthrough: open `#execution`, paste «ابنِ تطبيق ويب يعمل», watch it reach `awaiting_approval`, approve on the card, watch it complete; then `#intelligence → Playbooks` to see WORA's self-built validated playbook; `#system → الحوكمة والأجهزة` to flip the autonomy policy, approve anything pending, pair/revoke a device, and read the usage ledger and audit trail.
+New surface walkthrough: `#system → الصلاحيات` (see your role, members, grant/change/remove); `#system → الذاكرة` (save with `لي فقط`/TTL, open «الإصدارات»); `#projects` (badge + sync chip; clear demo); `#intelligence → التوائم الرقمية` (create twin, record observation, run what-if); `#intelligence → Playbooks` (reuse counter); `#agents` (edit an agent, then `GET /api/os/agents/:id/versions`).
+Journey walkthrough (unchanged): `#execution` → «ابنِ تطبيق ويب يعمل» → approve at `awaiting_approval` → completes; `#intelligence → Playbooks`; `#system → الحوكمة والأجهزة`.

@@ -60,7 +60,7 @@ export interface ApprovalRecord {
 export interface Playbook {
   id: string; name: string; toolId: string; keywords: string[];
   validation: { ok: boolean; detail: string };
-  status: 'validated'; successRuns: number; createdFromMission: string | null; createdAt: string; updatedAt: string;
+  status: 'validated'; successRuns: number; reuseCount?: number; createdFromMission: string | null; createdAt: string; updatedAt: string;
 }
 
 export interface AiUsageSummary {
@@ -213,7 +213,7 @@ export const osApi = {
     request<OrgBuildResult>('/organizations', { method: 'POST', body: JSON.stringify(body) }),
 
   memory: (query = '') => request<Array<Record<string, unknown>>>(`/memory${query ? `?q=${encodeURIComponent(query)}` : ''}`),
-  addMemory: (body: { scope: string; scopeId?: string; content: string; tags?: string[] }) =>
+  addMemory: (body: { scope: string; scopeId?: string; content: string; tags?: string[]; visibility?: 'workspace' | 'owner'; ttlDays?: number | null }) =>
     request<Record<string, unknown>>('/memory', { method: 'POST', body: JSON.stringify(body) }),
   deleteMemory: (id: string) => request<void>(`/memory/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
@@ -232,6 +232,28 @@ export const osApi = {
   deletePlaybook: (id: string) => request<void>(`/playbooks/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   usage: (days = 30) => request<AiUsageSummary>(`/usage?days=${days}`),
 
+  board: () => request<{ state: Record<string, unknown> | null; updatedAt: string | null; sizeBytes?: number }>('/board'),
+  saveBoard: (state: Record<string, unknown>) => request<{ updatedAt: string; sizeBytes: number }>('/board', { method: 'PUT', body: JSON.stringify({ state }) }),
+  clearBoard: () => request<void>('/board', { method: 'DELETE' }),
+
+  roles: () => request<{ me: { userId: string; role: 'owner' | 'admin' | 'member' | 'viewer' }; members: Array<{ userId: string; role: string; grantedBy: string }> }>('/roles'),
+  setRole: (userId: string, role: 'owner' | 'admin' | 'member' | 'viewer') =>
+    request<{ userId: string; role: string }>('/roles', { method: 'POST', body: JSON.stringify({ userId, role }) }),
+  removeRole: (userId: string) => request<void>(`/roles/${encodeURIComponent(userId)}`, { method: 'DELETE' }),
+
+  agentVersions: (id: string) => request<Array<{ id: string; version: number; changedBy: string; createdAt: string; snapshot: Record<string, unknown> }>>(`/agents/${encodeURIComponent(id)}/versions`),
+  memoryVersions: (id: string) => request<Array<{ id: string; action: string; actor: string; createdAt: string; content: string; tags: string[] }>>(`/memory/${encodeURIComponent(id)}/versions`),
+
+  twins: () => request<TwinRecord[]>('/twins'),
+  createTwin: (body: { name: string; entityType?: string; drivers: TwinDriverInput[]; kpis?: TwinKpiInput[]; notes?: string }) =>
+    request<TwinRecord>('/twins', { method: 'POST', body: JSON.stringify(body) }),
+  twin: (id: string) => request<TwinRecord>(`/twins/${encodeURIComponent(id)}`),
+  deleteTwin: (id: string) => request<void>(`/twins/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  recordTwinObservation: (id: string, payload: Record<string, unknown>) =>
+    request<{ id: string; type: string; createdAt: string }>(`/twins/${encodeURIComponent(id)}/observations`, { method: 'POST', body: JSON.stringify({ payload }) }),
+  runTwinScenario: (id: string, body: { name: string; adjustments: Array<{ driver: string; op: 'mul' | 'add'; value: number }>; trials?: number; seed?: number }) =>
+    request<TwinScenarioResult>(`/twins/${encodeURIComponent(id)}/scenario`, { method: 'POST', body: JSON.stringify(body) }),
+
   devices: () => request<DeviceRecord[]>('/devices'),
   pairDevice: (body: { name: string; platform: string }) =>
     request<DeviceRecord & { pairingCode: string; note: string }>('/devices/pair', { method: 'POST', body: JSON.stringify(body) }),
@@ -240,3 +262,20 @@ export const osApi = {
   revokeDevice: (id: string) =>
     request<DeviceRecord>(`/devices/${encodeURIComponent(id)}/revoke`, { method: 'POST', body: '{}' }),
 };
+
+export interface TwinDriverInput { name: string; optimistic: number; likely: number; pessimistic: number }
+export interface TwinKpiInput { id: string; label: string; unit?: string; target?: number }
+export interface TwinEvent { id: string; type: 'observation' | 'scenario' | 'note'; payload: Record<string, unknown>; createdAt: string }
+export interface TwinRecord {
+  id: string; workspaceId: string; name: string; entityType: string;
+  params: { drivers: TwinDriverInput[]; notes: string };
+  kpis: TwinKpiInput[]; events: TwinEvent[]; createdAt: string; updatedAt: string;
+}
+export interface TwinScenarioResult {
+  simulated: true;
+  baseline: { p10: number; p50: number; p90: number; mean: number };
+  scenario: { p10: number; p50: number; p90: number; mean: number };
+  deltaP50: number; deltaP90: number; deltaMeanPct: number;
+  adjustments: Array<{ driver: string; op: 'mul' | 'add'; value: number }>;
+  trials: number; seed: number;
+}

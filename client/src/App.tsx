@@ -1,6 +1,9 @@
 import { lazy, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { CircleHelp } from 'lucide-react';
 import { CompanyHeader } from './components/CompanyHeader.js';
+import { CommandCenter } from './components/CommandCenter.js';
+import { OrganizationsPage } from './components/OrganizationsPage.js';
+import { WorkspacesPage } from './components/WorkspacesPage.js';
 import { CompanySidebar } from './components/CompanySidebar.js';
 import { ExecutiveCommandBar } from './components/ExecutiveCommandBar.js';
 import { HireAgentModal } from './components/HireAgentModal.js';
@@ -15,9 +18,13 @@ import { Dialog } from './components/ui.js';
 import { useSocketLifecycle } from './hooks/useSocket.js';
 import { useOfficeMotion, useOfficeSimulation } from './office/useOfficeSimulation.js';
 import { DIRECTOR_ROOM_ID } from './office/work.js';
-import { officeHash, workspaceRoute, PAGES, type PageId } from './pages.js';
+import { officeHash, workspaceRoute, type PageId } from './pages.js';
 import { useWoraStore } from './store/useWoraStore.js';
+import { useI18n } from './i18n/I18nContext.js';
+import { initBoardSync } from './store/boardSync.js';
 import { osApi } from './os/api.js';
+
+initBoardSync(); // pull the durable workspace board once per boot (server wins); safe to call before React mounts
 
 const Campus = lazy(() => import('./components/Campus.js').then((module) => ({ default: module.Campus })));
 const Director = lazy(() => import('./components/DirectorOffice.js').then((module) => ({ default: module.DirectorOffice })));
@@ -47,6 +54,7 @@ function closeOfficeDialogs() {
 }
 
 export default function App() {
+  const { t } = useI18n();
   const [hash, setHash] = useState(() => window.location.hash);
   const { page, roomId, tourIndex } = workspaceRoute(hash);
   const initialRoomId = useRef(roomId);
@@ -60,7 +68,7 @@ export default function App() {
     setOverlay(null);
     closeOfficeDialogs();
     const current = window.location.hash;
-    if (current === target || (!current && target === '#campus')) return;
+    if (current === target || (!current && target === '#home')) return;
     if (workspaceRoute(current).page !== workspaceRoute(target).page) focusOnNavigate.current = true;
     window.history.pushState(null, '', target);
     setHash(target);
@@ -132,19 +140,22 @@ export default function App() {
   useLayoutEffect(() => {
     main.current?.scrollTo({ top: 0 });
     if (focusOnNavigate.current) { main.current?.focus({ preventScroll: true }); focusOnNavigate.current = false; }
-    document.title = `${PAGES.find((item) => item.id === page)?.label ?? 'مساحة العمل'} — Wora`;
-  }, [page]);
+    document.title = `${t(`nav.${page}`)} — Wora`;
+  }, [page, t]);
 
   return <div className="app-shell">
     <Runtime initialRoomId={initialRoomId.current} />
-    <a href="#main-content" className="button primary skip-link" onClick={(event) => { event.preventDefault(); main.current?.focus(); }}>تخطَ إلى المحتوى</a>
+    <a href="#main-content" className="button primary skip-link" onClick={(event) => { event.preventDefault(); main.current?.focus(); }}>{t('app.skipToContent')}</a>
     <aside className="company-sidebar desktop-sidebar"><CompanySidebar page={page} onNavigate={navigate} onHelp={() => setOverlay('help')} /></aside>
     <div className="app-main">
-      <CompanyHeader page={page} onHome={toCampus} onDirector={toDirector} onMenu={() => setOverlay('menu')} onSearch={() => setOverlay('search')} />
+      <CompanyHeader onMenu={() => setOverlay('menu')} onSearch={() => setOverlay('search')} onHome={() => navigate('home')} />
       <main id="main-content" className="app-scroll hq-scroll" tabIndex={-1} ref={main}>
         {page !== 'director' && <div className={`page-frame page-${page}`} key={page}>
           <WorkspacePage>
+            {page === 'home' && <CommandCenter onNavigate={navigate} />}
             {page === 'campus' && <Campus roomId={roomId} tourIndex={tourIndex} onVisit={visit} onAssign={assign} onDirector={toDirector} />}
+            {page === 'organizations' && <OrganizationsPage onNavigate={navigate} />}
+            {page === 'workspaces' && <WorkspacesPage onNavigate={navigate} />}
             {page === 'projects' && <Projects onUpgrade={toPricing} onIntegrations={toIntegrations} />}
             {page === 'agents' && <Agents />}
             {page === 'execution' && <Execution />}
@@ -165,10 +176,10 @@ export default function App() {
       </main>
       <ExecutiveCommandBar onSubmit={launchCommand} />
     </div>
-    {overlay === 'menu' && <Dialog key="menu" title="التنقل" variant="navigation" onClose={() => setOverlay(null)}><div className="company-sidebar"><CompanySidebar page={page} onNavigate={navigate} onHelp={() => setOverlay('help')} /></div></Dialog>}
+    {overlay === 'menu' && <Dialog key="menu" title={t('nav.navigation')} variant="navigation" onClose={() => setOverlay(null)}><div className="company-sidebar"><CompanySidebar page={page} onNavigate={navigate} onHelp={() => setOverlay('help')} /></div></Dialog>}
     {overlay === 'search' && <QuickSearch onClose={() => setOverlay(null)} onNavigate={navigate} onAgent={openAgent} onRoom={visit} />}
-    {overlay === 'help' && <Dialog key="help" icon={CircleHelp} title="استخدام مساحة العمل" onClose={() => setOverlay(null)}>
-      <div className="field-stack"><p>اختَر قسمًا أو وكيلًا من الساحة. استخدم «تكبير الساحة» للتركيز، واضغط Esc للرجوع.</p><p>من مكتب المدير اطلب «ملخص الساحة» أو اكتب مهمة جديدة لإسنادها.</p><p>شريط «Executive Command» السفلي ينشئ مهمة تنفيذ حقيقية (تحليل → تخطيط → توجيه → تنفيذ → مراجعة) ويفتح مركز التنفيذ لتتبعها بحالة وأدلة.</p><button type="button" className="button" onClick={() => visit(null, true)}>جولة الأقسام</button></div>
+    {overlay === 'help' && <Dialog key="help" icon={CircleHelp} title={t('help.title')} onClose={() => setOverlay(null)}>
+      <div className="field-stack"><p>{t('help.body1')}</p><p>{t('help.body2')}</p><p>{t('help.body3')}</p></div>
     </Dialog>}
     <ChatDrawer />
     <WorkspaceBoard />

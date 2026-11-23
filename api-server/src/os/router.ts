@@ -23,7 +23,11 @@ import {
 import {
   createMission, executeMission, getMissionDetail, listMissions, getOsState, markInterruptedMissions,
 } from './orchestrator.js';
-import { addMemory, listMemories, searchMemories, deleteMemory, MEMORY_SCOPES, type MemoryScope } from './memory.js';
+import { addMemory, listMemories, searchMemories, deleteMemory, listMemoryVersions, MEMORY_SCOPES, type MemoryScope } from './memory.js';
+import { getWorkspaceRole, roleRank, listWorkspaceRoles, setWorkspaceRole, removeWorkspaceRole, type WorkspaceRole } from './roles.js';
+import { getBoard, putBoard, clearBoard } from './boards.js';
+import { createTwin, getTwin, listTwins, deleteTwin, recordObservation, runScenario, type TwinDriver, type TwinKpi } from './twins.js';
+import { listAgentVersions } from './registry.js';
 import { buildOrganization, listOrganizations } from './orgs.js';
 import { solveAssignment, solveEmployeeSchedule, solveLp } from './ortools.js';
 import { sampleEmployeeInput } from './orchestrator.js';
@@ -111,8 +115,35 @@ export function createOsRouter(options: { production?: boolean } = {}): Router {
     next();
   });
 
+  // RBAC v1: every authenticated workspace member resolves to a role.
+  // viewer = read-only; member = standard mutations; admin/owner = settings-class mutations.
+  router.use((req, res, next) => {
+    if (isDeviceCredentialRoute(req)) { next(); return; }
+    const ws = res.locals['workspaceId'] as string;
+    const role = getWorkspaceRole(ws, (res.locals['actor'] as string) ?? 'user');
+    res.locals['role'] = role;
+    const method = req.method.toUpperCase();
+    if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') { next(); return; }
+    if (roleRank(role) < roleRank('member')) { res.status(403).json({ error: 'دور المشاهد للقراءة فقط — Viewer role is read-only' }); return; }
+    const path2 = req.path.replace(/\/+$/, '');
+    const ADMIN_MUTATIONS: Array<{ method: string; pattern: RegExp }> = [
+      { method: 'POST', pattern: /^\/settings\/autonomy$/ },
+      { method: 'POST', pattern: /^\/devices\/pair$/ },
+      { method: 'POST', pattern: /^\/devices\/[^/]+\/revoke$/ },
+      { method: 'DELETE', pattern: /^\/agents\/[^/]+$/ },
+      { method: 'DELETE', pattern: /^\/playbooks\/[^/]+$/ },
+      { method: 'DELETE', pattern: /^\/board$/ },
+      { method: 'DELETE', pattern: /^\/twins\/[^/]+$/ },
+    ];
+    if (ADMIN_MUTATIONS.some((rule) => rule.method === method && rule.pattern.test(path2)) && roleRank(role) < roleRank('admin')) {
+      res.status(403).json({ error: 'يتطلب دور المشرف — Admin role required' }); return;
+    }
+    next();
+  });
+
   const workspace = (res: Response) => res.locals['workspaceId'] as string;
   const actor = (res: Response) => (res.locals['actor'] as string) ?? 'user';
+  const roleOf = (res: Response) => (res.locals['role'] as WorkspaceRole) ?? 'viewer';
 
   // Interrupted-mission recovery runs once per process boot (idempotent).
   try { markInterruptedMissions(); } catch (err) { logger.warn({ err }, 'interrupted-mission recovery failed'); }
@@ -180,6 +211,12 @@ export function createOsRouter(options: { production?: boolean } = {}): Router {
     const agent = getAgent(workspace(res), param(req, 'id'));
     if (!agent) { res.status(404).json({ error: 'Agent not found' }); return; }
     res.json(agent);
+  }));
+
+  router.get('/agents/:id/versions', asyncWrap((req, res) => {
+    const agent = getAgent(workspace(res), param(req, 'id'));
+    if (!agent) { res.status(404).json({ error: 'Agent not found' }); return; }
+    res.json(listAgentVersions(workspace(res), agent.id));
   }));
 
   const updateAgentSchema = z.object({
@@ -416,8 +453,12 @@ export function createOsRouter(options: { production?: boolean } = {}): Router {
     const scope = typeof req.query['scope'] === 'string' ? req.query['scope'] as MemoryScope : undefined;
     const q = typeof req.query['q'] === 'string' ? req.query['q'].slice(0, 500) : undefined;
     const limit = Number(req.query['limit'] ?? 50);
-    if (q) { res.json(searchMemories(workspace(res), q, { scope, limit })); return; }
-    res.json(listMemories(workspace(res), { scope: scope && MEMORY_SCOPES.includes(scope) ? scope : undefined, limit }));
+    if (q) { res.json(searchMemories(workspace(res), q, { scope, limit, actor: actor(res) })); return; }
+    res.json(listMemories(workspace(res), { scope: scope && MEMORY_SCOPES.includes(scope) ? scope : undefined, limit, actor: actor(res) }));
+  }));
+
+  router.get('/memory/:id/versions', asyncWrap((req, res) => {
+    res.json(listMemoryVersions(workspace(res), param(req, 'id'), actor(res)));
   }));
 
   router.post('/memory', asyncWrap((req, res) => {
@@ -427,8 +468,10 @@ export function createOsRouter(options: { production?: boolean } = {}): Router {
       scopeId: z.string().trim().max(120).optional(),
       content: z.string().trim().min(1).max(20_000),
       tags: z.array(z.string().trim().min(1).max(60)).max(20).optional(),
+      visibility: z.enum(['workspace', 'owner']).optional(),
+      ttlDays: z.number().int().min(1).max(3650).nullish(),
     }).strict().parse(req.body ?? {});
-    res.status(201).json(addMemory({ workspaceId: workspace(res), scope: body.scope, scopeId: body.scopeId, content: body.content, tags: body.tags, provenance: 'user', actor: actor(res) }));
+    res.status(201).json(addMemory({ workspaceId: workspace(res), scope: body.scope, scopeId: body.scopeId, content: body.content, tags: body.tags, provenance: 'user', actor: actor(res), visibility: body.visibility, ttlDays: body.ttlDays ?? null }));
   }));
 
   router.delete('/memory/:id', asyncWrap((req, res) => {
@@ -468,6 +511,124 @@ export function createOsRouter(options: { production?: boolean } = {}): Router {
     if (!missionId) { res.status(400).json({ error: 'missionId query parameter is required' }); return; }
     const scoped = getOsDb().prepare('SELECT h.* FROM os_handoffs h JOIN os_missions m ON m.id = h.mission_id WHERE m.workspace_id = ? AND h.mission_id = ? ORDER BY h.created_at ASC').all(workspace(res), missionId) as Array<Record<string, string>>;
     res.json(scoped.map((h) => ({ id: h['id'], taskId: h['task_id'], from: h['from_specialization'], to: h['to_specialization'], contract: parseJson(h['contract'] as string, {}), createdAt: h['created_at'] })));
+  }));
+
+  /* ─── Project OS board (durable, workspace-scoped) ─── */
+  router.get('/board', asyncWrap((_req, res) => {
+    res.json(getBoard(workspace(res)) ?? { state: null, updatedAt: null });
+  }));
+
+  router.put('/board', asyncWrap((req, res) => {
+    if (!rateLimit(workspace(res), 60)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    const body = z.object({ state: z.record(z.string(), z.unknown()) }).strict().parse(req.body ?? {});
+    try {
+      res.json(putBoard(workspace(res), body.state, actor(res)));
+    } catch (err) {
+      res.status(413).json({ error: err instanceof Error ? err.message : 'Board rejected' });
+    }
+  }));
+
+  router.delete('/board', asyncWrap((_req, res) => {
+    if (!rateLimit(workspace(res), 10)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    clearBoard(workspace(res), actor(res));
+    res.status(204).end();
+  }));
+
+  /* ─── Digital twins ─── */
+  const driverSchema = z.object({
+    name: z.string().trim().min(1).max(120),
+    optimistic: z.number().finite(),
+    likely: z.number().finite(),
+    pessimistic: z.number().finite(),
+  }).strict();
+  const kpiSchema = z.object({
+    id: z.string().trim().min(1).max(60),
+    label: z.string().trim().min(1).max(120),
+    unit: z.string().trim().max(30).optional().default(''),
+    target: z.number().finite().optional(),
+  }).strict();
+
+  router.get('/twins', asyncWrap((_req, res) => {
+    res.json(listTwins(workspace(res)));
+  }));
+
+  router.post('/twins', asyncWrap((req, res) => {
+    if (!rateLimit(workspace(res), 30)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    const body = z.object({
+      name: z.string().trim().min(1).max(120),
+      entityType: z.string().trim().min(1).max(60).optional().default('custom'),
+      drivers: z.array(driverSchema).min(1).max(50),
+      kpis: z.array(kpiSchema).max(30).optional(),
+      notes: z.string().trim().max(2000).optional(),
+    }).strict().parse(req.body ?? {});
+    try {
+      res.status(201).json(createTwin({ ...body, kpis: body.kpis as TwinKpi[] | undefined, drivers: body.drivers as TwinDriver[], workspaceId: workspace(res), actor: actor(res) }));
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : 'تعذر إنشاء التوأم الرقمي' });
+    }
+  }));
+
+  router.get('/twins/:id', asyncWrap((req, res) => {
+    const twin = getTwin(workspace(res), param(req, 'id'));
+    if (!twin) { res.status(404).json({ error: 'Twin not found' }); return; }
+    res.json(twin);
+  }));
+
+  router.delete('/twins/:id', asyncWrap((req, res) => {
+    if (!rateLimit(workspace(res), 20)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    res.status(deleteTwin(workspace(res), param(req, 'id'), actor(res)) ? 204 : 404).end();
+  }));
+
+  router.post('/twins/:id/observations', asyncWrap((req, res) => {
+    if (!rateLimit(workspace(res), 60)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    const body = z.object({ payload: z.record(z.string(), z.unknown()) }).strict().parse(req.body ?? {});
+    const entry = recordObservation(workspace(res), param(req, 'id'), body.payload, actor(res));
+    if (!entry) { res.status(404).json({ error: 'Twin not found' }); return; }
+    res.status(201).json(entry);
+  }));
+
+  router.post('/twins/:id/scenario', asyncWrap(async (req, res) => {
+    if (!rateLimit(workspace(res), 20)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    const body = z.object({
+      name: z.string().trim().min(1).max(120),
+      adjustments: z.array(z.object({
+        driver: z.string().trim().min(1).max(120),
+        op: z.enum(['mul', 'add']),
+        value: z.number().finite(),
+      })).min(1).max(50),
+      trials: z.number().int().min(100).max(50_000).optional(),
+      seed: z.number().int().optional(),
+    }).strict().parse(req.body ?? {});
+    try {
+      res.json(await runScenario(workspace(res), param(req, 'id'), { ...body, actor: actor(res) }));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'تعذر تشغيل السيناريو';
+      res.status(message === 'Twin not found' ? 404 : 422).json({ error: message });
+    }
+  }));
+
+  /* ─── Workspace roles (RBAC) ─── */
+  router.get('/roles', asyncWrap((_req, res) => {
+    res.json({ me: { userId: actor(res), role: roleOf(res) }, members: listWorkspaceRoles(workspace(res)) });
+  }));
+
+  router.post('/roles', asyncWrap((req, res) => {
+    if (!rateLimit(workspace(res), 20)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    const body = z.object({ userId: z.string().trim().min(1).max(120), role: z.enum(['owner', 'admin', 'member', 'viewer']) }).strict().parse(req.body ?? {});
+    try {
+      res.json(setWorkspaceRole(workspace(res), body.userId, body.role, actor(res)));
+    } catch (err) {
+      res.status(403).json({ error: err instanceof Error ? err.message : 'تعذر تحديث الدور' });
+    }
+  }));
+
+  router.delete('/roles/:userId', asyncWrap((req, res) => {
+    if (!rateLimit(workspace(res), 20)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    try {
+      res.status(removeWorkspaceRole(workspace(res), param(req, 'userId'), actor(res)) ? 204 : 404).end();
+    } catch (err) {
+      res.status(403).json({ error: err instanceof Error ? err.message : 'تعذر إزالة الدور' });
+    }
   }));
 
   /* ─── Error handling: zod → 400 JSON, never a stack trace ─── */

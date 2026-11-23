@@ -7,6 +7,7 @@ import { isRoomLockedForPlan, PLANS } from '../billing/plans.js';
 import { orderedAgents } from '../office/presentation.js';
 import { AgentAvatar } from './OfficePeople.js';
 import { Dialog, EmptyState, IconButton, IconTile, Notice, PageHeader } from './ui.js';
+import { useBoardSync, resetBoardToEmpty } from '../store/boardSync.js';
 
 const STAGE_META: Record<ProjectStage, string> = { idea: 'فكرة', planning: 'تخطيط', building: 'بناء', marketing: 'تسويق', sales: 'مبيعات', growth: 'نمو' };
 const COLUMN_ROOMS: Record<TaskColumn, string> = {
@@ -34,6 +35,7 @@ export function ProjectOSBoard({ onUpgrade, onIntegrations }: { onUpgrade: () =>
   const [editor, setEditor] = useState<Editor | null>(null);
   const [deleteTask, setDeleteTask] = useState<KanbanTask | null>(null);
   const [dragging, setDragging] = useState<string | null>(null);
+  const boardSync = useBoardSync();
   const project = store.projects.find((item) => item.id === store.activeProjectId) ?? store.projects[0];
   const products = store.products.filter((item) => item.projectId === project?.id);
   const ideas = store.ideas.filter((item) => item.projectId === project?.id).sort((a, b) => b.votes - a.votes);
@@ -81,6 +83,13 @@ export function ProjectOSBoard({ onUpgrade, onIntegrations }: { onUpgrade: () =>
     <>
       <PageHeader icon={FolderKanban} eyebrow="تنظيم العمل" title="المشاريع" description="نظّم كل مشروع من الفكرة الأولى إلى الإطلاق، وتابع المهام والمنتجات في مكان واحد."
         action={<button type="button" className="button primary" onClick={() => setEditor({ kind: 'project' })}><Plus size={18} />مشروع جديد</button>} />
+      <div className="board-sync-row" role="status">
+        {store.isDemo && <span className="demo-badge" title="هذه البيانات نماذج توضيحية مرفقة ولا تمثل تنفيذًا حقيقيًا — امسحها وابدأ مشاريعك الفعلية">بيانات تجريبية · Demo</span>}
+        <span className={`sync-chip ${boardSync.status === 'error' ? 'sync-error' : 'sync-ok'}`}>
+          {boardSync.status === 'loading' ? 'مزامنة اللوحة…' : boardSync.status === 'saving' ? 'جارٍ الحفظ…' : boardSync.status === 'error' ? `تعذرت المزامنة: ${boardSync.error}` : boardSync.serverBacked ? 'اللوحة محفوظة على الخادم ✓' : 'وضع محلي'}
+        </span>
+        {store.isDemo && <button type="button" className="button small danger-ghost" onClick={() => { void resetBoardToEmpty(); }}>مسح البيانات التجريبية والبدء فارغًا</button>}
+      </div>
       {project ? <>
         <div className="filter-row project-switcher" aria-label="اختيار المشروع">
           {store.projects.map((item) => <button type="button" className="filter-chip" key={item.id} aria-pressed={item.id === project.id} onClick={() => { store.setActiveProject(item.id); setTab('overview'); }}>
