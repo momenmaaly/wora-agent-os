@@ -10,12 +10,13 @@
 import { writeFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { getOsDb, newId, nowIso, parseJson, audit } from './db.js';
-import { runTool, type ToolContext } from './tools.js';
+import { runTool, getTool, type ToolContext } from './tools.js';
+import { requiresHumanApproval, createApproval, getTaskApproval, listMissionApprovals } from './governance.js';
 import { listAgents, pickAgent, ensureSeedAgents, type AgentRecord } from './registry.js';
 import { addMemory } from './memory.js';
 import { workspacePath } from './workspace.js';
 
-export type MissionStatus = 'planning' | 'running' | 'completed' | 'failed';
+export type MissionStatus = 'planning' | 'running' | 'awaiting_approval' | 'completed' | 'failed';
 export type TaskStatus = 'created' | 'planned' | 'assigned' | 'running' | 'reviewing' | 'completed' | 'failed' | 'blocked';
 
 interface PlanTask {
@@ -362,7 +363,7 @@ export async function executeMission(missionId: string, actor = 'orchestrator'):
   const db = getOsDb();
   const mission = db.prepare('SELECT * FROM os_missions WHERE id = ?').get(missionId) as { id: string; workspace_id: string; objective: string; status: string } | undefined;
   if (!mission) throw new Error(`Mission ${missionId} not found`);
-  if (mission.status === 'completed' || mission.status === 'failed') return;
+  if (mission.status === 'completed' || mission.status === 'failed') return; // awaiting_approval re-enters: approved tasks execute now
   db.prepare('UPDATE os_missions SET status = ?, updated_at = ? WHERE id = ?').run('running', nowIso(), missionId);
 
   const tasks = db.prepare('SELECT * FROM os_tasks WHERE mission_id = ? ORDER BY order_index ASC').all(missionId) as unknown as TaskRow[];
@@ -389,6 +390,34 @@ export async function executeMission(missionId: string, actor = 'orchestrator'):
       continue;
     }
     db.prepare('UPDATE os_tasks SET status = ?, agent_id = ?, updated_at = ? WHERE id = ?').run('assigned', agent.id, nowIso(), task.id);
+
+    /* High-risk tools pause for an explicit human decision on the exact payload. */
+    const toolDef = task.tool ? getTool(task.tool) : null;
+    if (toolDef && requiresHumanApproval(mission.workspace_id, toolDef.risk)) {
+      const existing = getTaskApproval(mission.workspace_id, task.id);
+      if (!existing || existing.status === 'pending') {
+        const approval = existing ?? createApproval({
+          workspaceId: mission.workspace_id,
+          missionId,
+          taskId: task.id,
+          toolId: toolDef.id,
+          actionSummary: `${agent.name} يطلب تنفيذ ${toolDef.id} من نوع "${task.title}" قبل المتابعة`,
+          risk: toolDef.risk,
+          toolInput: parseJson(task.tool_input, {}),
+          requestedBy: agent.name,
+        });
+        db.prepare('UPDATE os_tasks SET status = ?, detail = ?, updated_at = ? WHERE id = ?')
+          .run('blocked', `awaiting_approval:${approval.id}`, nowIso(), task.id);
+        continue;
+      }
+      if (existing.status === 'denied') {
+        db.prepare('UPDATE os_tasks SET status = ?, detail = ?, updated_at = ? WHERE id = ?')
+          .run('failed', `أُوقف التنفيذ بقرار بشري: ${(existing.decisionNote || 'مرفوض').slice(0, 300)}`, nowIso(), task.id);
+        failed = true;
+        continue;
+      }
+      // approved → fall through into normal execution with evidence and review
+    }
 
     let attempt = 1;
     let reviewPassed = false;
@@ -495,7 +524,8 @@ function finalizeMission(missionId: string, actor: string): void {
   const tasks = db.prepare('SELECT * FROM os_tasks WHERE mission_id = ? ORDER BY order_index').all(missionId) as unknown as TaskRow[];
   const allDone = tasks.every((t) => t.status === 'completed');
   const anyFailed = tasks.some((t) => t.status === 'failed' || t.status === 'blocked');
-  const status: MissionStatus = allDone ? 'completed' : 'failed';
+  const anyAwaiting = tasks.some((t) => t.status === 'blocked' && t.detail.startsWith('awaiting_approval:'));
+  const status: MissionStatus = allDone ? 'completed' : anyAwaiting ? 'awaiting_approval' : 'failed';
   // Ensure any never-run tasks are blocked rather than dangling
   if (!allDone && !anyFailed) {
     for (const t of tasks) if (t.status !== 'completed') db.prepare('UPDATE os_tasks SET status = ?, updated_at = ? WHERE id = ?').run('blocked', nowIso(), t.id);
@@ -576,7 +606,9 @@ export function getMissionDetail(workspaceId: string, missionId: string) {
   const runs = db.prepare('SELECT * FROM os_runs WHERE mission_id = ? ORDER BY started_at ASC').all(missionId) as Array<Record<string, string | number>>;
   const handoffs = db.prepare('SELECT * FROM os_handoffs WHERE mission_id = ? ORDER BY created_at ASC').all(missionId) as Array<Record<string, string>>;
   const artifacts = db.prepare('SELECT id, name, kind, created_at FROM os_artifacts WHERE mission_id = ?').all(missionId) as Array<Record<string, string>>;
+  const approvals = listMissionApprovals(workspaceId, missionId);
   return {
+    approvals,
     id: mission.id,
     objective: mission.objective,
     status: mission.status,
@@ -607,8 +639,16 @@ export function getOsState(workspaceId: string) {
     missions: {
       total: count('SELECT COUNT(*) c FROM os_missions WHERE workspace_id = ?', workspaceId),
       running: count("SELECT COUNT(*) c FROM os_missions WHERE workspace_id = ? AND status = 'running'", workspaceId),
+      awaitingApproval: count("SELECT COUNT(*) c FROM os_missions WHERE workspace_id = ? AND status = 'awaiting_approval'", workspaceId),
       completed: count("SELECT COUNT(*) c FROM os_missions WHERE workspace_id = ? AND status = 'completed'", workspaceId),
       failed: count("SELECT COUNT(*) c FROM os_missions WHERE workspace_id = ? AND status = 'failed'", workspaceId),
+    },
+    approvals: {
+      pending: count("SELECT COUNT(*) c FROM os_approvals WHERE workspace_id = ? AND status = 'pending'", workspaceId),
+    },
+    devices: {
+      pending: count("SELECT COUNT(*) c FROM os_devices WHERE workspace_id = ? AND status = 'pending'", workspaceId),
+      paired: count("SELECT COUNT(*) c FROM os_devices WHERE workspace_id = ? AND status = 'paired'", workspaceId),
     },
     tasks: {
       completed: count("SELECT COUNT(*) c FROM os_tasks WHERE workspace_id = ? AND status = 'completed'", workspaceId),

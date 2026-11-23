@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ArrowRight, Bot, CheckCircle2, ChevronDown, ChevronLeft, Circle, CircleAlert,
-  Download, FileText, FlaskConical, LoaderCircle, Play, RefreshCw, Rocket, ScrollText, ShieldCheck, Wrench, XCircle,
+  Check, Download, FileText, FlaskConical, LoaderCircle, Play, RefreshCw, Rocket, ScrollText, ShieldAlert, ShieldCheck, Wrench, X, XCircle,
 } from 'lucide-react';
-import { OsApiError, osApi, type MissionDetail, type MissionSummary, type OsTask } from '../os/api.js';
+import { OsApiError, osApi, type ApprovalRecord, type MissionDetail, type MissionSummary, type OsTask } from '../os/api.js';
 
 const STATUS_LABEL: Record<MissionSummary['status'], string> = {
-  planning: 'يخطط', running: 'قيد التنفيذ', completed: 'مكتملة', failed: 'متعثرة',
+  planning: 'يخطط', running: 'قيد التنفيذ', awaiting_approval: 'بانتظار موافقتك', completed: 'مكتملة', failed: 'متعثرة',
 };
 const TASK_STATUS_LABEL: Record<OsTask['status'], string> = {
   created: 'منشأة', planned: 'مخططة', assigned: 'مُسندة', running: 'قيد التنفيذ', reviewing: 'قيد المراجعة', completed: 'مكتملة', failed: 'فشلت', blocked: 'محظورة',
@@ -82,6 +82,37 @@ function TaskRow({ task }: { task: OsTask }) {
   );
 }
 
+function PendingApproval({ approval, onDecide }: { approval: ApprovalRecord; onDecide: (id: string, decision: 'approved' | 'denied') => Promise<void> }) {
+  const [busy, setBusy] = useState(false);
+  const decide = async (decision: 'approved' | 'denied') => {
+    if (busy) return;
+    setBusy(true);
+    try { await onDecide(approval.id, decision); } finally { setBusy(false); }
+  };
+  return (
+    <div className="os-approval" role="alert">
+      <div className="os-approval-head">
+        <ShieldAlert size={16} aria-hidden="true" />
+        <strong>بانتظار موافقتك</strong>
+        <span className="os-risk-chip">{approval.toolId ?? approval.kind} · {approval.risk === 'high' ? 'خطورة عالية' : approval.risk}</span>
+      </div>
+      <p dir="auto">{approval.actionSummary}</p>
+      <details>
+        <summary>الحمولة الدقيقة (المعتمدة عند الموافقة)</summary>
+        <pre className="os-pre">{JSON.stringify(approval.toolInput, null, 2).slice(0, 2500)}</pre>
+      </details>
+      <div className="os-approval-actions">
+        <button type="button" className="button primary small" disabled={busy} onClick={() => void decide('approved')}>
+          {busy ? <LoaderCircle size={13} className="os-spin" aria-hidden="true" /> : <Check size={13} aria-hidden="true" />} وافق ونفّذ
+        </button>
+        <button type="button" className="button ghost small danger" disabled={busy} onClick={() => void decide('denied')}>
+          <X size={13} aria-hidden="true" /> ارفض
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function ExecutionCenter() {
   const [missions, setMissions] = useState<MissionSummary[] | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -117,7 +148,7 @@ export function ExecutionCenter() {
     else setDetail(null);
   }, [selectedId, refreshDetail]);
 
-  const anyRunning = (missions ?? []).some((m) => m.status === 'planning' || m.status === 'running') || detail?.status === 'running' || detail?.status === 'planning';
+  const anyRunning = (missions ?? []).some((m) => m.status === 'planning' || m.status === 'running' || m.status === 'awaiting_approval') || detail?.status === 'running' || detail?.status === 'planning' || detail?.status === 'awaiting_approval';
   useEffect(() => {
     if (!anyRunning) return;
     const timer = window.setInterval(() => {
@@ -142,6 +173,16 @@ export function ExecutionCenter() {
       setError(err instanceof OsApiError ? err.message : 'تعذر إطلاق المهمة.');
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function decideApproval(approvalId: string, decision: 'approved' | 'denied') {
+    try {
+      await osApi.decideApproval(approvalId, decision);
+      if (selectedId) await refreshDetail(selectedId);
+      await refreshMissions();
+    } catch (err) {
+      setError(err instanceof OsApiError ? err.message : 'تعذر تسجيل القرار.');
     }
   }
 
@@ -238,6 +279,9 @@ export function ExecutionCenter() {
                     ))}
                   </div>
                 )}
+                {(detail.approvals ?? []).filter((a) => a.status === 'pending').map((approval) => (
+                  <PendingApproval key={approval.id} approval={approval} onDecide={decideApproval} />
+                ))}
               </div>
               <ol className="os-task-list">
                 {detail.tasks.map((task) => <li key={task.id}><TaskRow task={task} /></li>)}

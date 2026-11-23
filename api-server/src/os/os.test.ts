@@ -156,19 +156,34 @@ test('mission: "create a software testing agent" persists a reusable agent', asy
 });
 
 /* ─── Orchestration: Journey 4 (build a web app) ─── */
-test('mission: build a working web application — artifact, security scan and green tests', { timeout: 60_000 }, async () => {
+test('mission: build a working web application — high-risk QA step waits for human approval, then completes', { timeout: 60_000 }, async () => {
   const missionId = createMission({ workspaceId: WS, objective: 'Build a working web application', actor: 'test' });
   await executeMission(missionId, 'test');
-  const detail = getMissionDetail(WS, missionId)!;
-  const byTitle = new Map(detail.tasks.map((t) => [t.title, t]));
-  const scaffold = detail.tasks.find((t) => t.tool === 'scaffold.webapp')!;
+  const waiting = getMissionDetail(WS, missionId)!;
+  // Balanced autonomy: the high-risk host.exec QA step pauses for human approval.
+  assert.equal(waiting.status, 'awaiting_approval');
+  const pending = waiting.approvals.find((a) => a.status === 'pending' && a.toolId === 'host.exec');
+  assert.ok(pending, 'expected a pending host.exec approval');
+  assert.equal(waiting.tasks.find((t) => t.tool === 'host.exec')!.status, 'blocked');
+  // Denial path first: mission must fail loudly and the task must not execute.
+  const scaffold = waiting.tasks.find((t) => t.tool === 'scaffold.webapp')!;
   assert.equal(scaffold.status, 'completed', JSON.stringify(scaffold.runs));
-  const qa = detail.tasks.find((t) => t.tool === 'host.exec')!;
-  assert.equal(qa.status, 'completed', JSON.stringify(qa.runs));
-  const security = detail.tasks.find((t) => t.tool === 'security.scan')!;
+  const security = waiting.tasks.find((t) => t.tool === 'security.scan')!;
   assert.equal(security.status, 'completed');
-  assert.equal(detail.status, 'completed');
-  assert.ok(byTitle.size >= 4);
+  const qa = waiting.tasks.find((t) => t.tool === 'host.exec')!;
+  assert.equal(qa.status, 'blocked');
+
+  // Approve → the mission resumes and the QA step executes to green.
+  const { decideApproval, setAutonomyPolicy } = await import('./governance.js');
+  decideApproval(WS, pending.id, 'approved', 'approved in test', 'test');
+  await executeMission(missionId, 'test');
+  const done = getMissionDetail(WS, missionId)!;
+  assert.equal(done.status, 'completed');
+  assert.equal(done.tasks.find((t) => t.tool === 'host.exec')!.status, 'completed');
+  assert.ok(done.tasks.every((t) => t.status === 'completed'));
+  // Autopilot policy opts out of the gate entirely for future missions — documented behavior.
+  setAutonomyPolicy(WS, 'autopilot', 'test');
+  setAutonomyPolicy(WS, 'balanced', 'test');
 });
 
 /* ─── Orchestration: Journey 5 (employee schedule) ─── */
@@ -205,4 +220,52 @@ test('mission: an infeasible optimization fails the task instead of pretending s
   }, { workspaceId: WS, actor: 'test', permissions: new Set(['*']) });
   assert.equal((result.output as Record<string, unknown>)['feasible'], false);
   void missionId;
+});
+
+/* ─── Governance: approvals deny path ─── */
+test('mission: a denied high-risk step fails loudly and never executes', { timeout: 60_000 }, async () => {
+  const missionId = createMission({ workspaceId: WS, objective: 'Build a working web application', actor: 'test' });
+  await executeMission(missionId, 'test');
+  const waiting = getMissionDetail(WS, missionId)!;
+  assert.equal(waiting.status, 'awaiting_approval');
+  const pending = waiting.approvals.find((a) => a.status === 'pending' && a.toolId === 'host.exec')!;
+  const { decideApproval } = await import('./governance.js');
+  decideApproval(WS, pending.id, 'denied', 'test denial', 'test');
+  await executeMission(missionId, 'test');
+  const after = getMissionDetail(WS, missionId)!;
+  assert.equal(after.status, 'failed');
+  const qa = after.tasks.find((t) => t.tool === 'host.exec')!;
+  assert.equal(qa.status, 'failed');
+  assert.match(qa.detail, /test denial/);
+});
+
+/* ─── Governance: autonomy policy + revocable devices ─── */
+test('governance: autonomy policy round-trips and high-risk gate follows it', async () => {
+  const { getAutonomyPolicy, setAutonomyPolicy, requiresHumanApproval } = await import('./governance.js');
+  assert.equal(getAutonomyPolicy(WS), 'balanced');
+  assert.equal(requiresHumanApproval(WS, 'high'), true);
+  assert.equal(requiresHumanApproval(WS, 'medium'), false);
+  setAutonomyPolicy(WS, 'autopilot', 'test');
+  assert.equal(getAutonomyPolicy(WS), 'autopilot');
+  assert.equal(requiresHumanApproval(WS, 'high'), false);
+  setAutonomyPolicy(WS, 'balanced', 'test');
+  assert.equal(getAutonomyPolicy(WS), 'balanced');
+});
+
+test('governance: device pairing is one-time, redeemable and revocable', async () => {
+  const { requestDevicePairing, redeemDevicePairing, revokeDevice, listDevices } = await import('./governance.js');
+  const { device, pairingCode } = requestDevicePairing(WS, { name: 'Mostafa Laptop', platform: 'linux' }, 'test');
+  assert.equal(device.status, 'pending');
+  assert.match(pairingCode, /^[A-Z0-9]{4,12}$/);
+  // wrong code rejected
+  assert.throws(() => redeemDevicePairing(WS, { deviceId: device.id, code: 'ZZZZZZ', fingerprint: 'fp-test' }, 'test'), /Invalid pairing code/);
+  const paired = redeemDevicePairing(WS, { deviceId: device.id, code: pairingCode, fingerprint: 'fp-0123456789abcdef' }, 'test');
+  assert.equal(paired.status, 'paired');
+  // single-use: redeeming again fails
+  assert.throws(() => redeemDevicePairing(WS, { deviceId: device.id, code: pairingCode, fingerprint: 'fp-x' }, 'test'), /already paired/);
+  // revoke is terminal
+  const revoked = revokeDevice(WS, device.id, 'test');
+  assert.equal(revoked.status, 'revoked');
+  assert.throws(() => redeemDevicePairing(WS, { deviceId: device.id, code: pairingCode, fingerprint: 'fp-y' }, 'test'), /revoked/);
+  assert.ok(listDevices(WS).some((d) => d.id === device.id));
 });

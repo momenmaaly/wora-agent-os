@@ -25,6 +25,10 @@ import { addMemory, listMemories, searchMemories, deleteMemory, MEMORY_SCOPES, t
 import { buildOrganization, listOrganizations } from './orgs.js';
 import { solveAssignment, solveEmployeeSchedule, solveLp } from './ortools.js';
 import { sampleEmployeeInput } from './orchestrator.js';
+import {
+  getAutonomyPolicy, setAutonomyPolicy, listApprovals, decideApproval,
+  requestDevicePairing, redeemDevicePairing, revokeDevice, listDevices,
+} from './governance.js';
 import { logger } from '../lib/logger.js';
 
 const AUTH_SECRET = sanitizeEnv(process.env['AUTH_SECRET']);
@@ -212,6 +216,78 @@ export function createOsRouter(options: { production?: boolean } = {}): Router {
     if (!detail) { res.status(404).json({ error: 'Mission not found' }); return; }
     await executeMission(detail.id, actor(res));
     res.json(getMissionDetail(workspace(res), detail.id));
+  }));
+
+  /* ─── Governance: approvals, autonomy policy, devices ─── */
+  router.get('/approvals', asyncWrap((req, res) => {
+    const status = typeof req.query['status'] === 'string' ? req.query['status'] : 'pending';
+    const allowed = new Set(['pending', 'approved', 'denied', 'all']);
+    res.json(listApprovals(workspace(res), { status: (allowed.has(status) ? status : 'pending') as 'pending' | 'approved' | 'denied' | 'all', limit: 50 }));
+  }));
+
+  router.post('/approvals/:id/decide', asyncWrap(async (req, res) => {
+    if (!rateLimit(workspace(res), 30)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    const body = z.object({
+      decision: z.enum(['approved', 'denied']),
+      note: z.string().trim().max(500).optional().default(''),
+    }).strict().parse(req.body ?? {});
+    try {
+      const approval = decideApproval(workspace(res), param(req, 'id'), body.decision, body.note, actor(res));
+      // Approving the gated action automatically resumes the waiting mission.
+      if (approval.status === 'approved' && approval.missionId) {
+        void executeMission(approval.missionId, actor(res)).catch((err) => logger.error({ err, missionId: approval.missionId }, 'mission resume after approval failed'));
+      }
+      res.status(200).json(approval);
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : 'تعذر تسجيل القرار' });
+    }
+  }));
+
+  router.get('/settings/autonomy', asyncWrap((_req, res) => {
+    res.json({ policy: getAutonomyPolicy(workspace(res)) });
+  }));
+
+  router.post('/settings/autonomy', asyncWrap((req, res) => {
+    if (!rateLimit(workspace(res), 10)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    const body = z.object({ policy: z.enum(['balanced', 'autopilot']) }).strict().parse(req.body ?? {});
+    res.json({ policy: setAutonomyPolicy(workspace(res), body.policy, actor(res)) });
+  }));
+
+  router.get('/devices', asyncWrap((_req, res) => {
+    res.json(listDevices(workspace(res)));
+  }));
+
+  router.post('/devices/pair', asyncWrap((req, res) => {
+    if (!rateLimit(workspace(res), 10)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    const body = z.object({
+      name: z.string().trim().min(1).max(80),
+      platform: z.string().trim().min(1).max(40),
+    }).strict().parse(req.body ?? {});
+    const { device, pairingCode } = requestDevicePairing(workspace(res), body, actor(res));
+    // pairingCode is returned ONLY here, once; it is stored hashed and single-use.
+    res.status(201).json({ ...device, pairingCode, note: 'احفظ الرمز الآن — لن يظهر مرة أخرى. أدخله في وكيل الجهاز المحلي لإتمام الاقتران.' });
+  }));
+
+  router.post('/devices/:id/redeem', asyncWrap((req, res) => {
+    if (!rateLimit(workspace(res), 10)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    const body = z.object({
+      code: z.string().trim().min(4).max(32),
+      fingerprint: z.string().trim().min(4).max(128),
+    }).strict().parse(req.body ?? {});
+    try {
+      res.json(redeemDevicePairing(workspace(res), { deviceId: param(req, 'id'), code: body.code, fingerprint: body.fingerprint }, actor(res)));
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : 'تعذر إتمام الاقتران' });
+    }
+  }));
+
+  router.post('/devices/:id/revoke', asyncWrap((req, res) => {
+    if (!rateLimit(workspace(res), 10)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    try {
+      res.json(revokeDevice(workspace(res), param(req, 'id'), actor(res)));
+    } catch (err) {
+      res.status(404).json({ error: err instanceof Error ? err.message : 'الجهاز غير موجود' });
+    }
   }));
 
   /* ─── Optimization & simulation (real solvers) ─── */

@@ -40,12 +40,27 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 /* ─── Types ─────────────────────────────────────────────── */
 export interface OsState {
   agents: number;
-  missions: { total: number; running: number; completed: number; failed: number };
+  missions: { total: number; running: number; awaitingApproval: number; completed: number; failed: number };
   tasks: { completed: number; failed: number; blocked: number };
+  approvals: { pending: number };
+  devices: { pending: number; paired: number };
   memory: number;
   organizations: number;
   projects: number;
   artifacts: number;
+}
+
+export interface ApprovalRecord {
+  id: string; kind: string; missionId: string | null; taskId: string | null; toolId: string | null;
+  actionSummary: string; risk: string; toolInput: Record<string, unknown>; requestedBy: string;
+  status: 'pending' | 'approved' | 'denied';
+  decisionNote: string; decidedBy: string | null; decidedAt: string | null; createdAt: string;
+}
+
+export interface DeviceRecord {
+  id: string; name: string; platform: string; status: 'pending' | 'paired' | 'revoked';
+  fingerprint: string; permissions: string[];
+  createdAt: string; pairedAt: string | null; revokedAt: string | null; lastSeenAt: string | null;
 }
 
 export interface Specialization {
@@ -97,7 +112,7 @@ export interface Handoff {
 
 export interface MissionSummary {
   id: string; objective: string;
-  status: 'planning' | 'running' | 'completed' | 'failed';
+  status: 'planning' | 'running' | 'awaiting_approval' | 'completed' | 'failed';
   summary: string; requestedBy: string; artifactId: string | null;
   createdAt: string; updatedAt: string;
 }
@@ -105,6 +120,7 @@ export interface MissionSummary {
 export interface MissionDetail extends MissionSummary {
   tasks: OsTask[];
   handoffs: Handoff[];
+  approvals: ApprovalRecord[];
   artifacts: Array<{ id: string; name: string; kind: string; created_at?: string; createdAt?: string }>;
 }
 
@@ -189,4 +205,21 @@ export const osApi = {
   deleteMemory: (id: string) => request<void>(`/memory/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
   audit: (limit = 50) => request<Array<{ id: string; actor: string; action: string; subject: string; detail: Record<string, unknown>; createdAt: string }>>(`/audit?limit=${limit}`),
+
+  approvals: (status: 'pending' | 'approved' | 'denied' | 'all' = 'pending') =>
+    request<ApprovalRecord[]>(`/approvals?status=${status}`),
+  decideApproval: (id: string, decision: 'approved' | 'denied', note = '') =>
+    request<ApprovalRecord>(`/approvals/${encodeURIComponent(id)}/decide`, { method: 'POST', body: JSON.stringify({ decision, note }) }),
+
+  autonomy: () => request<{ policy: 'balanced' | 'autopilot' }>('/settings/autonomy'),
+  setAutonomy: (policy: 'balanced' | 'autopilot') =>
+    request<{ policy: 'balanced' | 'autopilot' }>('/settings/autonomy', { method: 'POST', body: JSON.stringify({ policy }) }),
+
+  devices: () => request<DeviceRecord[]>('/devices'),
+  pairDevice: (body: { name: string; platform: string }) =>
+    request<DeviceRecord & { pairingCode: string; note: string }>('/devices/pair', { method: 'POST', body: JSON.stringify(body) }),
+  redeemDevice: (id: string, body: { code: string; fingerprint: string }) =>
+    request<DeviceRecord>(`/devices/${encodeURIComponent(id)}/redeem`, { method: 'POST', body: JSON.stringify(body) }),
+  revokeDevice: (id: string) =>
+    request<DeviceRecord>(`/devices/${encodeURIComponent(id)}/revoke`, { method: 'POST', body: '{}' }),
 };

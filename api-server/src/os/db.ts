@@ -152,6 +152,50 @@ CREATE TABLE IF NOT EXISTS os_audit (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_os_audit_ws ON os_audit(workspace_id, created_at);
+
+CREATE TABLE IF NOT EXISTS os_approvals (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'tool-execution',
+  mission_id TEXT,
+  task_id TEXT,
+  tool_id TEXT,
+  action_summary TEXT NOT NULL,
+  risk TEXT NOT NULL DEFAULT 'high',
+  tool_input TEXT NOT NULL DEFAULT '{}',
+  requested_by TEXT NOT NULL DEFAULT 'orchestrator',
+  status TEXT NOT NULL DEFAULT 'pending',
+  decision_note TEXT NOT NULL DEFAULT '',
+  decided_by TEXT,
+  decided_at TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_os_approvals_ws ON os_approvals(workspace_id, status, created_at);
+CREATE INDEX IF NOT EXISTS idx_os_approvals_task ON os_approvals(task_id);
+
+CREATE TABLE IF NOT EXISTS os_devices (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  name TEXT NOT NULL DEFAULT 'جهاز بدون اسم',
+  platform TEXT NOT NULL DEFAULT 'unknown',
+  fingerprint TEXT NOT NULL DEFAULT '',
+  pairing_code_hash TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'pending',
+  permissions TEXT NOT NULL DEFAULT '["host:read"]',
+  created_at TEXT NOT NULL,
+  paired_at TEXT,
+  revoked_at TEXT,
+  last_seen_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_os_devices_ws ON os_devices(workspace_id, status);
+
+CREATE TABLE IF NOT EXISTS os_settings (
+  workspace_id TEXT NOT NULL,
+  key TEXT NOT NULL,
+  value TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (workspace_id, key)
+);
 `;
 
 export function nowIso(): string {
