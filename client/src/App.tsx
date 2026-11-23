@@ -32,6 +32,7 @@ const Projects = lazy(() => import('./components/ProjectOSBoard.js').then((modul
 const Agents = lazy(() => import('./components/AgentRegistry.js').then((module) => ({ default: module.AgentRegistry })));
 const Execution = lazy(() => import('./components/ExecutionCenter.js').then((module) => ({ default: module.ExecutionCenter })));
 const Intelligence = lazy(() => import('./components/IntelligenceHub.js').then((module) => ({ default: module.IntelligenceHub })));
+const Extensions = lazy(() => import('./components/ExtensionsHub.js').then((module) => ({ default: module.ExtensionsHub })));
 const SystemConsole = lazy(() => import('./components/SystemConsole.js').then((module) => ({ default: module.SystemConsole })));
 const Studio = lazy(() => import('./components/ProductStudio.js').then((module) => ({ default: module.ProductStudio })));
 const Models = lazy(() => import('./components/ModelHub.js').then((module) => ({ default: module.ModelHub })));
@@ -160,6 +161,7 @@ export default function App() {
             {page === 'agents' && <Agents />}
             {page === 'execution' && <Execution />}
             {page === 'intelligence' && <Intelligence />}
+            {page === 'extensions' && <Extensions />}
             {page === 'system' && <SystemConsole />}
             {page === 'studio' && <Studio onUpgrade={toPricing} onProjects={toProjects} />}
             {page === 'settings' && <WorkspaceSettings onNavigate={navigate} />}

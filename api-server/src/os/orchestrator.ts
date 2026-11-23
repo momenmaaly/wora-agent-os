@@ -16,6 +16,8 @@ import { maybeDistillPlaybook, findPlaybookFor, recordPlaybookReuse } from './pl
 import { listAgents, pickAgent, ensureSeedAgents, type AgentRecord } from './registry.js';
 import { addMemory } from './memory.js';
 import { workspacePath } from './workspace.js';
+import { resolveAndSnapshot, authorizeTool } from '../extensions/capabilities.js';
+import { listRegisteredTools, listCapabilitySnapshots } from '../extensions/store.js';
 import { logger } from '../lib/logger.js';
 
 export type MissionStatus = 'planning' | 'running' | 'awaiting_approval' | 'completed' | 'failed';
@@ -113,6 +115,31 @@ export function buildPlan(objective: string, track?: string, workspaceId = 'wora
     ];
   }
   const explicit = text;
+
+  // Plugin tool execution: "run tool <plugin.tool> with {json}"
+  const pluginToolMatch = /(?:run|execute|call)\s+(?:the\s+)?(?:plugin\s+)?tool\s+([a-z0-9][a-z0-9._-]{1,80})(?:\s+with\s+([\s\S]+))?/iu.exec(text);
+  if (pluginToolMatch?.[1]) {
+    const toolId = pluginToolMatch[1];
+    const registered = listRegisteredTools(workspaceId, { activeOnly: true }).find((tool) => tool.toolId === toolId);
+    if (registered) {
+      const raw = pluginToolMatch[2]?.trim();
+      let toolInput: Record<string, unknown> = {};
+      if (raw) {
+        try { toolInput = JSON.parse(raw) as Record<string, unknown>; }
+        catch { toolInput = { text: raw.slice(0, 4_000) }; }
+      }
+      return [{
+        title: `Execute plugin tool ${toolId}`,
+        objective: text,
+        specialization: 'generalist',
+        tool: toolId,
+        toolInput,
+        dependsOn: [],
+        acceptance: ['The plugin tool executed under the agent capability profile', 'Execution recorded in the audit log', 'Output attached as evidence'],
+        detail: `Runs ${toolId} from plugin ${registered.pluginKey}. The agent must have the plugin assigned, enabled and approved; otherwise the task fails with a capability denial.`,
+      }];
+    }
+  }
 
   // Journey 2 — create a specialized agent
   if (/create\b.*\bagent\b|\bagent\b.*\b(named|called|to)\b/i.test(explicit) && /agent/i.test(text)) {
@@ -439,6 +466,7 @@ export async function executeMission(missionId: string, actor = 'orchestrator'):
     let lastIssues: string[] = [];
     let lastEvidence: Array<Record<string, unknown>> = [];
     let lastDuration = 0;
+    let lastProfile: ReturnType<typeof resolveAndSnapshot> | null = null;
 
     while (attempt <= 2 && !reviewPassed) {
       const startedAt = nowIso();
@@ -447,10 +475,26 @@ export async function executeMission(missionId: string, actor = 'orchestrator'):
       db.prepare('INSERT INTO os_runs (id, task_id, mission_id, workspace_id, agent_id, status, started_at, attempt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
         .run(runId, task.id, missionId, mission.workspace_id, agent.id, 'running', startedAt, attempt);
 
+      // Resolve on every attempt: disabling a plugin or revoking a permission
+      // takes effect immediately, including for an already-running mission.
+      lastProfile = resolveAndSnapshot(mission.workspace_id, agent.id, { missionId, taskId: task.id, actor: agent.name });
+      const scopedTool = task.tool ? getTool(task.tool, mission.workspace_id) : null;
+      if (task.tool && scopedTool?.source === 'plugin') {
+        const decision = authorizeTool(mission.workspace_id, lastProfile, task.tool);
+        if (!decision.allowed) {
+          const reason = decision.reason ?? 'Capability is not available to this agent';
+          lastIssues = [reason];
+          lastEvidence = [{ capabilityDenied: reason, digest: lastProfile.digest }];
+          db.prepare('UPDATE os_runs SET status = ?, finished_at = ?, summary = ?, evidence = ?, issues = ? WHERE id = ?')
+            .run('failed', nowIso(), `Capability denied: ${reason}`, JSON.stringify(lastEvidence), JSON.stringify(lastIssues), runId);
+          audit(db, { workspaceId: mission.workspace_id, actor: agent.name, action: 'capability.denied', subject: task.tool, detail: { missionId, taskId: task.id, reason, digest: lastProfile.digest } });
+          break;
+        }
+      }
       const ctx: ToolContext = {
         workspaceId: mission.workspace_id,
         actor: agent.name,
-        permissions: new Set([...agent.permissions, 'memory:read', 'memory:write']),
+        permissions: new Set([...lastProfile.permissions, 'memory:read', 'memory:write']),
         missionId,
         taskId: task.id,
       };
@@ -464,7 +508,13 @@ export async function executeMission(missionId: string, actor = 'orchestrator'):
       const review = reviewRun(task, result.ok, result.output, result.error ?? null);
       reviewPassed = review.passed;
       lastIssues = review.issues;
-      lastEvidence = [{ tool: result.tool, ok: result.ok, durationMs: result.durationMs, output: result.ok ? result.output : undefined, error: result.error, reviewAttempt: attempt }];
+      lastEvidence = [{
+        tool: result.tool, ok: result.ok, durationMs: result.durationMs, output: result.ok ? result.output : undefined,
+        error: result.error, reviewAttempt: attempt,
+        capabilityDigest: lastProfile?.digest ?? null,
+        skills: lastProfile?.skills.map((skill) => `${skill.key}@${skill.version}`) ?? [],
+        plugins: lastProfile?.plugins.map((plugin) => `${plugin.key}@${plugin.version}`) ?? [],
+      }];
 
       db.prepare('UPDATE os_runs SET status = ?, finished_at = ?, summary = ?, evidence = ?, issues = ? WHERE id = ?')
         .run(reviewPassed ? 'completed' : attempt === 2 ? 'failed' : 'retrying', nowIso(),
@@ -489,6 +539,13 @@ export async function executeMission(missionId: string, actor = 'orchestrator'):
       acceptanceCriteria: parseJson<string[]>(task.acceptance, []),
       acceptanceMet: reviewPassed,
       remainingIssues: lastIssues,
+      capabilities: {
+        digest: lastProfile?.digest ?? null,
+        skills: lastProfile?.skills.map((skill) => `${skill.key}@${skill.version}`) ?? [],
+        plugins: lastProfile?.plugins.map((plugin) => `${plugin.key}@${plugin.version}`) ?? [],
+        tools: lastProfile?.tools ?? [],
+        permissions: lastProfile?.permissions ?? [],
+      },
       dependencies: deps,
       recommendedNextAction: reviewPassed
         ? (tasks.some((t) => parseJson<string[]>(t.depends_on, []).includes(task.id)) ? 'Hand off to dependent specialists; they will validate this contract before proceeding.' : 'Include in the mission deliverable for user review.')
@@ -650,6 +707,7 @@ export function getMissionDetail(workspaceId: string, missionId: string) {
   const approvals = listMissionApprovals(workspaceId, missionId);
   return {
     approvals,
+    capabilitySnapshots: listCapabilitySnapshots(workspaceId, { missionId, limit: 100 }),
     id: mission.id,
     objective: mission.objective,
     status: mission.status,

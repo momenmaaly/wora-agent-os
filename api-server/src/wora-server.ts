@@ -49,6 +49,7 @@ import { createOsRouter } from './os/router.js';
 import { createGitHubImporter } from './skills/github.js';
 import { createSkillsRouter } from './skills/router.js';
 import { createMongoSkillStore } from './models/AgentSkills.js';
+import { initExtensions } from './extensions/index.js';
 
 import {
   AgentLifecycleState,
@@ -446,6 +447,7 @@ function mapAgentToParticipant(
 
 /* ─── BOOT SERVER ───────────────────────────────────────── */
 export async function bootWoraServer(app: Express, port = DEFAULT_PORT) {
+  initExtensions();
   const problems = productionConfigProblems(process.env);
   if (problems.length) throw new Error(`Missing or invalid production configuration: ${problems.join(', ')}`);
   const httpServer = createServer(app);

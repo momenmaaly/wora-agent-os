@@ -36,6 +36,8 @@ import {
   requestDevicePairing, redeemDevicePairing, revokeDevice, listDevices, deviceHeartbeat, findDeviceById,
 } from './governance.js';
 import { logger } from '../lib/logger.js';
+import { createExtensionsRouter } from '../extensions/router.js';
+import { ensureWorkspaceExtensions } from '../extensions/index.js';
 
 const AUTH_SECRET = sanitizeEnv(process.env['AUTH_SECRET']);
 const ADMIN_API_KEY = sanitizeEnv(process.env['ADMIN_API_KEY']);
@@ -112,6 +114,7 @@ export function createOsRouter(options: { production?: boolean } = {}): Router {
     const ws = resolveWorkspace(req, res, production);
     if (!ws) return;
     res.locals['workspaceId'] = ws;
+    ensureWorkspaceExtensions(ws);
     next();
   });
 
@@ -162,13 +165,14 @@ export function createOsRouter(options: { production?: boolean } = {}): Router {
   }));
 
   router.get('/tools', asyncWrap((_req, res) => {
-    res.json(listTools());
+    res.json(listTools(workspace(res)));
   }));
 
   router.post('/tools/:id/execute', asyncWrap(async (req, res) => {
     if (!rateLimit(workspace(res))) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
-    const tool = getTool(param(req, 'id'));
+    const tool = getTool(param(req, 'id'), workspace(res));
     if (!tool) { res.status(404).json({ error: 'Unknown tool' }); return; }
+    if (tool.source === 'plugin') { res.status(403).json({ error: 'Plugin tools execute only through an agent capability profile', code: 'CAPABILITY_REQUIRED' }); return; }
     if (tool.risk === 'high') { res.status(403).json({ error: 'High-risk tools execute only through the orchestrator under agent permissions' }); return; }
     const body = z.object({ input: z.unknown().optional() }).strict().parse(req.body ?? {});
     const result = await runTool(tool.id, body.input ?? {}, {
@@ -630,6 +634,9 @@ export function createOsRouter(options: { production?: boolean } = {}): Router {
       res.status(403).json({ error: err instanceof Error ? err.message : 'تعذر إزالة الدور' });
     }
   }));
+
+  /* ─── Extensions: skills, plugins, marketplaces, MCP, capabilities ─── */
+  router.use('/extensions', createExtensionsRouter());
 
   /* ─── Error handling: zod → 400 JSON, never a stack trace ─── */
   router.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {

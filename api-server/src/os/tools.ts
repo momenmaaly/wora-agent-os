@@ -36,8 +36,12 @@ export interface ToolDefinition {
   inputSchema: Record<string, unknown>;
   schema: z.ZodTypeAny;
   permission: string | null;
+  /** Additional permissions a plugin tool requires; all of them must be held. */
+  permissions?: string[];
   risk: ToolRisk;
   environment: 'host';
+  source?: 'core' | 'plugin';
+  pluginId?: string;
   timeoutMs: number;
   // `any` because tools are stored heterogeneously; runTool validates via `schema` before invoking.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -677,6 +681,56 @@ const agentsCreateTool: ToolDefinition = {
 /* ─── Registry ─────────────────────────────────────────── */
 import { scaffoldWebappTool, hostExecTool } from './scaffold.js';
 
+/* ─── Plugin tool provider (extensions) ────────────────── */
+export interface PluginToolDefinition {
+  id: string;
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+  permissions: string[];
+  risk: ToolRisk;
+  timeoutMs: number;
+  pluginId: string;
+}
+
+type PluginToolLister = (workspaceId: string) => PluginToolDefinition[];
+type PluginToolRunner = (workspaceId: string, toolId: string, input: unknown, ctx: ToolContext) => Promise<unknown>;
+
+let pluginToolLister: PluginToolLister | null = null;
+let pluginToolRunner: PluginToolRunner | null = null;
+
+/** Wired once at boot by the extensions module; keeps this registry free of plugin imports. */
+export function registerPluginToolProvider(lister: PluginToolLister, runner: PluginToolRunner): void {
+  pluginToolLister = lister;
+  pluginToolRunner = runner;
+}
+
+function pluginTools(workspaceId: string | undefined): PluginToolDefinition[] {
+  if (!workspaceId || !pluginToolLister) return [];
+  try { return pluginToolLister(workspaceId); } catch { return []; }
+}
+
+function pluginToolAsDefinition(tool: PluginToolDefinition): ToolDefinition {
+  return {
+    id: tool.id,
+    name: tool.name,
+    description: tool.description,
+    inputSchema: tool.inputSchema,
+    schema: z.unknown(),
+    permission: null,
+    permissions: tool.permissions,
+    risk: tool.risk,
+    environment: 'host',
+    timeoutMs: tool.timeoutMs,
+    source: 'plugin',
+    pluginId: tool.pluginId,
+    async execute(input, ctx) {
+      if (!pluginToolRunner) throw new Error(`No plugin runtime is registered for ${tool.id}`);
+      return pluginToolRunner(ctx.workspaceId, tool.id, input, ctx);
+    },
+  };
+}
+
 const ALL_TOOLS: ToolDefinition[] = [
   diagnosticsTool,
   workspaceListTool,
@@ -699,22 +753,33 @@ const ALL_TOOLS: ToolDefinition[] = [
 
 const toolMap = new Map(ALL_TOOLS.map((tool) => [tool.id, tool]));
 
-export function listTools() {
-  return ALL_TOOLS.map(({ id, name, description, inputSchema, permission, risk, environment, timeoutMs }) =>
-    ({ id, name, description, inputSchema, permission, risk, environment, timeoutMs }));
+export function listTools(workspaceId?: string) {
+  const core = ALL_TOOLS.map(({ id, name, description, inputSchema, permission, risk, environment, timeoutMs }) =>
+    ({ id, name, description, inputSchema, permission, risk, environment, timeoutMs, source: 'core' as const, pluginId: null }));
+  const plugins = pluginTools(workspaceId).map(({ id, name, description, inputSchema, permissions, risk, timeoutMs, pluginId }) =>
+    ({ id, name, description, inputSchema, permission: null, permissions, risk, environment: 'host' as const, timeoutMs, source: 'plugin' as const, pluginId }));
+  return [...core, ...plugins];
 }
 
-export function getTool(id: string): ToolDefinition | null {
-  return toolMap.get(id) ?? null;
+export function getTool(id: string, workspaceId?: string): ToolDefinition | null {
+  const core = toolMap.get(id);
+  if (core) return core;
+  const plugin = pluginTools(workspaceId).find((tool) => tool.id === id);
+  return plugin ? pluginToolAsDefinition(plugin) : null;
 }
 
 /** Execute a tool with zod validation, permission check, timeout and audit. */
 export async function runTool(id: string, rawInput: unknown, ctx: ToolContext): Promise<ToolResult> {
   const started = Date.now();
-  const tool = toolMap.get(id);
+  const tool = getTool(id, ctx.workspaceId);
   if (!tool) return { ok: false, tool: id, error: `Unknown tool "${id}"`, durationMs: 0 };
   if (tool.permission && !ctx.permissions.has(tool.permission) && !ctx.permissions.has('*')) {
     return { ok: false, tool: id, error: `Permission "${tool.permission}" is required for ${id}`, durationMs: Date.now() - started };
+  }
+  const missing = (tool.permissions ?? []).filter((permission) => !ctx.permissions.has(permission) && !ctx.permissions.has('*'));
+  if (missing.length) {
+    audit(getOsDb(), { workspaceId: ctx.workspaceId, actor: ctx.actor, action: 'tool.denied', subject: id, detail: { missing } });
+    return { ok: false, tool: id, error: `Missing permission(s) for ${id}: ${missing.join(', ')}`, durationMs: Date.now() - started };
   }
   const parsed = tool.schema.safeParse(rawInput ?? {});
   if (!parsed.success) {

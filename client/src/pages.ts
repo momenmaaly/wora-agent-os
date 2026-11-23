@@ -1,4 +1,4 @@
-import { Bot, BrainCircuit, Building2, Boxes, CreditCard, FolderKanban, Home, Plug2, ServerCog, Settings, Cpu, Workflow, Sparkles, LayoutGrid, BriefcaseBusiness } from 'lucide-react';
+import { Bot, BrainCircuit, Building2, Boxes, CreditCard, FolderKanban, Home, Plug2, Puzzle, ServerCog, Settings, Cpu, Workflow, Sparkles, LayoutGrid, BriefcaseBusiness } from 'lucide-react';
 import { ROOM_BY_ID } from './office/layout.js';
 import { TOUR_STOPS } from './office/visits.js';
 import { DIRECTOR_ROOM_ID } from './office/work.js';
@@ -15,6 +15,7 @@ export const NAV_ITEMS = [
   { id: 'projects', icon: FolderKanban },
   { id: 'organizations', icon: Building2 },
   { id: 'intelligence', icon: BrainCircuit },
+  { id: 'extensions', icon: Puzzle },
   { id: 'workspaces', icon: Boxes },
   { id: 'system', icon: ServerCog },
 ] as const;

@@ -17,6 +17,7 @@ import './styles/skills.css';
 import './styles/company-frame.css';
 import './styles/os.css';
 import './styles/command-center.css';
+import './styles/extensions.css';
 
 const root = document.getElementById('root');
 if (!root) throw new Error('Root element #root not found');
