@@ -13,11 +13,13 @@ An in-process execution platform behind the product surface:
 - **Persistent agent registry** (`os/registry.ts`): 18 seeded specializations plus user-created and
   organization-created agents. Agents carry identity, role, skills, tools, permissions, model config,
   limits, instructions, status and evaluation criteria. They are executable entities, not profile cards.
-- **Unified tool registry** (`os/tools.ts`, `os/scaffold.ts`, `os/ortools.ts`): 16 tools, each with a
+- **Unified tool registry** (`os/tools.ts`, `os/scaffold.ts`, `os/ortools.ts`): 17 tools, each with a
   JSON-schema contract, risk tier, required permission, environment and timeout; audited on every call.
 - **Operations Research** (`os/ortools.ts`): HiGHS (WASM LP/MIP solver) behind `or.solve_lp` and
   `or.employee_schedule`; Hungarian algorithm behind `or.assignment`; seeded triangular PERT Monte
-  Carlo behind `sim.monte_carlo`. Solver output is **independently revalidated in code** (demand,
+  Carlo behind `sim.monte_carlo`; `forecast.linear` (least-squares trend with an 80/20 holdout
+  backtest reporting R², holdout MAE and residual-stddev projection bands — a labeled baseline, never
+  presented as a causal forecast). Solver output is **independently revalidated in code** (demand,
   availability, max-workload) before it is accepted.
 - **Memory & knowledge** (`os/memory.ts`): scoped records (user/workspace/project/agent/organization/
   execution/episodic/semantic) with provenance, deterministic TF-IDF-ish retrieval, audited write/delete,
@@ -122,7 +124,7 @@ The **Executive Command bar** at the bottom of every screen now launches a real 
   including agent version snapshots, orchestrator journeys 1–5 + failure path + approval pause/approve/deny
   paths + autonomy policy + device pairing lifecycle + RBAC bootstrap/rank/grant/remove/self-change guards
   + board round-trip/oversize/clear + digital twin create/observe/scenario + playbook planner preference) —
-  full suite 56 pass / 1 skipped (Mongo integration, opt-in) — `npm test`.
+  full suite 57 pass / 1 skipped (Mongo integration, opt-in) — `npm test`.
 - `client`: 27/27 pass — `npm test`; typecheck + production build green.
 - Production bundle builds: client `npm run build` (lazy chunks per world), api-server `npm run build`.
 

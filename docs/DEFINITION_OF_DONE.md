@@ -57,10 +57,10 @@ Theme aligned to the reference image (`docs/design/wora.photo.agen.png`): deep-n
 
 ```
 $ npm --prefix api-server run typecheck   → clean
-$ npm --prefix api-server test            → # tests 57 · # pass 56 · # fail 0 · # skipped 1 (Mongo, opt-in)
+$ npm --prefix api-server test            → # tests 58 · # pass 57 · # fail 0 · # skipped 1 (Mongo, opt-in)
 $ npm --prefix api-server run build       → ⚡ Done (esbuild)
 $ npm --prefix client run typecheck       → clean
-$ npm --prefix client test                → # tests 27 · # pass 27 · # fail 0
+$ npm --prefix client test                → # tests 30 · # pass 30 · # fail 0
 $ npm --prefix client run build           → ✓ built (~4s)
 ```
 
@@ -86,6 +86,7 @@ Everything in the prior report (execution engine, agent registry + specializatio
 - Durable Project OS board: `os_boards` (one JSON doc per workspace, 512 KB cap, audited last-write-wins); client `boardSync.ts` (boot pull server-wins, 800 ms debounced push, `isDemo` flag, one-click demo clear); `بيانات تجريبية · Demo` badge + sync status chip in مركز المشاريع.
 - Digital twins: `os/twins.ts` (drivers/KPIs/event log cap 200) + seeded Monte Carlo what-if with baseline deltas; REST endpoints; Intelligence → التوائم الرقمية tab.
 - Playbook planner reuse: OR planner prefers a Jaccard≥0.5 validated playbook over the SAMPLE roster; reuse counted and surfaced in the Playbooks tab.
+- Predictive baseline: `forecast.linear` (least-squares trend + honest 80/20 holdout backtest — R², holdout MAE, residual-stddev bands; labeled as a baseline, never as a guaranteed forecast). Listed in the tool registry with a test.
 - DB migrations: guarded idempotent `migrate()` (ALTER…ADD COLUMN for pre-existing DBs) + 5 new tables.
 
 ### 6.2 Implemented but **partial** (works, scoped honestly)

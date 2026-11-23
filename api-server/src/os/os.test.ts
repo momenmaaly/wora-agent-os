@@ -336,6 +336,19 @@ test('restart recovery: in-flight missions are marked interrupted, then resumabl
   assert.equal(resumed.status, 'completed');
 });
 
+test('forecast.linear: backtests honestly on a synthetic trend and refuses tiny series', async () => {
+  const trend = Array.from({ length: 24 }, (_, i) => 100 + 2.5 * i + Math.sin(i) * 3);
+  const result = await runTool('forecast.linear', { series: trend, steps: 3 }, { workspaceId: 'wora-test-forecast', actor: 'test', permissions: new Set() });
+  assert.ok(result.ok);
+  const out = result.output as { r2: number; holdoutMae: number; projections: Array<{ point: number }>; disclaimer: string };
+  assert.ok(out.r2 > 0.9, 'clear synthetic trend fits well');
+  assert.ok(out.holdoutMae < 10, 'holdout error is small on clean synthetic data');
+  assert.equal(out.projections.length, 3);
+  assert.match(out.disclaimer, /not a promise/i);
+  const tooSmall = await runTool('forecast.linear', { series: [1, 2, 3], steps: 1 }, { workspaceId: 'wora-test-forecast', actor: 'test', permissions: new Set() });
+  assert.equal(tooSmall.ok, false);
+});
+
 /* ─── RBAC v1 ─── */
 test('roles: first actor bootstraps as owner; non-members default to viewer', async () => {
   const { getWorkspaceRole, roleRank } = await import('./roles.js');

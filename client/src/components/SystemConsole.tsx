@@ -15,6 +15,7 @@ const CAPABILITIES: Array<{ name: string; status: 'live' | 'config' | 'missing';
   { name: 'مركز التنفيذ — مهام حقيقية بحالة وأدلة ومراجعة', status: 'live', note: 'يعمل الآن عبر /api/os' },
   { name: 'مولّد تطبيقات حقيقي (scaffold + node --test)', status: 'live', note: 'يبني تطبيقًا ويشغّل اختباره كدليل' },
   { name: 'حلّال LP/MIP (HiGHS) + Hungarian + مونتي كارلو', status: 'live', note: 'يعمل محليًا بلا تغذية خارجية' },
+  { name: 'توقع خطي مع اختبار رجعي (R² + Holdout MAE)', status: 'live', note: 'خط أساس شفاف — ليس تنبؤًا سببيًا؛ موسوم كمحاكاة' },
   { name: 'سجل الوكلاء والمنظمات الافتراضية', status: 'live', note: '18 تخصصًا مُهيأة + إنشاء مخصص' },
   { name: 'الذاكرة الدائمة (scopes + Provenance + حذف مدقق)', status: 'live', note: 'SQLite عبر data/wora-os.db' },
   { name: 'ذاكرة مع تحكم وصول (workspace/owner) + TTL + لقطات إصدار', status: 'live', note: 'ACL على القراءة/الكتابة/الحذف وسجل os_memory_versions' },
