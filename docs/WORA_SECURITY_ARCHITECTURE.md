@@ -168,3 +168,12 @@ Then:
 - The code-repair workflow returns a verified patch but does not apply it to the source repository.
 - Metrics are per-process and in-memory; no OTel exporter or long-term store.
 - Redaction is heuristic; encrypted fields are the primary control, not redaction.
+
+## 10. Independent audit follow-up (November 2026)
+
+See `WORA_SECURITY_AUDIT_2026-11.md` for the full findings table and reproduction commands.
+
+- SEC-01 fixed: a real rotation now aborts before any write if any row fails authentication; it cannot report a false success.
+- SEC-02 fixed: secret selection, decryption and rewrite run inside one `BEGIN IMMEDIATE` transaction.
+- SEC-03 fixed: an authenticated sealed field with malformed JSON throws instead of silently falling back to `{}`.
+- Confirmed boundaries: `prlimit` is a resource limit, not a filesystem/network sandbox; legacy plaintext rows and legacy sid-less sessions remain documented migration risks.
