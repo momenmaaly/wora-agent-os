@@ -39,7 +39,7 @@ function canonical(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonical);
   if (value && typeof value === 'object') {
     return Object.fromEntries(Object.entries(value as Record<string, unknown>)
-      .sort(([a], [b]) => a.localeCompare(b))
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
       .map(([key, entry]) => [key, canonical(entry)]));
   }
   return value;
@@ -47,6 +47,13 @@ function canonical(value: unknown): unknown {
 
 export function payloadDigest(value: unknown): string {
   return sha256(JSON.stringify(canonical(value ?? {})));
+}
+
+/** Invalid or missing expiry timestamps fail closed where an approval is required. */
+export function isApprovalExpired(value: string | null | undefined): boolean {
+  if (!value) return false;
+  const parsed = Date.parse(value);
+  return !Number.isFinite(parsed) || parsed <= Date.now();
 }
 
 export function actionScope(missionId?: string | null, taskId?: string | null, toolId?: string | null): string {
@@ -71,8 +78,8 @@ export function getActionBudget(workspaceId: string): ActionBudget {
     typeof value === 'number' && Number.isFinite(value) && value >= min ? value : fallback;
   return {
     maxAmountUsd: number(parsed.maxAmountUsd, DEFAULT_ACTION_BUDGET.maxAmountUsd, 0),
-    maxApprovalsPerMission: number(parsed.maxApprovalsPerMission, DEFAULT_ACTION_BUDGET.maxApprovalsPerMission, 1),
-    approvalTtlMinutes: number(parsed.approvalTtlMinutes, DEFAULT_ACTION_BUDGET.approvalTtlMinutes, 1),
+    maxApprovalsPerMission: Math.min(number(parsed.maxApprovalsPerMission, DEFAULT_ACTION_BUDGET.maxApprovalsPerMission, 1), 10_000),
+    approvalTtlMinutes: Math.min(number(parsed.approvalTtlMinutes, DEFAULT_ACTION_BUDGET.approvalTtlMinutes, 1), 10_080),
   };
 }
 
@@ -148,6 +155,7 @@ export function createApproval(input: {
   const budget = getActionBudget(input.workspaceId);
   const actionClass = input.actionClass ?? (input.risk === 'high' ? 'C' : input.risk === 'medium' ? 'B' : 'A');
   const amountUsd = input.amountUsd ?? extractAmount(input.toolInput);
+  if (amountUsd !== undefined && (!Number.isFinite(amountUsd) || amountUsd < 0)) throw new Error('Action amount must be a finite non-negative number');
   if (amountUsd !== undefined && amountUsd > budget.maxAmountUsd) {
     throw new Error(`Action amount ${amountUsd} exceeds the workspace action budget ${budget.maxAmountUsd}`);
   }
@@ -158,11 +166,17 @@ export function createApproval(input: {
     }
   }
   const scope = input.scope ?? actionScope(input.missionId, input.taskId, input.toolId);
-  const digest = input.payloadDigest ?? payloadDigest(input.toolInput ?? {});
+  const digest = payloadDigest(input.toolInput ?? {});
+  if (input.payloadDigest && input.payloadDigest !== digest) throw new Error('Provided payload digest does not match the canonical tool input');
   const expiresAt = input.expiresAt ?? new Date(Date.now() + budget.approvalTtlMinutes * 60_000).toISOString();
   if (Number.isNaN(Date.parse(expiresAt)) || Date.parse(expiresAt) <= Date.now()) {
     throw new Error('Approval expiry must be a valid future ISO timestamp');
   }
+  if (Date.parse(expiresAt) > Date.now() + budget.approvalTtlMinutes * 60_000 + 1_000) {
+    throw new Error('Approval expiry exceeds the workspace approval TTL');
+  }
+  db.exec('BEGIN IMMEDIATE');
+  try {
   db.prepare(`INSERT INTO os_approvals
     (id, workspace_id, kind, mission_id, task_id, tool_id, action_summary, risk, action_class, scope, payload_digest, expires_at, amount_usd, tool_input, requested_by, status, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`)
@@ -170,7 +184,13 @@ export function createApproval(input: {
       input.actionSummary.slice(0, 500), input.risk, actionClass, scope, digest, expiresAt, amountUsd ?? null,
       JSON.stringify(input.toolInput ?? {}).slice(0, 20_000), input.requestedBy ?? 'orchestrator', nowIso());
   audit(db, { workspaceId: input.workspaceId, actor: input.requestedBy ?? 'orchestrator', action: 'approval.request', subject: id, detail: { toolId: input.toolId ?? null, missionId: input.missionId ?? null, risk: input.risk, actionClass, scope, payloadDigest: digest, expiresAt, amountUsd: amountUsd ?? null } });
-  return approvalView(db.prepare('SELECT * FROM os_approvals WHERE id = ?').get(id) as Record<string, string>);
+  const created = approvalView(db.prepare('SELECT * FROM os_approvals WHERE id = ?').get(id) as Record<string, string>);
+  db.exec('COMMIT');
+  return created;
+  } catch (err) {
+    try { db.exec('ROLLBACK'); } catch { /* transaction may already be closed */ }
+    throw err;
+  }
 }
 
 export function getApproval(workspaceId: string, approvalId: string): ApprovalRecord | null {
@@ -205,11 +225,20 @@ export function decideApproval(workspaceId: string, approvalId: string, decision
   if (!row) throw new Error('Approval not found');
   if (row['status'] !== 'pending') throw new Error('Approval already decided');
   if (row['requested_by'] === actor) throw new Error('The requester cannot approve or deny their own high-risk request');
-  if (row['expires_at'] && Date.parse(String(row['expires_at'])) <= Date.now()) throw new Error('Approval has expired');
-  db.prepare('UPDATE os_approvals SET status = ?, decision_note = ?, decided_by = ?, decided_at = ? WHERE id = ?')
-    .run(decision, note.slice(0, 500), actor, nowIso(), approvalId);
+  if (isApprovalExpired(row['expires_at'] as string | null)) throw new Error('Approval has expired');
+  const now = nowIso();
+  const update = db.prepare(`UPDATE os_approvals SET status = ?, decision_note = ?, decided_by = ?, decided_at = ?
+    WHERE workspace_id = ? AND id = ? AND status = 'pending' AND (expires_at IS NULL OR expires_at > ?)`)
+    .run(decision, note.slice(0, 500), actor, now, workspaceId, approvalId, now);
+  if (Number(update.changes ?? 0) !== 1) {
+    const latest = db.prepare('SELECT status, expires_at FROM os_approvals WHERE workspace_id = ? AND id = ?').get(workspaceId, approvalId) as { status?: string; expires_at?: string | null } | undefined;
+    if (!latest) throw new Error('Approval not found');
+    if (latest.status !== 'pending') throw new Error('Approval already decided');
+    if (isApprovalExpired(latest.expires_at)) throw new Error('Approval has expired');
+    throw new Error('Approval could not be decided');
+  }
   audit(db, { workspaceId, actor, action: decision === 'approved' ? 'approval.approve' : 'approval.deny', subject: approvalId, detail: { note: note.slice(0, 300), toolId: row['tool_id'] ?? null, missionId: row['mission_id'] ?? null, actionClass: row['action_class'] ?? null, scope: row['scope'] ?? null } });
-  return approvalView(db.prepare('SELECT * FROM os_approvals WHERE id = ?').get(approvalId) as Record<string, string>);
+  return approvalView(db.prepare('SELECT * FROM os_approvals WHERE workspace_id = ? AND id = ?').get(workspaceId, approvalId) as Record<string, string>);
 }
 
 /**
@@ -222,19 +251,34 @@ export function consumeApproval(workspaceId: string, approvalId: string, input: 
   missionId?: string | null; taskId?: string | null;
 }): ApprovalRecord {
   const db = getOsDb();
-  const row = db.prepare('SELECT * FROM os_approvals WHERE workspace_id = ? AND id = ?').get(workspaceId, approvalId) as Record<string, string> | undefined;
-  if (!row) throw new Error('Approval not found');
-  if (row['status'] !== 'approved') throw new Error(`Approval is ${row['status']}, not approved`);
-  if (row['consumed_at']) throw new Error('Approval was already consumed');
-  if (row['expires_at'] && Date.parse(String(row['expires_at'])) <= Date.now()) throw new Error('Approval has expired');
-  if (String(row['action_class'] ?? 'C') !== input.actionClass) throw new Error('Approval action class does not match');
-  if (String(row['scope'] ?? '') !== input.scope) throw new Error('Approval scope does not match');
-  if (String(row['payload_digest'] ?? '') !== payloadDigest(input.payload)) throw new Error('Approval payload digest does not match');
-  if (input.missionId && row['mission_id'] !== input.missionId) throw new Error('Approval mission does not match');
-  if (input.taskId && row['task_id'] !== input.taskId) throw new Error('Approval task does not match');
-  db.prepare('UPDATE os_approvals SET consumed_at = ?, consumed_by = ? WHERE id = ?').run(nowIso(), input.actor.slice(0, 200), approvalId);
-  audit(db, { workspaceId, actor: input.actor, action: 'approval.consume', subject: approvalId, detail: { missionId: input.missionId ?? null, taskId: input.taskId ?? null, scope: input.scope, actionClass: input.actionClass } });
-  return approvalView(db.prepare('SELECT * FROM os_approvals WHERE id = ?').get(approvalId) as Record<string, string>);
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const row = db.prepare('SELECT * FROM os_approvals WHERE workspace_id = ? AND id = ?').get(workspaceId, approvalId) as Record<string, string> | undefined;
+    if (!row) throw new Error('Approval not found');
+    if (row['status'] !== 'approved') throw new Error(`Approval is ${row['status']}, not approved`);
+    if (row['consumed_at']) throw new Error('Approval was already consumed');
+    if (isApprovalExpired(row['expires_at'] as string | null)) throw new Error('Approval has expired');
+    if (String(row['action_class'] ?? 'C') !== input.actionClass) throw new Error('Approval action class does not match');
+    if (String(row['scope'] ?? '') !== input.scope) throw new Error('Approval scope does not match');
+    if (String(row['payload_digest'] ?? '') !== payloadDigest(input.payload)) throw new Error('Approval payload digest does not match');
+    if (input.missionId && row['mission_id'] !== input.missionId) throw new Error('Approval mission does not match');
+    if (input.taskId && row['task_id'] !== input.taskId) throw new Error('Approval task does not match');
+    const amount = row['amount_usd'] === null || row['amount_usd'] === undefined ? undefined : Number(row['amount_usd']);
+    if (amount !== undefined && (!Number.isFinite(amount) || amount > getActionBudget(workspaceId).maxAmountUsd)) {
+      throw new Error(`Approval amount ${String(amount)} exceeds the current workspace action budget`);
+    }
+    const consumedAt = nowIso();
+    const update = db.prepare("UPDATE os_approvals SET consumed_at = ?, consumed_by = ? WHERE workspace_id = ? AND id = ? AND consumed_at IS NULL AND status = 'approved'")
+      .run(consumedAt, input.actor.slice(0, 200), workspaceId, approvalId);
+    if (Number(update.changes ?? 0) !== 1) throw new Error('Approval was already consumed');
+    audit(db, { workspaceId, actor: input.actor, action: 'approval.consume', subject: approvalId, detail: { missionId: input.missionId ?? null, taskId: input.taskId ?? null, scope: input.scope, actionClass: input.actionClass } });
+    const consumed = approvalView(db.prepare('SELECT * FROM os_approvals WHERE workspace_id = ? AND id = ?').get(workspaceId, approvalId) as Record<string, string>);
+    db.exec('COMMIT');
+    return consumed;
+  } catch (err) {
+    try { db.exec('ROLLBACK'); } catch { /* transaction may already be closed */ }
+    throw err;
+  }
 }
 
 /* ─── Revocable device connections ──────────────────────── */

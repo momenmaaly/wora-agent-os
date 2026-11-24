@@ -111,14 +111,11 @@ export function claimTask(input: {
 
 export function heartbeatTask(input: { workspaceId: string; taskId: string; ownerId: string; ttlMs?: number }): boolean {
   const db = getOsDb();
-  const row = db.prepare('SELECT * FROM os_task_leases WHERE workspace_id = ? AND task_id = ?').get(input.workspaceId, input.taskId) as Record<string, string | number> | undefined;
-  if (!row || String(row['owner_id']) !== input.ownerId) return false;
   const now = Date.now();
-  if (Number(row['expires_at']) <= now) return false;
   const ttlMs = Math.min(Math.max(input.ttlMs ?? 30_000, 1_000), 10 * 60_000);
-  db.prepare('UPDATE os_task_leases SET heartbeat_at = ?, expires_at = ?, updated_at = ? WHERE task_id = ?')
-    .run(nowIso(), now + ttlMs, nowIso(), input.taskId);
-  return true;
+  const update = db.prepare('UPDATE os_task_leases SET heartbeat_at = ?, expires_at = ?, updated_at = ? WHERE workspace_id = ? AND task_id = ? AND owner_id = ? AND expires_at > ?')
+    .run(nowIso(), now + ttlMs, nowIso(), input.workspaceId, input.taskId, input.ownerId, now);
+  return Number(update.changes ?? 0) === 1;
 }
 
 export function releaseTaskLease(input: { workspaceId: string; taskId: string; ownerId: string }): boolean {
@@ -148,6 +145,11 @@ export function checkpointTask(input: {
   status: CheckpointStatus; output?: unknown; evidence?: unknown; checkpoint?: unknown;
 }): TaskCheckpoint {
   const db = getOsDb();
+  const task = db.prepare('SELECT mission_id, workspace_id FROM os_tasks WHERE id = ?').get(input.taskId) as { mission_id?: string; workspace_id?: string } | undefined;
+  if (!task || task.workspace_id !== input.workspaceId || task.mission_id !== input.missionId) throw new Error('Checkpoint task does not belong to the supplied workspace and mission');
+  const existing = db.prepare('SELECT status FROM os_task_checkpoints WHERE task_id = ? AND run_id = ?').get(input.taskId, input.runId) as { status?: string } | undefined;
+  if (existing?.status === 'completed' && input.status !== 'completed') throw new Error('A completed checkpoint cannot be downgraded');
+  if (existing?.status === 'failed' && input.status === 'started') throw new Error('A failed checkpoint cannot be reopened as started');
   const now = nowIso();
   const id = newId('ckp');
   db.prepare(`INSERT INTO os_task_checkpoints
@@ -176,19 +178,26 @@ export function listTaskCheckpoints(workspaceId: string, taskId: string): TaskCh
 export function recoverExpiredTaskLeases(workspaceId?: string): number {
   const db = getOsDb();
   const now = Date.now();
-  const rows = workspaceId
-    ? db.prepare('SELECT * FROM os_task_leases WHERE workspace_id = ? AND expires_at <= ?').all(workspaceId, now)
-    : db.prepare('SELECT * FROM os_task_leases WHERE expires_at <= ?').all(now);
-  let recovered = 0;
-  for (const row of rows as unknown as Array<Record<string, string | number>>) {
-    const taskId = String(row['task_id']);
-    db.prepare('DELETE FROM os_task_leases WHERE task_id = ?').run(taskId);
-    db.prepare("UPDATE os_tasks SET status = 'blocked', detail = 'lease_expired — task was interrupted and requires a safe retry', updated_at = ? WHERE id = ?")
-      .run(nowIso(), taskId);
-    audit(db, { workspaceId: String(row['workspace_id']), actor: 'system', action: 'task.lease.expired', subject: taskId, detail: { ownerId: row['owner_id'], expiresAt: row['expires_at'] } });
-    recovered += 1;
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const rows = workspaceId
+      ? db.prepare('SELECT * FROM os_task_leases WHERE workspace_id = ? AND expires_at <= ?').all(workspaceId, now)
+      : db.prepare('SELECT * FROM os_task_leases WHERE expires_at <= ?').all(now);
+    let recovered = 0;
+    for (const row of rows as unknown as Array<Record<string, string | number>>) {
+      const taskId = String(row['task_id']);
+      db.prepare('DELETE FROM os_task_leases WHERE task_id = ?').run(taskId);
+      db.prepare("UPDATE os_tasks SET status = 'blocked', detail = 'lease_expired — task was interrupted and requires a safe retry', updated_at = ? WHERE id = ? AND status NOT IN ('completed', 'cancelled')")
+        .run(nowIso(), taskId);
+      audit(db, { workspaceId: String(row['workspace_id']), actor: 'system', action: 'task.lease.expired', subject: taskId, detail: { ownerId: row['owner_id'], expiresAt: row['expires_at'] } });
+      recovered += 1;
+    }
+    db.exec('COMMIT');
+    return recovered;
+  } catch (err) {
+    try { db.exec('ROLLBACK'); } catch { /* transaction may already be closed */ }
+    throw err;
   }
-  return recovered;
 }
 
 /** A process restart invalidates every in-memory owner, not just expired leases. */
@@ -196,4 +205,42 @@ export function clearMissionLeases(workspaceId: string, missionId: string): numb
   const db = getOsDb();
   const result = db.prepare('DELETE FROM os_task_leases WHERE workspace_id = ? AND mission_id = ?').run(workspaceId, missionId);
   return Number(result.changes ?? 0);
+}
+
+export interface ExecutionLimits {
+  maxConcurrentTasks: number;
+  leaseTtlMs: number;
+  maxAttempts: number;
+}
+
+const EXECUTION_LIMITS_KEY = 'execution_limits';
+const DEFAULT_EXECUTION_LIMITS: ExecutionLimits = { maxConcurrentTasks: 4, leaseTtlMs: 30_000, maxAttempts: 2 };
+
+export function getExecutionLimits(workspaceId: string): ExecutionLimits {
+  const row = getOsDb().prepare('SELECT value FROM os_settings WHERE workspace_id = ? AND key = ?').get(workspaceId, EXECUTION_LIMITS_KEY) as { value?: string } | undefined;
+  const parsed = parseJson<Partial<ExecutionLimits>>(row?.value, {});
+  const number = (value: unknown, fallback: number, min: number, max: number) =>
+    typeof value === 'number' && Number.isFinite(value) && value >= min ? Math.min(value, max) : fallback;
+  return {
+    maxConcurrentTasks: number(parsed.maxConcurrentTasks, DEFAULT_EXECUTION_LIMITS.maxConcurrentTasks, 1, 8),
+    leaseTtlMs: number(parsed.leaseTtlMs, DEFAULT_EXECUTION_LIMITS.leaseTtlMs, 1_000, 10 * 60_000),
+    maxAttempts: number(parsed.maxAttempts, DEFAULT_EXECUTION_LIMITS.maxAttempts, 1, 5),
+  };
+}
+
+export function setExecutionLimits(workspaceId: string, input: Partial<ExecutionLimits>, actor: string): ExecutionLimits {
+  const current = getExecutionLimits(workspaceId);
+  const next: ExecutionLimits = {
+    maxConcurrentTasks: input.maxConcurrentTasks ?? current.maxConcurrentTasks,
+    leaseTtlMs: input.leaseTtlMs ?? current.leaseTtlMs,
+    maxAttempts: input.maxAttempts ?? current.maxAttempts,
+  };
+  if (!Number.isInteger(next.maxConcurrentTasks) || next.maxConcurrentTasks < 1 || next.maxConcurrentTasks > 8) throw new Error('maxConcurrentTasks must be an integer between 1 and 8');
+  if (!Number.isInteger(next.leaseTtlMs) || next.leaseTtlMs < 1_000 || next.leaseTtlMs > 10 * 60_000) throw new Error('leaseTtlMs must be an integer between 1000 and 600000');
+  if (!Number.isInteger(next.maxAttempts) || next.maxAttempts < 1 || next.maxAttempts > 5) throw new Error('maxAttempts must be an integer between 1 and 5');
+  const db = getOsDb();
+  db.prepare('INSERT INTO os_settings (workspace_id, key, value, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(workspace_id, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at')
+    .run(workspaceId, EXECUTION_LIMITS_KEY, JSON.stringify(next), nowIso());
+  audit(db, { workspaceId, actor, action: 'settings.execution_limits', subject: EXECUTION_LIMITS_KEY, detail: next });
+  return next;
 }

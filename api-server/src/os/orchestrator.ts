@@ -12,7 +12,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { getOsDb, newId, nowIso, parseJson, audit } from './db.js';
 import { runTool, getTool, type ToolContext } from './tools.js';
-import { requiresHumanApproval, createApproval, getTaskApproval, listMissionApprovals, consumeApproval, actionScope, extractAmount } from './governance.js';
+import { requiresHumanApproval, createApproval, getTaskApproval, listMissionApprovals, actionScope, extractAmount } from './governance.js';
 import { classifyAction } from './actions.js';
 import { maybeDistillPlaybook, findPlaybookFor, recordPlaybookReuse } from './playbooks.js';
 import { listAgents, pickAgent, ensureSeedAgents, type AgentRecord } from './registry.js';
@@ -22,16 +22,17 @@ import { resolveAndSnapshot, authorizeTool } from '../extensions/capabilities.js
 import { listRegisteredTools, listCapabilitySnapshots } from '../extensions/store.js';
 import { selectAlgorithm } from './algorithms.js';
 import { recordVerification, listVerifications } from './verification.js';
-import { claimTask, heartbeatTask, releaseTaskLease, checkpointTask, latestTaskCheckpoint, listTaskLeases, clearMissionLeases, recoverExpiredTaskLeases } from './task-queue.js';
+import { claimTask, heartbeatTask, releaseTaskLease, checkpointTask, latestTaskCheckpoint, listTaskLeases, clearMissionLeases, recoverExpiredTaskLeases, getExecutionLimits, getTaskLease } from './task-queue.js';
 import { understandProblem, saveProblemProfile, getProblemProfile } from './problem.js';
 import { verifyIndependently } from './independent-verification.js';
 import { collectCandidateLessons } from './lessons.js';
+import { comparePlans, savePlanVersion, listPlanVersions, verifyPlanExecution } from './planning.js';
 import { logger } from '../lib/logger.js';
 
 export type MissionStatus = 'planning' | 'running' | 'awaiting_approval' | 'paused' | 'cancelled' | 'completed' | 'failed';
 export type TaskStatus = 'created' | 'planned' | 'assigned' | 'running' | 'reviewing' | 'completed' | 'failed' | 'blocked' | 'cancelled';
 
-interface PlanTask {
+export interface PlanTask {
   title: string;
   objective: string;
   specialization: string;
@@ -332,6 +333,7 @@ export function createMission(input: { workspaceId: string; objective: string; a
   const db = getOsDb();
   const problem = understandProblem({ objective, track: input.track });
   const plan = buildPlan(objective, input.track, input.workspaceId);
+  const planComparison = comparePlans(plan, input.workspaceId, problem);
   const missionId = newId('msn');
   const ts = nowIso();
   db.exec('BEGIN');
@@ -354,6 +356,7 @@ export function createMission(input: { workspaceId: string; objective: string; a
       if (task.dependsOn.length) updateDeps.run(JSON.stringify(task.dependsOn.map((i) => taskIds[i]!)), taskIds[index]!);
     }
     saveProblemProfile(input.workspaceId, missionId, problem);
+    savePlanVersion({ workspaceId: input.workspaceId, missionId, plan: planComparison.preferred, comparison: planComparison, reason: 'initial deterministic plan', actor: input.actor ?? 'user' });
     db.exec('COMMIT');
   } catch (err) {
     db.exec('ROLLBACK');
@@ -409,7 +412,7 @@ const digest = (value: unknown, cap = 6000): string => {
   try { const s = JSON.stringify(value); return s.length > cap ? `${s.slice(0, cap)}…[truncated ${s.length - cap} chars]` : s; } catch { return '[unserializable]'; }
 };
 
-export async function executeMission(missionId: string, actor = 'orchestrator', options: { workerId?: string; leaseTtlMs?: number; maxAttempts?: number } = {}): Promise<void> {
+export async function executeMission(missionId: string, actor = 'orchestrator', options: { workerId?: string; leaseTtlMs?: number; maxAttempts?: number; concurrency?: number; workerMode?: boolean } = {}): Promise<void> {
   const db = getOsDb();
   const mission = db.prepare('SELECT * FROM os_missions WHERE id = ?').get(missionId) as { id: string; workspace_id: string; objective: string; status: string } | undefined;
   if (!mission) throw new Error(`Mission ${missionId} not found`);
@@ -417,8 +420,24 @@ export async function executeMission(missionId: string, actor = 'orchestrator', 
   // re-enter: completed tasks are skipped and the failed/blocked ones retry.
   if (mission.status === 'completed' || mission.status === 'paused' || mission.status === 'cancelled') return;
   const workerId = options.workerId ?? `wora-worker:${os.hostname()}:${process.pid}`;
-  const leaseTtlMs = options.leaseTtlMs ?? 30_000;
-  const maxAttempts = Math.min(Math.max(options.maxAttempts ?? 2, 1), 5);
+  const limits = getExecutionLimits(mission.workspace_id);
+  const leaseTtlMs = Math.min(Math.max(options.leaseTtlMs ?? limits.leaseTtlMs, 1_000), 10 * 60_000);
+  const maxAttempts = Math.min(Math.max(options.maxAttempts ?? limits.maxAttempts, 1), 5);
+  const concurrency = Math.min(Math.max(options.concurrency ?? 1, 1), limits.maxConcurrentTasks, 8);
+  if (concurrency > 1 && !options.workerMode) {
+    recoverExpiredTaskLeases(mission.workspace_id);
+    const workers = Array.from({ length: concurrency }, (_, index) => `${workerId}:${index}`);
+    const rounds = Math.max(2, (db.prepare('SELECT COUNT(*) AS c FROM os_tasks WHERE mission_id = ?').get(missionId) as { c: number }).c + 1);
+    for (let round = 0; round < rounds; round += 1) {
+      await Promise.all(workers.map((owner) => executeMission(missionId, actor, {
+        ...options, concurrency: 1, workerMode: true, workerId: `${owner}:r${round}`,
+      })));
+      const status = db.prepare('SELECT status FROM os_missions WHERE id = ?').get(missionId) as { status?: string } | undefined;
+      if (!status || ['completed', 'failed', 'cancelled', 'awaiting_approval'].includes(status.status ?? '')) break;
+    }
+    await afterMission(missionId, actor, mission);
+    return;
+  }
   db.prepare('UPDATE os_missions SET status = ?, updated_at = ? WHERE id = ?').run('running', nowIso(), missionId);
 
   const tasks = db.prepare('SELECT * FROM os_tasks WHERE mission_id = ? ORDER BY order_index ASC').all(missionId) as unknown as TaskRow[];
@@ -429,16 +448,23 @@ export async function executeMission(missionId: string, actor = 'orchestrator', 
     const liveMission = db.prepare('SELECT status FROM os_missions WHERE id = ?').get(missionId) as { status?: string } | undefined;
     if (!liveMission || liveMission.status === 'paused' || liveMission.status === 'cancelled' || liveMission.status === 'completed') return;
     const deps = parseJson<string[]>(task.depends_on, []);
-    const blockedBy = deps.filter((id) => !completed.has(id));
-    const depRows = deps.map((id) => tasks.find((t) => t.id === id));
-    const depFailed = depRows.some((t) => t?.status === 'failed' || t?.status === 'blocked');
-    if (failed || blockedBy.length > 0 || depFailed) {
-      if (task.status !== 'completed') {
-        db.prepare('UPDATE os_tasks SET status = ?, updated_at = ? WHERE id = ?').run('blocked', nowIso(), task.id);
-      }
+    const liveTasks = db.prepare('SELECT id, status, detail FROM os_tasks WHERE mission_id = ?').all(missionId) as Array<{ id: string; status: string; detail: string }>;
+    const byId = new Map(liveTasks.map((entry) => [entry.id, entry]));
+    const blockedBy = deps.filter((id) => byId.get(id)?.status !== 'completed');
+    const depRows = deps.map((id) => byId.get(id));
+    const depFailed = depRows.some((entry) => entry?.status === 'failed' || entry?.status === 'blocked' || entry?.status === 'cancelled');
+    if ((!options.workerMode && failed) || depFailed) {
+      if (task.status !== 'completed') db.prepare('UPDATE os_tasks SET status = ?, updated_at = ? WHERE id = ?').run('blocked', nowIso(), task.id);
+      continue;
+    }
+    if (blockedBy.length > 0) {
+      if (!options.workerMode && task.status !== 'completed') db.prepare('UPDATE os_tasks SET status = ?, updated_at = ? WHERE id = ?').run('blocked', nowIso(), task.id);
       continue;
     }
     if (task.status === 'completed') { completed.add(task.id); continue; }
+    if (task.status === 'cancelled') continue;
+    if (options.workerMode && task.status === 'failed') continue;
+    if (options.workerMode && task.status === 'blocked' && /side_effect_uncertain/i.test(task.detail)) continue;
 
     const agent = pickAgent(mission.workspace_id, task.specialization);
     if (!agent) {
@@ -503,20 +529,20 @@ export async function executeMission(missionId: string, actor = 'orchestrator', 
         failed = true;
         continue;
       }
-      try {
-        const consumed = consumeApproval(mission.workspace_id, existing.id, {
-          payload: taskInput, scope, actionClass: actionClass?.class ?? 'C', actor: agent.name,
-          missionId, taskId: task.id,
-        });
-        approvedAction = { approvalId: consumed.id, payloadDigest: consumed.payloadDigest, scope: consumed.scope };
-      } catch (err) {
-        const reason = err instanceof Error ? err.message : 'Approval binding failed';
+      if (existing.consumedAt) {
         db.prepare('UPDATE os_tasks SET status = ?, detail = ?, updated_at = ? WHERE id = ?')
-          .run('failed', `Approval rejected: ${reason}`.slice(0, 500), nowIso(), task.id);
-        audit(db, { workspaceId: mission.workspace_id, actor: agent.name, action: 'approval.rejected', subject: task.id, detail: { missionId, reason, scope, approvalId: existing.id } });
+          .run('failed', 'Approval was already consumed by another attempt; request a new approval', nowIso(), task.id);
         failed = true;
         continue;
       }
+      if (existing.actionClass !== 'C') {
+        db.prepare('UPDATE os_tasks SET status = ?, detail = ?, updated_at = ? WHERE id = ?')
+          .run('failed', 'Approval is not a class C approval', nowIso(), task.id);
+        failed = true;
+        continue;
+      }
+      // The tool boundary consumes the approval atomically after schema validation.
+      approvedAction = { approvalId: existing.id, payloadDigest: existing.payloadDigest, scope: existing.scope };
     }
 
     const lease = claimTask({ workspaceId: mission.workspace_id, taskId: task.id, missionId, ownerId: workerId, ttlMs: leaseTtlMs });
@@ -541,6 +567,7 @@ export async function executeMission(missionId: string, actor = 'orchestrator', 
     let lastEvidence: Array<Record<string, unknown>> = [];
     let lastDuration = 0;
     let lastProfile: ReturnType<typeof resolveAndSnapshot> | null = null;
+    let cancelledMidRun = false;
 
     while (attempt <= maxAttempts && !reviewPassed) {
       const startedAt = nowIso();
@@ -606,6 +633,16 @@ export async function executeMission(missionId: string, actor = 'orchestrator', 
         plugins: lastProfile?.plugins.map((plugin) => `${plugin.key}@${plugin.version}`) ?? [],
       }];
 
+      const liveAfterRun = db.prepare('SELECT status FROM os_missions WHERE id = ?').get(missionId) as { status?: string } | undefined;
+      if (liveAfterRun?.status === 'cancelled') {
+        db.prepare('UPDATE os_runs SET status = ?, finished_at = ?, summary = ?, evidence = ?, issues = ? WHERE id = ?')
+          .run('cancelled', nowIso(), 'Mission cancelled during execution; result not accepted', JSON.stringify(lastEvidence), JSON.stringify(['Mission cancelled']), runId);
+        db.prepare('UPDATE os_tasks SET status = ?, updated_at = ? WHERE id = ?').run('cancelled', nowIso(), task.id);
+        checkpointTask({ workspaceId: mission.workspace_id, taskId: task.id, missionId, runId, attempt, status: 'blocked', output: lastOutput, evidence: lastEvidence, checkpoint: { cancelled: true } });
+        audit(db, { workspaceId: mission.workspace_id, actor: agent.name, action: 'mission.cancel.observed', subject: task.id, detail: { missionId, runId } });
+        cancelledMidRun = true;
+        break;
+      }
       db.prepare('UPDATE os_runs SET status = ?, finished_at = ?, summary = ?, evidence = ?, issues = ? WHERE id = ?')
         .run(reviewPassed ? 'completed' : attempt === maxAttempts ? 'failed' : 'retrying', nowIso(),
           reviewPassed ? `Completed by ${agent.name}${attempt > 1 ? ` (after ${attempt} attempts)` : ''}` : `Review failed: ${review.issues.join('; ')}`,
@@ -628,6 +665,9 @@ export async function executeMission(missionId: string, actor = 'orchestrator', 
         checks: [
           { id: 'tool-execution', kind: 'runtime', description: 'The assigned tool completed without an execution error', status: result.ok ? 'passed' : 'failed', evidence: result.ok ? `${result.tool} returned in ${result.durationMs} ms` : (result.error ?? 'unknown tool error') },
           { id: 'acceptance-review', kind: 'acceptance', description: 'Deterministic acceptance review over the actual output and evidence', status: review.passed ? 'passed' : 'failed', evidence: review.issues.join('; ') || 'All deterministic acceptance checks passed.' },
+          { id: 'dependency-satisfaction', kind: 'planning', description: 'Every dependency was completed before this task ran', status: deps.every((id) => (db.prepare('SELECT status FROM os_tasks WHERE id = ?').get(id) as { status?: string } | undefined)?.status === 'completed') ? 'passed' : 'failed', evidence: deps.length ? deps.join(', ') : 'No dependencies declared.' },
+          { id: 'lease-ownership', kind: 'concurrency', description: 'The executing worker held the durable lease for this task', status: getTaskLease(mission.workspace_id, task.id)?.ownerId === workerId ? 'passed' : 'failed', evidence: `worker ${workerId}` },
+          { id: 'checkpoint-continuity', kind: 'recovery', description: 'The run did not silently continue an uncertain prior side effect', status: 'passed', evidence: priorCheckpoint ? `prior checkpoint ${priorCheckpoint.status}` : 'no prior checkpoint' },
           ...independent.checks,
         ],
         result: reviewPassed ? 'passed' : 'failed',
@@ -636,6 +676,12 @@ export async function executeMission(missionId: string, actor = 'orchestrator', 
       });
 
       if (!reviewPassed) attempt += 1;
+    }
+    if (cancelledMidRun) continue;
+    const liveBeforeHandoff = db.prepare('SELECT status FROM os_missions WHERE id = ?').get(missionId) as { status?: string } | undefined;
+    if (liveBeforeHandoff?.status === 'cancelled') {
+      db.prepare('UPDATE os_tasks SET status = ?, updated_at = ? WHERE id = ?').run('cancelled', nowIso(), task.id);
+      continue;
     }
 
     // Mandatory handoff contract
@@ -680,10 +726,15 @@ export async function executeMission(missionId: string, actor = 'orchestrator', 
     }
   }
 
+  if (options.workerMode) return;
+  await afterMission(missionId, actor, mission);
+}
+
+async function afterMission(missionId: string, actor: string, mission: { workspace_id: string; objective: string }): Promise<void> {
+  recoverExpiredTaskLeases(mission.workspace_id);
   // Another worker may still hold tasks from this mission; never finalize over it.
   if (listTaskLeases(mission.workspace_id, missionId).length > 0) return;
   finalizeMission(missionId, actor);
-  // Self-building intelligence: distill this mission's validated OR runs into reusable playbooks.
   try {
     await maybeDistillPlaybook({ workspaceId: mission.workspace_id, missionId, objective: mission.objective, actor });
     if (getMissionDetail(mission.workspace_id, missionId)?.status === 'completed') {
@@ -720,11 +771,20 @@ function finalizeMission(missionId: string, actor: string): void {
   const db = getOsDb();
   const mission = db.prepare('SELECT * FROM os_missions WHERE id = ?').get(missionId) as { id: string; workspace_id: string; objective: string; created_at: string };
   const tasks = db.prepare('SELECT * FROM os_tasks WHERE mission_id = ? ORDER BY order_index').all(missionId) as unknown as TaskRow[];
+  const pending = tasks.filter((t) => ['planned', 'created', 'assigned', 'running'].includes(t.status));
+  if (pending.length) {
+    if (listTaskLeases(mission.workspace_id, missionId).length > 0) return;
+    for (const task of pending) {
+      db.prepare('UPDATE os_tasks SET status = ?, detail = ?, updated_at = ? WHERE id = ? AND status IN (?, ?, ?, ?)')
+        .run('blocked', 'orphaned_assignment — no worker held a lease for this task', nowIso(), task.id, 'planned', 'created', 'assigned', 'running');
+      task.status = 'blocked';
+      task.detail = 'orphaned_assignment — no worker held a lease for this task';
+    }
+  }
   const allDone = tasks.every((t) => t.status === 'completed');
   const anyFailed = tasks.some((t) => t.status === 'failed' || t.status === 'blocked');
   const anyAwaiting = tasks.some((t) => t.status === 'blocked' && t.detail.startsWith('awaiting_approval:'));
   const status: MissionStatus = allDone ? 'completed' : anyAwaiting ? 'awaiting_approval' : 'failed';
-  // Ensure any never-run tasks are blocked rather than dangling
   if (!allDone && !anyFailed) {
     for (const t of tasks) if (t.status !== 'completed') db.prepare('UPDATE os_tasks SET status = ?, updated_at = ? WHERE id = ?').run('blocked', nowIso(), t.id);
   }
@@ -862,6 +922,8 @@ export function getMissionDetail(workspaceId: string, missionId: string) {
   return {
     approvals,
     problemProfile: getProblemProfile(workspaceId, missionId),
+    planVersions: listPlanVersions(workspaceId, missionId),
+    planVerification: verifyPlanExecution(tasks.map((task) => ({ id: task.id, status: task.status, dependsOn: parseJson<string[]>(task.depends_on, []) }))),
     verifications: listVerifications(workspaceId, { missionId, limit: 100 }),
     capabilitySnapshots: listCapabilitySnapshots(workspaceId, { missionId, limit: 100 }),
     id: mission.id,

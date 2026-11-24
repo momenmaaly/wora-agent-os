@@ -80,3 +80,37 @@ test('budget and lesson endpoints expose the real governance state', async () =>
   assert.equal(collected.status, 200);
   assert.ok(Array.isArray(await collected.json()));
 });
+
+test('execution limits, formal plans and replanning are real HTTP endpoints', async () => {
+  const limits = await fetch(`${baseUrl}/settings/execution-limits`);
+  assert.equal(limits.status, 200);
+  assert.equal(((await limits.json()) as { maxConcurrentTasks?: number }).maxConcurrentTasks, 4);
+  const updated = await fetch(`${baseUrl}/settings/execution-limits`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ maxConcurrentTasks: 2, leaseTtlMs: 20_000, maxAttempts: 3 }),
+  });
+  assert.equal(updated.status, 200);
+  assert.equal(((await updated.json()) as { maxConcurrentTasks?: number }).maxConcurrentTasks, 2);
+
+  const missionId = createMission({ workspaceId: WS, objective: 'Analyze the objective and extract requirements', actor: 'test' });
+  const mission = getMissionDetail(WS, missionId)!;
+  assert.ok(Array.isArray(mission.planVersions));
+  assert.equal(mission.planVersions?.length, 1);
+
+  const plans = await fetch(`${baseUrl}/missions/${mission.id}/plans`);
+  assert.equal(plans.status, 200);
+  assert.equal(((await plans.json()) as unknown[]).length, 1);
+
+  const replanned = await fetch(`${baseUrl}/missions/${mission.id}/replan`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ reason: 'operator requested a revised remaining plan' }),
+  });
+  assert.equal(replanned.status, 200);
+  assert.equal(((await replanned.json()) as { version?: number }).version, 2);
+
+  const executed = await fetch(`${baseUrl}/missions/${mission.id}/execute`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ concurrency: 2 }),
+  });
+  assert.equal(executed.status, 200);
+  assert.equal(((await executed.json()) as { status?: string }).status, 'completed');
+});

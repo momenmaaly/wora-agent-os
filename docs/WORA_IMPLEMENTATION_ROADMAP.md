@@ -43,7 +43,7 @@ Remaining:
 
 **First slice completed:** durable `os_verifications` records, orchestrator integration, workspace-scoped API, failure/blocked records and four tests.
 
-**Independent checks completed:** API-contract, deterministic property, secret-leak and artifact-digest checks are combined with the acceptance review; the verifier is recorded separately from the executor.
+**Independent checks completed:** API-contract, deterministic property, output quality, secret-leak, artifact-digest, dependency, lease-ownership and checkpoint-continuity checks are combined with the acceptance review; plan execution is structurally verified separately. The verifier is recorded separately from the executor.
 
 Build a first-class verification record that binds:
 
@@ -71,7 +71,7 @@ Remaining acceptance work:
 
 ## Phase 3 — Action-class governance
 
-**Status:** completed for the current tool and action surface. A/B/C classification is enforced in the orchestrator and at the tool registry; approvals are payload-bound, scoped, expiring, single-use and budgeted; autopilot cannot bypass class C.
+**Status:** completed and audit-hardened. A/B/C classification is enforced in the orchestrator and at the tool registry; approvals are payload-bound, scoped, expiring, atomically single-use and budgeted; autopilot cannot bypass class C; expired/malformed expiries fail closed; a lowered budget blocks already-approved amounts.
 
 Add explicit action classes:
 
@@ -88,7 +88,7 @@ Acceptance criteria:
 
 ## Phase 4 — Durable execution and recovery
 
-**First slice completed:** lease-based task claims, heartbeats, checkpoints, pause/resume/cancel, restart recovery and side-effect uncertainty. The mission executor is still sequential; multi-worker claim safety is implemented.
+**Completed:** lease-based task claims, heartbeats, checkpoints, pause/resume/cancel, restart recovery, side-effect uncertainty and a concurrent mission scheduler with per-workspace limits. Workers run in one API process; SQLite remains the single-writer boundary.
 
 Add a lease-based task queue on the existing SQLite single-writer boundary:
 
@@ -109,7 +109,7 @@ Acceptance criteria:
 
 ## Phase 5 — Problem understanding and planning
 
-**First slice completed:** deterministic problem profiles are persisted with missions and feed structured algorithm features. The planner still uses deterministic templates.
+**Completed for the current deterministic planner:** problem profiles, formal goals/preconditions/effects/resources/uncertainty/cost, two alternatives over the same real task graph, critical path, plan versions and non-mutating replanning. The planner still uses deterministic templates; HTN/A*/MDP/POMDP are not implemented.
 
 Replace pure keyword routing with a structured problem profile:
 

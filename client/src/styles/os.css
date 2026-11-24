@@ -260,3 +260,8 @@
 .os-role-badge { padding: 2px 10px; border-radius: 999px; background: rgba(139, 112, 232, 0.15); border: 1px solid rgba(139, 112, 232, 0.4); color: #c4b5fd; }
 .os-role-list { display: grid; gap: 8px; margin-bottom: 12px; }
 .os-role-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 12px; border-radius: 12px; border: 1px solid rgba(148, 163, 184, 0.14); background: rgba(148, 163, 184, 0.04); }
+
+.os-inline-control { display: inline-flex; align-items: center; gap: 6px; }
+.os-inline-control select { min-height: 30px; padding: 2px 6px; border: 1px solid var(--line); border-radius: var(--control-radius); background: var(--bg); color: var(--ink); }
+.os-lessons .os-tool-grid > article h3 { margin: 6px 0; font-size: 14px; }
+.os-benchmarks .os-handoffs { margin-top: 8px; }

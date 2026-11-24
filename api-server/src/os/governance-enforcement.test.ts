@@ -20,7 +20,7 @@ mkdirSync(process.env['WORA_WORKSPACE']!, { recursive: true });
 const { createMission, getMissionDetail } = await import('./orchestrator.js');
 const {
   createApproval, decideApproval, consumeApproval, actionScope, payloadDigest,
-  getActionBudget, setActionBudget, requiresHumanApproval, getAutonomyPolicy, setAutonomyPolicy,
+  getActionBudget, setActionBudget, requiresHumanApproval, getAutonomyPolicy, setAutonomyPolicy, getApproval,
 } = await import('./governance.js');
 const { runTool } = await import('./tools.js');
 const { getOsDb } = await import('./db.js');
@@ -145,21 +145,55 @@ test('a class C action is refused at the tool boundary even when the tool itself
   assert.equal(result.code, 'APPROVAL_REQUIRED');
 });
 
+test('canonical digests ignore key order and reject a caller-supplied mismatch', () => {
+  assert.equal(payloadDigest({ b: 2, a: { d: 4, c: 3 } }), payloadDigest({ a: { c: 3, d: 4 }, b: 2 }));
+  assert.notEqual(payloadDigest({ a: 1 }), payloadDigest({ a: 2 }));
+  assert.throws(() => createApproval({
+    workspaceId: WS, actionSummary: 'Mismatch', risk: 'high', toolInput: { a: 1 }, payloadDigest: payloadDigest({ a: 2 }), requestedBy: 'agent',
+  }), /payload digest/);
+});
+
+test('a decision is single-use and a lowered budget blocks an already-approved amount', () => {
+  setActionBudget(WS, { maxAmountUsd: 100, maxApprovalsPerMission: 5 }, 'admin');
+  const approval = createApproval({
+    workspaceId: WS, actionSummary: 'Spend 50', risk: 'high', toolInput: { amountUsd: 50 }, requestedBy: 'agent',
+  });
+  decideApproval(WS, approval.id, 'approved', 'ok', 'reviewer');
+  assert.throws(() => decideApproval(WS, approval.id, 'denied', 'late', 'reviewer'), /already decided/);
+  setActionBudget(WS, { maxAmountUsd: 0 }, 'admin');
+  assert.throws(() => consumeApproval(WS, approval.id, {
+    payload: { amountUsd: 50 }, scope: approval.scope, actionClass: 'C', actor: 'agent',
+  }), /current workspace action budget/);
+  assert.equal(getApproval(WS, approval.id)!.consumedAt, null);
+  setActionBudget(WS, { maxAmountUsd: 100 }, 'admin');
+});
+
 test('a valid approval reaches the tool boundary, but a substituted payload does not', async () => {
   const { missionId, taskId } = taskFixture();
+  setActionBudget(WS, { maxApprovalsPerMission: 5 }, 'admin');
   const payload = { command: 'node', args: ['--test', 'test/app.test.mjs'] };
   const scope = actionScope(missionId, taskId, 'host.exec');
   const approval = createApproval({ workspaceId: WS, missionId, taskId, toolId: 'host.exec', actionSummary: 'Run tests', risk: 'high', toolInput: payload, requestedBy: 'agent' });
   decideApproval(WS, approval.id, 'approved', 'reviewed', 'reviewer');
-  const consumed = consumeApproval(WS, approval.id, { payload, scope, actionClass: 'C', actor: 'agent', missionId, taskId });
   const allowed = await runTool('host.exec', payload, {
     workspaceId: WS, actor: 'agent', permissions: new Set(['host:exec']), missionId, taskId,
-    approvedAction: { approvalId: consumed.id, payloadDigest: consumed.payloadDigest, scope: consumed.scope },
+    approvedAction: { approvalId: approval.id, payloadDigest: approval.payloadDigest, scope: approval.scope },
   });
   assert.notEqual(allowed.code, 'APPROVAL_REQUIRED');
+  assert.ok(getApproval(WS, approval.id)!.consumedAt, 'the tool boundary must consume the approval');
+
+  const replay = await runTool('host.exec', payload, {
+    workspaceId: WS, actor: 'agent', permissions: new Set(['host:exec']), missionId, taskId,
+    approvedAction: { approvalId: approval.id, payloadDigest: approval.payloadDigest, scope: approval.scope },
+  });
+  assert.equal(replay.code, 'APPROVAL_REQUIRED');
+
+  const second = createApproval({ workspaceId: WS, missionId, taskId, toolId: 'host.exec', actionSummary: 'Run tests again', risk: 'high', toolInput: payload, requestedBy: 'agent' });
+  decideApproval(WS, second.id, 'approved', 'reviewed', 'reviewer');
   const substituted = await runTool('host.exec', { command: 'node', args: ['--test', 'other.test.mjs'] }, {
     workspaceId: WS, actor: 'agent', permissions: new Set(['host:exec']), missionId, taskId,
-    approvedAction: { approvalId: consumed.id, payloadDigest: consumed.payloadDigest, scope: consumed.scope },
+    approvedAction: { approvalId: second.id, payloadDigest: second.payloadDigest, scope: second.scope },
   });
   assert.equal(substituted.code, 'APPROVAL_REQUIRED');
+  assert.equal(getApproval(WS, second.id)!.consumedAt, null);
 });

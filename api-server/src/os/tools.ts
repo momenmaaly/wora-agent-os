@@ -20,7 +20,7 @@ import { solveAssignment, solveEmployeeSchedule, solveLp } from './ortools.js';
 import { PROBLEM_KINDS, selectAlgorithm } from './algorithms.js';
 import { classifyAction } from './actions.js';
 import { understandProblem } from './problem.js';
-import { getApproval, payloadDigest, actionScope } from './governance.js';
+import { getApproval, consumeApproval, payloadDigest, actionScope, isApprovalExpired } from './governance.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -901,6 +901,10 @@ export async function runTool(id: string, rawInput: unknown, ctx: ToolContext): 
     audit(getOsDb(), { workspaceId: ctx.workspaceId, actor: ctx.actor, action: 'tool.denied', subject: id, detail: { missing } });
     return { ok: false, tool: id, error: `Missing permission(s) for ${id}: ${missing.join(', ')}`, durationMs: Date.now() - started };
   }
+  const parsed = tool.schema.safeParse(rawInput ?? {});
+  if (!parsed.success) {
+    return { ok: false, tool: id, error: `Invalid input for ${id}: ${parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')}`, durationMs: Date.now() - started };
+  }
   if (tool.risk === 'high' || ctx.actionClass === 'C') {
     const approved = ctx.approvedAction;
     const expectedScope = actionScope(ctx.missionId, ctx.taskId, id);
@@ -909,21 +913,28 @@ export async function runTool(id: string, rawInput: unknown, ctx: ToolContext): 
       approved &&
       approval &&
       approval.status === 'approved' &&
+      !approval.consumedAt &&
       approval.actionClass === 'C' &&
+      approval.toolId === id &&
       approval.scope === expectedScope &&
       approval.payloadDigest === payloadDigest(rawInput ?? {}) &&
       (!ctx.missionId || approval.missionId === ctx.missionId) &&
       (!ctx.taskId || approval.taskId === ctx.taskId) &&
-      (!approval.expiresAt || Date.parse(approval.expiresAt) > Date.now()),
+      !isApprovalExpired(approval.expiresAt),
     );
     if (!valid) {
       audit(getOsDb(), { workspaceId: ctx.workspaceId, actor: ctx.actor, action: 'tool.denied', subject: id, detail: { reason: 'approval_required_or_invalid', missionId: ctx.missionId ?? null, taskId: ctx.taskId ?? null } });
       return { ok: false, tool: id, error: 'This action requires a valid, payload-bound approval', code: 'APPROVAL_REQUIRED', durationMs: Date.now() - started };
     }
-  }
-  const parsed = tool.schema.safeParse(rawInput ?? {});
-  if (!parsed.success) {
-    return { ok: false, tool: id, error: `Invalid input for ${id}: ${parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')}`, durationMs: Date.now() - started };
+    try {
+      consumeApproval(ctx.workspaceId, approval!.id, {
+        payload: rawInput ?? {}, scope: expectedScope, actionClass: 'C', actor: ctx.actor,
+        missionId: ctx.missionId ?? null, taskId: ctx.taskId ?? null,
+      });
+    } catch (err) {
+      audit(getOsDb(), { workspaceId: ctx.workspaceId, actor: ctx.actor, action: 'tool.denied', subject: id, detail: { reason: 'approval_consume_failed', error: err instanceof Error ? err.message : String(err), missionId: ctx.missionId ?? null, taskId: ctx.taskId ?? null } });
+      return { ok: false, tool: id, error: 'This action requires a valid, payload-bound approval', code: 'APPROVAL_REQUIRED', durationMs: Date.now() - started };
+    }
   }
   let timer: NodeJS.Timeout | undefined;
   const controller = new AbortController();

@@ -11,7 +11,7 @@ process.env['NODE_ENV'] = 'test';
 mkdirSync(process.env['WORA_WORKSPACE']!, { recursive: true });
 
 const { createMission, executeMission } = await import('./orchestrator.js');
-const { listLessons, collectCandidateLessons, evaluateLesson, promoteLesson, rejectLesson } = await import('./lessons.js');
+const { listLessons, collectCandidateLessons, evaluateLesson, promoteLesson, rejectLesson, revokeLesson, recordLessonOutcome, listLessonEvents } = await import('./lessons.js');
 const { listMemories } = await import('./memory.js');
 const { getOsDb } = await import('./db.js');
 
@@ -40,6 +40,7 @@ test('evaluation is required before promotion, and promotion writes semantic mem
   const memory = listMemories(WS, { scope: 'semantic' });
   assert.equal(memory.length, 1);
   assert.equal(memory[0]!.provenance, `lesson:${lesson.id}`);
+  assert.throws(() => promoteLesson(WS, lesson.id, 'operator'), /Only an evaluated lesson|already promoted/);
   assert.throws(() => rejectLesson(WS, lesson.id, 'operator', 'late'), /cannot be rejected/);
 });
 
@@ -52,6 +53,14 @@ test('a lesson without verified evidence cannot be evaluated or promoted', () =>
   assert.equal(listLessons(WS, { status: 'candidate' }).some((lesson) => lesson.id === 'lsn_unverified'), true);
 });
 
+test('tampered or nonexistent verification evidence cannot be evaluated', () => {
+  const db = getOsDb();
+  db.prepare(`INSERT INTO os_lessons (id, workspace_id, mission_id, task_id, title, content, evidence, status, confidence, version, provenance, created_by, created_at, updated_at)
+    VALUES ('lsn_fake', ?, NULL, NULL, 'Fake evidence', 'A lesson that claims verification that does not exist.', ?, 'candidate', 0.9, 1, 'manual', 'test', ?, ?)`)
+    .run(WS, JSON.stringify([{ verificationId: 'ver_does_not_exist', result: 'passed', checks: ['artifact-integrity', 'acceptance-review'] }]), new Date().toISOString(), new Date().toISOString());
+  assert.throws(() => evaluateLesson(WS, 'lsn_fake', 'operator'), /enough verified evidence/);
+});
+
 test('rejection is explicit and leaves no semantic memory', () => {
   const db = getOsDb();
   db.prepare(`INSERT INTO os_lessons (id, workspace_id, mission_id, task_id, title, content, evidence, status, confidence, version, provenance, created_by, created_at, updated_at)
@@ -60,4 +69,26 @@ test('rejection is explicit and leaves no semantic memory', () => {
   const rejected = rejectLesson(WS, 'lsn_reject', 'operator', 'not enough evidence');
   assert.equal(rejected.status, 'rejected');
   assert.equal(listMemories(WS, { scope: 'semantic' }).length, 1);
+});
+
+test('promotion history, observed effectiveness and revocation are durable', () => {
+  const promoted = listLessons(WS, { status: 'promoted' })[0]!;
+  const success = recordLessonOutcome(WS, promoted.id, { success: true, missionId: promoted.missionId ?? undefined }, 'operator');
+  assert.equal(success.outcomeCount, 1);
+  assert.equal(success.successCount, 1);
+  assert.equal(success.effectiveness, 1);
+  const mixed = recordLessonOutcome(WS, promoted.id, { success: false }, 'operator');
+  assert.equal(mixed.outcomeCount, 2);
+  assert.equal(mixed.effectiveness, 0.5);
+  const actions = listLessonEvents(WS, promoted.id).map((event) => event.action);
+  assert.deepEqual(actions, ['candidate', 'evaluate', 'promote', 'outcome', 'outcome']);
+  assert.ok(promoted.memoryId);
+  const revoked = revokeLesson(WS, promoted.id, 'admin', 'superseded by a stronger lesson');
+  assert.equal(revoked.status, 'revoked');
+  assert.equal(revoked.revokedBy, 'admin');
+  assert.match(revoked.revocationReason, /superseded/);
+  assert.equal(listMemories(WS, { scope: 'semantic' }).length, 0);
+  assert.equal(listLessonEvents(WS, promoted.id).at(-1)?.action, 'revoke');
+  assert.throws(() => recordLessonOutcome(WS, promoted.id, { success: true }, 'operator'), /Only a promoted lesson/);
+  assert.throws(() => revokeLesson(WS, promoted.id, 'admin', 'again'), /Only a promoted lesson/);
 });

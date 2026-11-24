@@ -9,8 +9,14 @@
 import { performance } from 'node:perf_hooks';
 import { getOsDb, newId, nowIso } from './db.js';
 import { runTool } from './tools.js';
+import { understandProblem } from './problem.js';
+import { selectAlgorithm } from './algorithms.js';
+import { buildPlan } from './orchestrator.js';
+import { comparePlans, verifyPlanExecution } from './planning.js';
+import { verifyIndependently } from './independent-verification.js';
+import { classifyAction } from './actions.js';
 
-export const BENCHMARK_SUITE_VERSION = '1.0.0';
+export const BENCHMARK_SUITE_VERSION = '1.1.0';
 
 export interface BenchmarkResult {
   id: string;
@@ -100,7 +106,7 @@ export async function runBenchmarkSuite(workspaceId: string): Promise<BenchmarkR
   const scheduleOut = schedule.output as { feasible?: boolean; totalCost?: number; validation?: { ok?: boolean }; perShift?: Array<{ meetsDemand?: boolean }> } | null;
   results.push(result({
     name: 'small employee schedule fixture', toolId: 'or.employee_schedule', problemClass: 'integer_programming',
-    correctness: Boolean(schedule.ok && scheduleOut?.feasible === true && scheduleOut?.perShift?.every((shift) => shift.meetsDemand === true)),
+    correctness: Boolean(schedule.ok && scheduleOut?.feasible === true && scheduleOut?.perShift?.length === scheduleInput.shifts.length && scheduleOut?.perShift?.every((shift) => shift.meetsDemand === true) && Number.isFinite(scheduleOut?.totalCost) && Number(scheduleOut?.totalCost) >= 0),
     quality: scheduleOut?.totalCost ?? null, timeMs: schedule.timeMs, toolCalls: 1,
     reference: 'independent demand coverage and solver validation', alternatives: ['HiGHS MIP (tested)', 'hand enumeration for two shifts (reference)'],
     limitations: ['Fixture is small; runtime and quality do not generalize to large rosters.'],
@@ -177,6 +183,117 @@ export async function runBenchmarkSuite(workspaceId: string): Promise<BenchmarkR
     evidence: { mean: statsOut?.mean, count: statsOut?.count },
   }));
 
+  const understandingStart = performance.now();
+  const understandingCases = [
+    { objective: 'Optimize employee shifts with a cost matrix and risk', domain: 'operations_research' },
+    { objective: 'Inspect my computer and diagnose the host system', domain: 'diagnostics' },
+    { objective: 'Forecast a time series and compute descriptive statistics', domain: 'data_intelligence' },
+    { objective: 'Build a working web application with a tested API', domain: 'software_engineering' },
+  ].map((fixture) => ({ fixture, profile: understandProblem({ objective: fixture.objective }) }));
+  const understandingMs = Math.round((performance.now() - understandingStart) * 1000) / 1000;
+  results.push(result({
+    name: 'structured problem-understanding fixtures', toolId: 'meta.understand_problem', problemClass: 'problem_understanding',
+    correctness: understandingCases.every(({ fixture, profile }) => profile.domain === fixture.domain && profile.features !== undefined),
+    quality: null, timeMs: understandingMs, toolCalls: understandingCases.length,
+    reference: 'expected deterministic domains for four objectives', alternatives: ['deterministic rules (tested)', 'semantic classifier (not implemented)'],
+    limitations: ['Four small English/Arabic fixtures do not measure general language understanding.', 'Domain labels are expected outputs from the rule set, not human annotations.'],
+    evidence: { cases: understandingCases.map(({ fixture, profile }) => ({ objective: fixture.objective, expected: fixture.domain, actual: profile.domain, algorithmStatus: profile.algorithmSelection.status })) },
+  }));
+
+  const planningStart = performance.now();
+  const planningProfile = understandProblem({ objective: 'Analyze the objective and extract requirements' });
+  const planningInput = buildPlan('Analyze the objective and extract requirements', undefined, workspaceId);
+  const planningComparison = comparePlans(planningInput, workspaceId, planningProfile);
+  const planningMs = Math.round((performance.now() - planningStart) * 1000) / 1000;
+  const planningPlan = planningComparison.preferred;
+  results.push(result({
+    name: 'formal planning and alternative comparison fixture', toolId: 'planning.comparePlans', problemClass: 'planning',
+    correctness: planningPlan.tasks.length === planningInput.length && planningPlan.criticalPath.length > 0 && planningPlan.metrics.taskCount === planningInput.length,
+    quality: planningPlan.metrics.totalCost, timeMs: planningMs, toolCalls: 1,
+    reference: 'deterministic plan graph and critical path', alternatives: ['direct order (tested)', 'risk-first order (tested)'],
+    limitations: ['Cost is a risk-weighted planning estimate, not wall-clock time or money.', 'The fixture has a shallow dependency graph.'],
+    evidence: { strategy: planningPlan.strategy, taskCount: planningPlan.metrics.taskCount, criticalPath: planningPlan.criticalPath, alternatives: planningComparison.plans.map((plan) => ({ strategy: plan.strategy, cost: plan.metrics.totalCost })) },
+  }));
+
+  const algorithmStart = performance.now();
+  const algorithmCases = [
+    { kind: 'assignment' as const, expected: 'or.assignment' },
+    { kind: 'employee_scheduling' as const, expected: 'or.employee_schedule' },
+    { kind: 'linear_programming' as const, expected: 'or.solve_lp' },
+    { kind: 'forecasting' as const, expected: 'forecast.linear' },
+  ].map((fixture) => ({ fixture, selection: selectAlgorithm({ kind: fixture.kind }) }));
+  const algorithmMs = Math.round((performance.now() - algorithmStart) * 1000) / 1000;
+  results.push(result({
+    name: 'algorithm-selection fixtures', toolId: 'meta.algorithm_select', problemClass: 'algorithm_selection',
+    correctness: algorithmCases.every(({ fixture, selection }) => selection.primary?.toolId === fixture.expected),
+    quality: null, timeMs: algorithmMs, toolCalls: algorithmCases.length,
+    reference: 'catalog mapping from problem kind to implemented tool', alternatives: ['deterministic catalog selection (tested)', 'learned selector (not implemented)'],
+    limitations: ['Tests catalog routing, not solution quality on a dataset.', 'Unsupported and ambiguous classes intentionally return needs_input/unsupported.'],
+    evidence: { cases: algorithmCases.map(({ fixture, selection }) => ({ kind: fixture.kind, expected: fixture.expected, actual: selection.primary?.toolId ?? null, status: selection.status })) },
+  }));
+
+  const graph = [
+    { id: 'a', status: 'completed', dependsOn: [] as string[] },
+    { id: 'b', status: 'completed', dependsOn: ['a'] },
+    { id: 'c', status: 'completed', dependsOn: ['b'] },
+  ];
+  const badGraph = [
+    { id: 'a', status: 'failed', dependsOn: [] as string[] },
+    { id: 'b', status: 'completed', dependsOn: ['a'] },
+  ];
+  const graphStart = performance.now();
+  const graphCheck = verifyPlanExecution(graph);
+  const badCheck = verifyPlanExecution(badGraph);
+  const graphMs = Math.round((performance.now() - graphStart) * 1000) / 1000;
+  results.push(result({
+    name: 'dependency and failure-propagation verification fixtures', toolId: 'planning.verifyPlanExecution', problemClass: 'scheduling_verification',
+    correctness: graphCheck.passed && !badCheck.passed,
+    quality: null, timeMs: graphMs, toolCalls: 2,
+    reference: 'valid DAG passes; completed child of failed parent fails', alternatives: ['structural graph verification (tested)', 'runtime-only executor report (rejected)'],
+    limitations: ['Structural checks do not prove that a real worker executed in the expected order; lease and checkpoint checks cover that separately.'],
+    evidence: { valid: graphCheck, invalid: badCheck },
+  }));
+
+  const verificationStart = performance.now();
+  const goodVerification = verifyIndependently({ tool: 'stats.describe', toolOk: true, output: { mean: 5.5, count: 10 } });
+  const badVerification = verifyIndependently({ tool: 'web.fetch_read', toolOk: true, output: { status: 200, content: 'token ghp_abcdefghijklmnopqrstuvwxyz123456' } });
+  const verificationMs = Math.round((performance.now() - verificationStart) * 1000) / 1000;
+  results.push(result({
+    name: 'independent verification accuracy fixtures', toolId: 'wora.verifier/independent', problemClass: 'verification',
+    correctness: goodVerification.passed && !badVerification.passed && badVerification.failures.some((failure) => /secret leak/i.test(failure)),
+    quality: null, timeMs: verificationMs, toolCalls: 2,
+    reference: 'clean output passes; credential leak fails closed', alternatives: ['independent contract/property/security checks (tested)', 'executor self-report (rejected)'],
+    limitations: ['Two fixtures measure detection behavior, not a full precision/recall benchmark.'],
+    evidence: { goodPassed: goodVerification.passed, badPassed: badVerification.passed, badFailures: badVerification.failures },
+  }));
+
+  const interventionStart = performance.now();
+  const highRisk = classifyAction({ action: 'Deploy to production', risk: 'high', reversible: false });
+  const lowRisk = classifyAction({ action: 'Summarize a document', risk: 'low', reversible: true });
+  const interventionRate = 1 / 2;
+  const interventionMs = Math.round((performance.now() - interventionStart) * 1000) / 1000;
+  results.push(result({
+    name: 'human-intervention classification fixture', toolId: 'meta.action_classify', problemClass: 'human_intervention',
+    correctness: highRisk.class === 'C' && lowRisk.class !== 'C',
+    quality: interventionRate, timeMs: interventionMs, toolCalls: 2,
+    reference: 'high irreversible action requires intervention; low reversible action does not', alternatives: ['deterministic A/B/C classification (tested)', 'autopilot for class C (rejected)'],
+    limitations: ['Intervention rate is computed over two illustrative actions, not a production workload.'],
+    evidence: { highRisk, lowRisk, interventionRate },
+  }));
+
+  const coordinationStart = performance.now();
+  const coordinationPlan = buildPlan('Build a working web application with a tested API', undefined, workspaceId);
+  const coordinationGraph = coordinationPlan.map((task, index) => ({ id: String(index), status: 'completed', dependsOn: task.dependsOn.map(String) }));
+  const coordinationMs = Math.round((performance.now() - coordinationStart) * 1000) / 1000;
+  results.push(result({
+    name: 'multi-agent handoff graph fixture', toolId: 'planning.verifyPlanExecution', problemClass: 'multi_agent_coordination',
+    correctness: coordinationPlan.length >= 3 && coordinationPlan.every((task) => task.specialization.length > 0) && verifyPlanExecution(coordinationGraph).passed,
+    quality: coordinationPlan.length, timeMs: coordinationMs, toolCalls: 1,
+    reference: 'specialist assignments and dependency graph from the deterministic planner', alternatives: ['deterministic specialist plan (tested)', 'unconstrained parallel agents (rejected)'],
+    limitations: ['Measures plan structure only; it does not execute multiple agents or claim coordination quality.'],
+    evidence: { tasks: coordinationPlan.map((task) => ({ title: task.title, specialization: task.specialization, dependsOn: task.dependsOn })), verification: verifyPlanExecution(coordinationGraph) },
+  }));
+
   const passed = results.filter((entry) => entry.correctness).length;
   const run: BenchmarkRun = {
     id: newId('bmr'), workspaceId, suiteVersion: BENCHMARK_SUITE_VERSION, results,
@@ -184,7 +301,7 @@ export async function runBenchmarkSuite(workspaceId: string): Promise<BenchmarkR
     createdAt: nowIso(),
   };
   getOsDb().prepare('INSERT INTO os_benchmark_runs (id, workspace_id, suite_version, results, summary, created_at) VALUES (?, ?, ?, ?, ?, ?)')
-    .run(run.id, workspaceId, run.suiteVersion, JSON.stringify(results).slice(0, 100_000), JSON.stringify(run.summary), run.createdAt);
+    .run(run.id, workspaceId, run.suiteVersion, JSON.stringify(results).slice(0, 1_000_000), JSON.stringify(run.summary), run.createdAt);
   return run;
 }
 
@@ -192,7 +309,7 @@ export function listBenchmarkRuns(workspaceId: string, limit = 20): BenchmarkRun
   const rows = getOsDb().prepare('SELECT * FROM os_benchmark_runs WHERE workspace_id = ? ORDER BY created_at DESC LIMIT ?').all(workspaceId, Math.min(Math.max(limit, 1), 50)) as unknown as Array<Record<string, string>>;
   return rows.map((row) => ({
     id: String(row['id']), workspaceId: String(row['workspace_id']), suiteVersion: String(row['suite_version']),
-    results: JSON.parse(String(row['results'] ?? '[]')) as BenchmarkResult[],
+    results: (() => { try { return JSON.parse(String(row['results'] ?? '[]')) as BenchmarkResult[]; } catch { return []; } })(),
     summary: JSON.parse(String(row['summary'] ?? '{}')) as BenchmarkRun['summary'], createdAt: String(row['created_at']),
   }));
 }

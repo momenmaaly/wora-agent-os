@@ -3,7 +3,7 @@
 **Updated:** 2026-11-24
 **Branch:** `feat/extensions-subsystem`
 **HEAD at audit:** `a5a4e0a` — Remediate Phase 1 security findings F1–F13
-**Latest committed units:** `a221fec` class C tool-boundary guard; `1fe32e4` governance enforcement, durable runtime, problem understanding, independent verification, learning and benchmarks; `07d34f1` algorithm catalog; `6b5c483` verification records; `f965594` action classification
+**Latest committed units:** workstreams 7–12 in progress (audit hardening, concurrent scheduler, formal planning, expanded verification, lesson lifecycle, expanded benchmarks and UI); `a221fec` class C tool-boundary guard; `1fe32e4` governance enforcement, durable runtime, problem understanding, independent verification, learning and benchmarks; `07d34f1` algorithm catalog; `6b5c483` verification records; `f965594` action classification
 **Working tree:** clean after the workstreams 1–6 commit
 **Remote main at audit:** `a1ca08c`
 **Rule:** this file records only work verified by source inspection, commands, tests or live HTTP probes. It is not a marketing status page.
@@ -191,10 +191,94 @@ In dependency order:
 
 ## 6. Current evidence and limitations
 
-After the algorithm unit: **API 120 tests: 119 passed, 1 skipped, 0 failed**. After the verification unit: **API 124 tests: 123 passed, 1 skipped, 0 failed**. After workstreams 1–6: **API 168 tests: 167 passed, 1 skipped, 0 failed**. API typecheck and build pass. Client remains **44/44 passed**, with typecheck and build green.
+After the algorithm unit: **API 120 tests: 119 passed, 1 skipped, 0 failed**. After the verification unit: **API 124 tests: 123 passed, 1 skipped, 0 failed**. After workstreams 1–6: **API 168 tests: 167 passed, 1 skipped, 0 failed**. After workstreams 7–12: **API 183 tests: 182 passed, 1 skipped, 0 failed**. API typecheck and build pass. Client **48/48 passed**, with typecheck and build green.
 
 - The first unit is locally tested; it is not yet exercised by a live external marketplace or a model-driven planner.
 - The selector is deterministic and intentionally conservative. It does not claim semantic understanding of arbitrary natural language.
 - Keyword selection can misclassify ambiguous objectives; structured features or an explicit kind are preferred.
 - No comparative benchmark against alternative algorithms has been run yet.
 - No production deployment, merge or push was performed.
+
+
+## 4j. Workstream 7 — adversarial audit and hardening
+
+**Status:** implemented and tested.
+
+Confirmed defects fixed:
+
+- Approval consumption was a check-then-update race and could be replayed at the tool boundary. Consumption is now a single `BEGIN IMMEDIATE` transaction with a conditional `UPDATE ... WHERE consumed_at IS NULL`; `runTool` consumes the approval itself after schema validation and before execution.
+- The orchestrator previously consumed an approval before claiming the task, losing it if another worker won the claim. Consumption now happens only at the claimed execution boundary.
+- Expired or malformed approval timestamps fail closed; an explicit expiry cannot exceed the workspace approval TTL; a lowered amount budget blocks an already-approved amount at consumption.
+- Checkpoints are validated against their task's workspace and mission and cannot downgrade a completed or failed checkpoint.
+- Lease heartbeats use a conditional update and cannot revive an expired lease; expired-lease recovery does not rewrite completed or cancelled tasks.
+- Checkpoint and plan ownership are workspace-scoped.
+- Lesson evaluation re-reads the real verification record and requires both acceptance-review and artifact-integrity checks; fake evidence is rejected.
+- Lesson promotion is transactional and cannot double-promote.
+- Cancellation observed during a tool run records the run as cancelled and does not accept its result or write a handoff.
+- Orphaned task assignments with no active lease are finalized as blocked instead of leaving the mission running forever.
+- Benchmark schedule correctness now requires the expected shift count and a finite non-negative cost.
+- The independent verifier scans evidence as well as output and rejects successful but empty output.
+
+Evidence: expanded `governance-enforcement.test.ts` (11 tests), `task-queue.test.ts` (11 tests), `lessons.test.ts` (6 tests), `independent-verification.test.ts` (5 tests) and full suite **183 tests: 182 passed, 1 skipped**.
+
+## 4k. Workstream 8 — concurrent mission scheduler
+
+**Status:** implemented on the existing lease layer.
+
+- `executeMission` accepts `concurrency` (1–8) and a per-workspace `execution_limits` setting (`maxConcurrentTasks`, `leaseTtlMs`, `maxAttempts`).
+- Independent tasks run through multiple real workers; each task is claimed atomically and heartbeated.
+- Dependencies are checked against live database state, so a dependent task cannot run before its predecessor completes.
+- Failed dependencies block dependents; independent tasks continue.
+- Lease expiry recovery and orphaned-assignment finalization prevent stuck missions.
+- Cancellation propagates into a running task result.
+- `POST /api/os/missions/:id/execute` accepts `{concurrency}`; `GET/POST /api/os/settings/execution-limits` expose the limits.
+- Evidence: `task-queue.test.ts` now covers independent parallel tasks, dependency ordering, expired-lease recovery, checkpoint integrity and completed-task protection.
+
+Limitations: workers run in one API process; SQLite remains the single-writer boundary. No cross-process scheduler daemon is claimed.
+
+## 4l. Workstream 9 — formal planning
+
+**Status:** implemented and persisted.
+
+- `os/planning.ts` formalizes deterministic tasks into goals, subgoals, preconditions, effects, constraints, resources, uncertainty and risk-weighted cost.
+- Two deterministic alternatives are compared: direct order and risk-first order over the same real task graph. No unimplemented capability is proposed.
+- Critical path and metrics are computed; dependency cycles are rejected.
+- `os_plan_versions` stores every initial and replanned version with reason and actor.
+- `replanMission` proposes a plan from remaining work without mutating the task graph.
+- APIs: `GET /api/os/missions/:id/plans`, `POST /api/os/missions/:id/replan`; mission detail includes plan versions and structural verification.
+- Evidence: `planning.test.ts` (6 tests), including cycle rejection and workspace isolation.
+
+Limitations: costs are risk-weighted planning estimates, not money or wall-clock time; the planner remains deterministic and template-based.
+
+## 4m. Workstream 10 — verification expansion
+
+- New checks: output quality, dependency satisfaction, lease ownership and checkpoint continuity.
+- `verifyPlanExecution` independently checks missing dependencies, premature completion and failure propagation.
+- Mission detail exposes `planVerification`.
+- Evidence: `planning.test.ts`, `independent-verification.test.ts`, `verification.test.ts`.
+
+Limitations: structural verification is not a formal proof; it complements, but does not replace, runtime evidence.
+
+## 4n. Workstream 11 — lesson lifecycle
+
+- Added promotion history (`os_lesson_events`), observed effectiveness, outcome recording, revocation and memory deletion.
+- Statuses: candidate, tested, promoted, rejected, revoked.
+- Revocation is admin-gated at the API and removes the promoted semantic memory while preserving history.
+- No automatic promotion.
+- APIs: history, outcomes and revoke endpoints.
+- Evidence: `lessons.test.ts` (6 tests).
+
+## 4o. Workstream 12 — benchmark expansion and UI
+
+- Suite version 1.1.0 now has **14 fixtures**, including problem understanding, planning comparison, algorithm selection, dependency/failure verification, independent verification accuracy, human-intervention classification and multi-agent plan structure.
+- All 14 pass; sample run: **14/14, 0 failed, 176.296 ms** on the development container. Timing is environment-specific.
+- UI: execution center now exposes pause/cancel/concurrency, problem profile, plan versions, plan verification, leases and independent verification history; System Console exposes execution limits; Intelligence Hub adds lesson lifecycle and benchmark tabs. All controls call real APIs.
+- Evidence: client **48/48**, typecheck and production build green.
+
+## 5. Next eligible tasks
+
+1. Inject approved skill instructions into planner/model context with provenance and token budgets.
+2. Add cross-process scheduler supervision and a real multi-process contention harness.
+3. Add approval quorum/delegation and an expiry sweeper.
+4. Add lesson post-promotion regression monitoring tied to later failed missions.
+5. Add signed artifact verification and an external verifier adapter.

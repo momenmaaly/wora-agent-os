@@ -60,6 +60,8 @@ test('a completed mission produces a persisted verification with checks and evid
   assert.ok(record.evidence);
   assert.ok(record.checks.some((check) => check.id === 'tool-execution' && check.status === 'passed'));
   assert.ok(record.checks.some((check) => check.id === 'acceptance-review' && check.status === 'passed'));
+  assert.ok(record.checks.some((check) => check.id === 'dependency-satisfaction' && check.status === 'passed'));
+  assert.ok(record.checks.some((check) => check.id === 'lease-ownership' && check.status === 'passed'));
   assert.equal(record.failureReason, '');
   assert.equal(record.verifier, 'wora.verifier/independent');
   assert.ok(detail.verifications.some((entry) => entry.id === record.id));

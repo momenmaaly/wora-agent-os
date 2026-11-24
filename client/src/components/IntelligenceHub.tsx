@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  BarChart3, Boxes, BrainCircuit, CheckCircle2, CircleAlert, FlaskConical, LoaderCircle, Play, Plus, Scale, ShieldAlert, Trash2, Wrench,
+  BarChart3, Boxes, BrainCircuit, CheckCircle2, CircleAlert, FlaskConical, GraduationCap, LoaderCircle, Play, Plus, Scale, ShieldAlert, Trash2, Wrench,
 } from 'lucide-react';
 import {
   OsApiError, osApi,
-  type DecisionResult, type MonteCarloResult, type ScheduleRequest, type ScheduleResult, type ToolInfo,
+  type BenchmarkRun, type DecisionResult, type Lesson, type LessonEvent, type MonteCarloResult, type ScheduleRequest, type ScheduleResult, type ToolInfo,
   type TwinRecord, type TwinScenarioResult, type TwinDriverInput,
 } from '../os/api.js';
 
-type Tab = 'schedule' | 'montecarlo' | 'decision' | 'tools' | 'playbooks' | 'twins';
+type Tab = 'schedule' | 'montecarlo' | 'decision' | 'tools' | 'playbooks' | 'twins' | 'lessons' | 'benchmarks';
 
 type EditableEmployee = ScheduleRequest['employees'][number] & { name: string };
 
@@ -202,6 +202,58 @@ export function IntelligenceHub() {
     }
   };
 
+  /* ─── Lessons ─── */
+  const [lessons, setLessons] = useState<Lesson[] | null>(null);
+  const [lessonStatus, setLessonStatus] = useState<Lesson['status'] | 'all'>('all');
+  const [lessonBusy, setLessonBusy] = useState(false);
+  const [lessonHistory, setLessonHistory] = useState<Record<string, LessonEvent[]>>({});
+  const loadLessons = useCallback(async (status: Lesson['status'] | 'all') => {
+    setLessonBusy(true);
+    try { setLessons(await osApi.lessons(status)); }
+    catch (err) { setError(err instanceof OsApiError ? err.message : 'تعذر تحميل الدروس.'); }
+    finally { setLessonBusy(false); }
+  }, []);
+  useEffect(() => { if (tab === 'lessons' && lessons === null) void loadLessons(lessonStatus); }, [tab, lessons, lessonStatus, loadLessons]);
+  async function lessonAction(id: string, action: 'evaluate' | 'promote' | 'reject' | 'revoke' | 'success' | 'failure') {
+    if (lessonBusy) return;
+    setLessonBusy(true);
+    try {
+      if (action === 'evaluate') await osApi.evaluateLesson(id);
+      else if (action === 'promote') await osApi.promoteLesson(id);
+      else if (action === 'reject') { const reason = window.prompt('سبب الرفض؟') ?? ''; if (!reason.trim()) return; await osApi.rejectLesson(id, reason.trim()); }
+      else if (action === 'revoke') { const reason = window.prompt('سبب سحب الدرس من الذاكرة؟') ?? ''; if (!reason.trim()) return; await osApi.revokeLesson(id, reason.trim()); }
+      else await osApi.recordLessonOutcome(id, action === 'success');
+      await loadLessons(lessonStatus);
+      setLessonHistory({});
+    } catch (err) { setError(err instanceof OsApiError ? err.message : 'تعذر تنفيذ إجراء الدرس.'); }
+    finally { setLessonBusy(false); }
+  }
+  async function toggleLessonHistory(id: string) {
+    if (lessonHistory[id]) { setLessonHistory((cur) => { const next = { ...cur }; delete next[id]; return next; }); return; }
+    try { setLessonHistory((cur) => ({ ...cur, [id]: [] })); const events = await osApi.lessonHistory(id); setLessonHistory((cur) => ({ ...cur, [id]: events })); }
+    catch (err) { setError(err instanceof OsApiError ? err.message : 'تعذر تحميل سجل الدرس.'); }
+  }
+
+  /* ─── Benchmarks ─── */
+  const [benchmarks, setBenchmarks] = useState<BenchmarkRun[] | null>(null);
+  const [benchmarkBusy, setBenchmarkBusy] = useState(false);
+  const [benchmarkDomains, setBenchmarkDomains] = useState<Array<{ domain: string; implemented: string[]; partial: string[]; missing: string[] }> | null>(null);
+  const loadBenchmarks = useCallback(async () => {
+    setBenchmarkBusy(true);
+    try {
+      const [runs, domains] = await Promise.all([osApi.benchmarks(), osApi.benchmarkDomains()]);
+      setBenchmarks(runs); setBenchmarkDomains(domains);
+    } catch (err) { setError(err instanceof OsApiError ? err.message : 'تعذر تحميل المقاييس.'); }
+    finally { setBenchmarkBusy(false); }
+  }, []);
+  useEffect(() => { if (tab === 'benchmarks' && benchmarks === null) void loadBenchmarks(); }, [tab, benchmarks, loadBenchmarks]);
+  async function runBenchmarks() {
+    setBenchmarkBusy(true);
+    try { const run = await osApi.runBenchmarks(); setBenchmarks((current) => [run, ...(current ?? [])]); }
+    catch (err) { setError(err instanceof OsApiError ? err.message : 'تعذر تشغيل المقاييس.'); }
+    finally { setBenchmarkBusy(false); }
+  }
+
   /* ─── Tool registry ─── */
   const [tools, setTools] = useState<ToolInfo[] | null>(null);
   useEffect(() => {
@@ -221,6 +273,8 @@ export function IntelligenceHub() {
     { id: 'tools', label: 'سجل الأدوات', icon: Wrench },
     { id: 'playbooks', label: 'Playbooks', icon: CheckCircle2 },
     { id: 'twins', label: 'التوائم الرقمية', icon: Boxes },
+    { id: 'lessons', label: 'الدروس', icon: GraduationCap },
+    { id: 'benchmarks', label: 'المقاييس', icon: BarChart3 },
   ];
 
   return (
@@ -550,6 +604,78 @@ export function IntelligenceHub() {
             ))}
           </div>
           {playbooks?.length === 0 && <div className="os-empty"><CheckCircle2 size={24} aria-hidden="true" /><p>لا توجد playbooks بعد — أكمل مهمة جدولة/تحسين من مركز التنفيذ، وستظهر هنا بعد أن يعيد WORA التحقق منها.</p></div>}
+        </div>
+      )}
+
+      {tab === 'lessons' && (
+        <div className="os-lessons">
+          <div className="os-schedule-head">
+            <div>
+              <h2>دروس من تجارب متحقق منها — بلا ترقية تلقائية</h2>
+              <p className="subtle">الدرس يبدأ مرشحًا، ثم يُقيَّم مقابل سجل تحقق مستقل، ثم يرقّيه مشرف صراحةً إلى ذاكرة دلالية. السحب يحذف الذاكرة ويحفظ السجل. الفاعلية تُحسب من نتائج حقيقية فقط.</p>
+            </div>
+            <div className="os-schedule-actions">
+              <select value={lessonStatus} onChange={(event) => { const next = event.target.value as Lesson['status'] | 'all'; setLessonStatus(next); void loadLessons(next); }} aria-label="تصفية الدروس">
+                {['all', 'candidate', 'tested', 'promoted', 'rejected', 'revoked'].map((status) => <option key={status} value={status}>{status}</option>)}
+              </select>
+              <button type="button" className="button ghost small" onClick={() => void loadLessons(lessonStatus)} disabled={lessonBusy}>تحديث</button>
+            </div>
+          </div>
+          {lessons === null && <p className="os-loading"><LoaderCircle size={16} className="os-spin" aria-hidden="true" /> جارٍ التحميل…</p>}
+          {lessons?.length === 0 && <div className="os-empty"><GraduationCap size={24} aria-hidden="true" /><p>لا توجد دروس بهذه الحالة. تُجمع الدروس المرشحة بعد مهام مكتملة بتحقق مستقل.</p></div>}
+          <div className="os-tool-grid">
+            {lessons?.map((lesson) => (
+              <article key={lesson.id} className="panel panel-pad">
+                <div className="os-memory-item-head"><span className="os-spec-chip">{lesson.status}</span><small className="subtle">v{lesson.version} · ثقة {Math.round(lesson.confidence * 100)}%</small></div>
+                <h3 dir="auto">{lesson.title}</h3>
+                <p dir="auto" className="subtle">{lesson.content.slice(0, 320)}</p>
+                <p className="subtle">الفاعلية: {lesson.outcomeCount ? `${Math.round(lesson.effectiveness * 100)}% من ${lesson.outcomeCount} نتيجة` : 'لا نتائج بعد'} · المصدر: {lesson.provenance}</p>
+                <div className="os-approval-actions">
+                  {lesson.status === 'candidate' && <button type="button" className="button small" disabled={lessonBusy} onClick={() => void lessonAction(lesson.id, 'evaluate')}>تقييم</button>}
+                  {lesson.status === 'tested' && <button type="button" className="button primary small" disabled={lessonBusy} onClick={() => void lessonAction(lesson.id, 'promote')}>ترقية</button>}
+                  {(lesson.status === 'candidate' || lesson.status === 'tested') && <button type="button" className="button ghost small danger" disabled={lessonBusy} onClick={() => void lessonAction(lesson.id, 'reject')}>رفض</button>}
+                  {lesson.status === 'promoted' && <button type="button" className="button ghost small danger" disabled={lessonBusy} onClick={() => void lessonAction(lesson.id, 'revoke')}>سحب</button>}
+                  {lesson.status === 'promoted' && <button type="button" className="button ghost small" disabled={lessonBusy} onClick={() => void lessonAction(lesson.id, 'success')}>نتيجة ناجحة</button>}
+                  {lesson.status === 'promoted' && <button type="button" className="button ghost small danger" disabled={lessonBusy} onClick={() => void lessonAction(lesson.id, 'failure')}>نتيجة فاشلة</button>}
+                  <button type="button" className="button ghost small" onClick={() => void toggleLessonHistory(lesson.id)}>السجل</button>
+                </div>
+                {lessonHistory[lesson.id] && <ul className="os-memory-versions">{lessonHistory[lesson.id]!.map((event) => <li key={event.id}><code>{event.action}</code> · {event.actor} · {new Date(event.createdAt).toLocaleString('ar')}</li>)}</ul>}
+              </article>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {tab === 'benchmarks' && (
+        <div className="os-benchmarks">
+          <div className="os-schedule-head">
+            <div>
+              <h2>مقاييس علمية قابلة للتكرار</h2>
+              <p className="subtle">مقارنات على بيانات ثابتة وأدوات حقيقية. النتائج تقيس الصحة والزمن؛ لا تدّعي تحسينًا غير مقاس. القيود مذكورة مع كل بند.</p>
+            </div>
+            <button type="button" className="button primary" onClick={() => void runBenchmarks()} disabled={benchmarkBusy}>
+              {benchmarkBusy ? <LoaderCircle size={15} className="os-spin" aria-hidden="true" /> : <Play size={15} aria-hidden="true" />} تشغيل المجموعة
+            </button>
+          </div>
+          {benchmarks?.[0] && <p className="subtle">آخر تشغيل: {benchmarks[0].summary.passed}/{benchmarks[0].summary.total} ناجح · {benchmarks[0].summary.totalMs} ms · إصدار {benchmarks[0].suiteVersion}</p>}
+          {benchmarks?.length === 0 && <p className="subtle">لا توجد عمليات بعد — شغّل المجموعة.</p>}
+          {benchmarks?.[0]?.results.map((result) => (
+            <details key={result.id} className="os-handoffs">
+              <summary>{result.correctness ? '✓' : '✗'} {result.name} · {result.timeMs} ms · {result.toolCalls} نداء</summary>
+              <p className="subtle">المرجع: {result.reference}</p>
+              <p className="subtle">البدائل: {result.alternatives.join(' · ')}</p>
+              <ul className="os-acceptance">{result.limitations.map((limitation) => <li key={limitation}>{limitation}</li>)}</ul>
+              <pre className="os-pre">{JSON.stringify(result.evidence, null, 2).slice(0, 3000)}</pre>
+            </details>
+          ))}
+          {benchmarkDomains && (
+            <details className="os-handoffs">
+              <summary>خريطة القدرات العلمية ({benchmarkDomains.length} مجالًا)</summary>
+              <ul className="os-acceptance">
+                {benchmarkDomains.map((domain) => <li key={domain.domain}><strong>{domain.domain}</strong>: منفذ {domain.implemented.length} · جزئي {domain.partial.length} · مفقود {domain.missing.length}</li>)}
+              </ul>
+            </details>
+          )}
         </div>
       )}
 

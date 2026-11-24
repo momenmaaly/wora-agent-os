@@ -54,9 +54,12 @@ export interface OsState {
 
 export interface ApprovalRecord {
   id: string; kind: string; missionId: string | null; taskId: string | null; toolId: string | null;
-  actionSummary: string; risk: string; toolInput: Record<string, unknown>; requestedBy: string;
+  actionSummary: string; risk: string; actionClass?: 'A' | 'B' | 'C'; scope?: string; payloadDigest?: string;
+  expiresAt?: string | null; amountUsd?: number | null;
+  toolInput: Record<string, unknown>; requestedBy: string;
   status: 'pending' | 'approved' | 'denied';
-  decisionNote: string; decidedBy: string | null; decidedAt: string | null; createdAt: string;
+  decisionNote: string; decidedBy: string | null; decidedAt: string | null;
+  consumedAt?: string | null; consumedBy?: string | null; createdAt: string;
 }
 
 export interface Playbook {
@@ -111,7 +114,7 @@ export interface OsRun {
 
 export interface OsTask {
   id: string; orderIndex: number; title: string; objective: string;
-  specialization: string; status: 'created' | 'planned' | 'assigned' | 'running' | 'reviewing' | 'completed' | 'failed' | 'blocked';
+  specialization: string; status: 'created' | 'planned' | 'assigned' | 'running' | 'reviewing' | 'completed' | 'failed' | 'blocked' | 'cancelled';
   agentId: string | null;
   agent: { id: string; name: string; specialization: string } | null;
   dependsOn: string[]; acceptance: string[];
@@ -126,7 +129,7 @@ export interface Handoff {
 
 export interface MissionSummary {
   id: string; objective: string;
-  status: 'planning' | 'running' | 'awaiting_approval' | 'completed' | 'failed';
+  status: 'planning' | 'running' | 'awaiting_approval' | 'completed' | 'failed' | 'cancelled';
   summary: string; requestedBy: string; artifactId: string | null;
   createdAt: string; updatedAt: string;
 }
@@ -136,7 +139,48 @@ export interface MissionDetail extends MissionSummary {
   handoffs: Handoff[];
   approvals: ApprovalRecord[];
   artifacts: Array<{ id: string; name: string; kind: string; created_at?: string; createdAt?: string }>;
+  problemProfile?: ProblemProfile | null;
+  planVersions?: PlanVersion[];
+  planVerification?: { passed: boolean; checks: Array<{ id: string; status: 'passed' | 'failed'; evidence: string }> };
+  verifications?: VerificationRecord[];
 }
+
+export interface ProblemProfile {
+  schemaVersion: string; objective: string; domain: string; plannerTrack: string | null; confidence: number;
+  constraints: string[]; dependencies: string[]; resources: string[]; uncertainty: string[];
+  successCriteria: string[]; missingInformation: string[]; ambiguity: string[];
+  features: Record<string, boolean | number | undefined>;
+  algorithmSelection: { status: string; problemKind: string; confidence: number; rationale: string[]; primary: { name: string; toolId: string | null; guarantee: string; limitations: string[] } | null; alternatives: Array<{ name: string; toolId: string | null }>; missingInformation: string[]; warnings: string[] };
+  fallback: { strategy: string; reason: string }; source: string;
+}
+
+export interface FormalTask {
+  index: number; title: string; goal: string; subgoals: string[]; preconditions: string[]; effects: string[];
+  constraints: string[]; resources: { tool: string | null; permissions: string[]; agentSpecialization: string };
+  uncertainty: { risk: 'low' | 'medium' | 'high'; note: string }; estimatedCost: number; dependsOn: number[];
+}
+
+export interface PlanVersion {
+  id: string; workspaceId: string; missionId: string; version: number; strategy: string;
+  plan: { schemaVersion: string; strategy: string; tasks: FormalTask[]; order: number[]; criticalPath: number[]; metrics: { totalCost: number; maxRisk: string; uncertaintyCount: number; taskCount: number; depth: number }; assumptions: string[]; limitations: string[] };
+  comparison: unknown; reason: string; actor: string; createdAt: string;
+}
+
+export interface TaskLease { taskId: string; missionId: string; workspaceId: string; ownerId: string; acquiredAt: string; heartbeatAt: string; expiresAt: number; updatedAt: string }
+export interface TaskCheckpoint { id: string; taskId: string; missionId: string; workspaceId: string; runId: string; attempt: number; status: string; outputDigest: string; evidenceDigest: string; checkpoint: unknown; createdAt: string; updatedAt: string }
+export interface VerificationRecord { id: string; missionId: string; taskId: string; runId: string; result: string; independence: string; verifier: string; failureReason: string; checks: Array<{ id: string; kind: string; description: string; status: string; evidence?: string }>; createdAt: string }
+export interface ExecutionLimits { maxConcurrentTasks: number; leaseTtlMs: number; maxAttempts: number }
+
+export interface Lesson {
+  id: string; workspaceId: string; missionId: string | null; taskId: string | null; title: string; content: string;
+  evidence: unknown[]; status: 'candidate' | 'tested' | 'promoted' | 'rejected' | 'revoked'; confidence: number; version: number;
+  provenance: string; createdBy: string; promotedBy: string | null; promotedAt: string | null; memoryId: string | null;
+  revokedBy: string | null; revokedAt: string | null; revocationReason: string; outcomeCount: number; successCount: number; effectiveness: number;
+  createdAt: string; updatedAt: string;
+}
+export interface LessonEvent { id: string; workspaceId: string; lessonId: string; action: string; actor: string; detail: unknown; createdAt: string }
+export interface BenchmarkResult { id: string; name: string; toolId: string; problemClass: string; correctness: boolean; quality: number | null; timeMs: number; toolCalls: number; reference: string; alternatives: string[]; limitations: string[]; evidence: Record<string, unknown> }
+export interface BenchmarkRun { id: string; workspaceId: string; suiteVersion: string; results: BenchmarkResult[]; summary: { total: number; passed: number; failed: number; totalMs: number; deterministicFixtures: number }; createdAt: string }
 
 export interface ScheduleRequest {
   employees: Array<{ id: string; name: string; hourlyCost: number; availability: string[]; maxAssignments?: number }>;
@@ -198,7 +242,16 @@ export const osApi = {
 
   missions: () => request<MissionSummary[]>('/missions'),
   mission: (id: string) => request<MissionDetail>(`/missions/${encodeURIComponent(id)}`),
+  executeMission: (id: string, concurrency?: number) => request<MissionDetail>(`/missions/${encodeURIComponent(id)}/execute`, { method: 'POST', body: JSON.stringify(concurrency ? { concurrency } : {}) }),
   resumeMission: (id: string) => request<MissionDetail>(`/missions/${encodeURIComponent(id)}/execute`, { method: 'POST', body: '{}' }),
+  pauseMission: (id: string) => request<MissionDetail>(`/missions/${encodeURIComponent(id)}/pause`, { method: 'POST', body: '{}' }),
+  cancelMission: (id: string) => request<MissionDetail>(`/missions/${encodeURIComponent(id)}/cancel`, { method: 'POST', body: '{}' }),
+  missionLeases: (id: string) => request<TaskLease[]>(`/missions/${encodeURIComponent(id)}/leases`),
+  taskCheckpoints: (id: string) => request<TaskCheckpoint[]>(`/tasks/${encodeURIComponent(id)}/checkpoints`),
+  missionPlans: (id: string) => request<PlanVersion[]>(`/missions/${encodeURIComponent(id)}/plans`),
+  replanMission: (id: string, reason: string) => request<PlanVersion>(`/missions/${encodeURIComponent(id)}/replan`, { method: 'POST', body: JSON.stringify({ reason }) }),
+  missionVerifications: (id: string) => request<VerificationRecord[]>(`/missions/${encodeURIComponent(id)}/verifications`),
+  understandProblem: (objective: string, track?: string) => request<ProblemProfile>('/problems/understand', { method: 'POST', body: JSON.stringify({ objective, ...(track ? { track } : {}) }) }),
   launchMission: (objective: string) =>
     request<MissionDetail>('/missions', { method: 'POST', body: JSON.stringify({ objective }) }),
   artifact: (id: string) => request<{ id: string; name: string; kind: string; content: string }>(`/artifacts/${encodeURIComponent(id)}`),
@@ -226,9 +279,25 @@ export const osApi = {
   decideApproval: (id: string, decision: 'approved' | 'denied', note = '') =>
     request<ApprovalRecord>(`/approvals/${encodeURIComponent(id)}/decide`, { method: 'POST', body: JSON.stringify({ decision, note }) }),
 
+  executionLimits: () => request<ExecutionLimits>('/settings/execution-limits'),
+  setExecutionLimits: (body: Partial<ExecutionLimits>) => request<ExecutionLimits>('/settings/execution-limits', { method: 'POST', body: JSON.stringify(body) }),
+
   autonomy: () => request<{ policy: 'balanced' | 'autopilot' }>('/settings/autonomy'),
   setAutonomy: (policy: 'balanced' | 'autopilot') =>
     request<{ policy: 'balanced' | 'autopilot' }>('/settings/autonomy', { method: 'POST', body: JSON.stringify({ policy }) }),
+
+  lessons: (status: Lesson['status'] | 'all' = 'all') => request<Lesson[]>(`/lessons?status=${status}`),
+  lesson: (id: string) => request<Lesson>(`/lessons/${encodeURIComponent(id)}`),
+  lessonHistory: (id: string) => request<LessonEvent[]>(`/lessons/${encodeURIComponent(id)}/history`),
+  collectLessons: (missionId: string) => request<Lesson[]>('/lessons/collect', { method: 'POST', body: JSON.stringify({ missionId }) }),
+  evaluateLesson: (id: string) => request<Lesson>(`/lessons/${encodeURIComponent(id)}/evaluate`, { method: 'POST', body: '{}' }),
+  promoteLesson: (id: string) => request<Lesson>(`/lessons/${encodeURIComponent(id)}/promote`, { method: 'POST', body: '{}' }),
+  rejectLesson: (id: string, reason: string) => request<Lesson>(`/lessons/${encodeURIComponent(id)}/reject`, { method: 'POST', body: JSON.stringify({ reason }) }),
+  revokeLesson: (id: string, reason: string) => request<Lesson>(`/lessons/${encodeURIComponent(id)}/revoke`, { method: 'POST', body: JSON.stringify({ reason }) }),
+  recordLessonOutcome: (id: string, success: boolean, missionId?: string) => request<Lesson>(`/lessons/${encodeURIComponent(id)}/outcomes`, { method: 'POST', body: JSON.stringify({ success, ...(missionId ? { missionId } : {}) }) }),
+  benchmarks: () => request<BenchmarkRun[]>('/benchmarks/runs'),
+  benchmarkDomains: () => request<Array<{ domain: string; implemented: string[]; partial: string[]; missing: string[] }>>('/benchmarks/domains'),
+  runBenchmarks: () => request<BenchmarkRun>('/benchmarks/run', { method: 'POST', body: '{}' }),
 
   playbooks: () => request<Playbook[]>('/playbooks'),
   deletePlaybook: (id: string) => request<void>(`/playbooks/${encodeURIComponent(id)}`, { method: 'DELETE' }),

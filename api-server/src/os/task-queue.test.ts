@@ -44,6 +44,7 @@ test('heartbeat extends a live lease and an expired lease is recoverable', () =>
   assert.equal(heartbeatTask({ workspaceId: WS, taskId, ownerId: 'worker-b', ttlMs: 5_000 }), false);
   assert.equal(heartbeatTask({ workspaceId: WS, taskId, ownerId: 'worker-a', ttlMs: 5_000 }), true);
   getOsDb().prepare('UPDATE os_task_leases SET expires_at = ? WHERE task_id = ?').run(Date.now() - 1, taskId);
+  assert.equal(heartbeatTask({ workspaceId: WS, taskId, ownerId: 'worker-a', ttlMs: 5_000 }), false);
   assert.equal(recoverExpiredTaskLeases(WS), 1);
   assert.equal(getTaskLease(WS, taskId), null);
   assert.equal(claimTask({ workspaceId: WS, taskId, missionId, ownerId: 'worker-b', ttlMs: 5_000 })?.ownerId, 'worker-b');
@@ -58,6 +59,7 @@ test('checkpoints preserve started and completed states', () => {
   assert.equal(latestTaskCheckpoint(WS, taskId)?.status, 'completed');
   assert.equal(listTaskCheckpoints(WS, taskId).length, 1);
   assert.equal(latestTaskCheckpoint(WS, taskId)?.outputDigest.length, 32);
+  assert.throws(() => checkpointTask({ workspaceId: WS, taskId, missionId, runId: 'run-a', attempt: 1, status: 'started' }), /cannot be downgraded/);
 });
 
 test('a started checkpoint without completion blocks a duplicate side effect', async () => {
@@ -102,6 +104,47 @@ test('restart recovery clears stale leases and remains resumable', async () => {
   assert.equal(getMissionDetail(WS, missionId)!.status, 'failed');
   await executeMission(missionId, 'test');
   assert.equal(getMissionDetail(WS, missionId)!.status, 'completed');
+});
+
+test('an expired lease never rewrites a completed task', async () => {
+  const { missionId, taskId } = missionWithTask();
+  await executeMission(missionId, 'test');
+  getOsDb().prepare('INSERT INTO os_task_leases (task_id, mission_id, workspace_id, owner_id, acquired_at, heartbeat_at, expires_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(taskId, missionId, WS, 'stale-worker', new Date().toISOString(), new Date().toISOString(), Date.now() - 1, new Date().toISOString());
+  recoverExpiredTaskLeases(WS);
+  const task = getMissionDetail(WS, missionId)!.tasks.find((entry) => entry.id === taskId)!;
+  assert.equal(task.status, 'completed');
+  assert.equal(getTaskLease(WS, taskId), null);
+});
+
+test('independent tasks execute concurrently under real leases and the mission completes', async () => {
+  const missionId = createMission({ workspaceId: WS, objective: 'Analyze the objective and extract requirements', actor: 'test' });
+  const db = getOsDb();
+  const tasks = getMissionDetail(WS, missionId)!.tasks;
+  assert.ok(tasks.length >= 2);
+  db.prepare("UPDATE os_tasks SET tool = 'system.diagnostics', tool_input = '{}', depends_on = '[]', specialization = 'computer_diagnostics' WHERE id = ?").run(tasks[0]!.id);
+  db.prepare("UPDATE os_tasks SET tool = 'or.assignment', tool_input = ?, depends_on = '[]', specialization = 'operations_research' WHERE id = ?")
+    .run(JSON.stringify({ costMatrix: [[1, 2], [3, 4]] }), tasks[1]!.id);
+  await executeMission(missionId, 'test', { concurrency: 2, workerId: 'parallel-test' });
+  const detail = getMissionDetail(WS, missionId)!;
+  assert.equal(detail.status, 'completed');
+  assert.ok(detail.tasks.every((task) => task.status === 'completed'));
+  assert.equal(listTaskCheckpoints(WS, tasks[0]!.id).at(-1)?.status, 'completed');
+});
+
+test('a dependency is never executed before its predecessor completes', async () => {
+  const missionId = createMission({ workspaceId: WS, objective: 'Analyze the objective and extract requirements', actor: 'test' });
+  const tasks = getMissionDetail(WS, missionId)!.tasks;
+  assert.ok(tasks.length >= 2);
+  await executeMission(missionId, 'test', { concurrency: 4, workerId: 'dependency-test' });
+  const detail = getMissionDetail(WS, missionId)!;
+  assert.equal(detail.status, 'completed');
+  const byId = new Map(detail.tasks.map((task) => [task.id, task]));
+  for (const task of detail.tasks) {
+    for (const dependency of (task as unknown as { dependsOn?: string[] }).dependsOn ?? []) {
+      assert.equal(byId.get(dependency)?.status, 'completed');
+    }
+  }
 });
 
 test('a completed mission leaves no active lease and records completed checkpoints', async () => {

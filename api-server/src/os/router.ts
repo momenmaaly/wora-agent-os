@@ -18,9 +18,10 @@ import { listPlaybooks, deletePlaybook } from './playbooks.js';
 import { listTools, runTool, getTool } from './tools.js';
 import { listAlgorithms, selectAlgorithm, PROBLEM_KINDS } from './algorithms.js';
 import { listVerifications, getVerification } from './verification.js';
-import { listTaskLeases, listTaskCheckpoints } from './task-queue.js';
+import { listTaskLeases, listTaskCheckpoints, getExecutionLimits, setExecutionLimits } from './task-queue.js';
 import { understandProblem, getProblemProfile } from './problem.js';
-import { listLessons, getLesson, collectCandidateLessons, evaluateLesson, promoteLesson, rejectLesson } from './lessons.js';
+import { listPlanVersions, replanMission } from './planning.js';
+import { listLessons, getLesson, collectCandidateLessons, evaluateLesson, promoteLesson, rejectLesson, revokeLesson, recordLessonOutcome, listLessonEvents } from './lessons.js';
 import { listScientificDomains, runBenchmarkSuite, listBenchmarkRuns } from './benchmarks.js';
 import { classifyAction } from './actions.js';
 import { SPECIALIZATIONS } from './specializations.js';
@@ -141,7 +142,9 @@ export function createOsRouter(options: { production?: boolean } = {}): Router {
     const ADMIN_MUTATIONS: Array<{ method: string; pattern: RegExp }> = [
       { method: 'POST', pattern: /^\/settings\/autonomy$/ },
       { method: 'POST', pattern: /^\/settings\/action-budget$/ },
+      { method: 'POST', pattern: /^\/settings\/execution-limits$/ },
       { method: 'POST', pattern: /^\/lessons\/[^/]+\/promote$/ },
+      { method: 'POST', pattern: /^\/lessons\/[^/]+\/revoke$/ },
       { method: 'POST', pattern: /^\/devices\/pair$/ },
       { method: 'POST', pattern: /^\/devices\/[^/]+\/revoke$/ },
       { method: 'DELETE', pattern: /^\/agents\/[^/]+$/ },
@@ -371,7 +374,8 @@ function highRiskAgentCapabilities(permissions: readonly string[], tools: readon
     if (!rateLimit(workspace(res), 30)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
     const detail = getMissionDetail(workspace(res), param(req, 'id'));
     if (!detail) { res.status(404).json({ error: 'Mission not found' }); return; }
-    await executeMission(detail.id, actor(res));
+    const body = z.object({ concurrency: z.number().int().min(1).max(8).optional() }).strict().parse(req.body ?? {});
+    await executeMission(detail.id, actor(res), { concurrency: body.concurrency });
     res.json(getMissionDetail(workspace(res), detail.id));
   }));
 
@@ -444,9 +448,9 @@ function highRiskAgentCapabilities(permissions: readonly string[], tools: readon
 
   router.get('/lessons', asyncWrap((req, res) => {
     const status = typeof req.query['status'] === 'string' ? req.query['status'] : 'all';
-    const allowed = new Set(['candidate', 'tested', 'promoted', 'rejected', 'all']);
+    const allowed = new Set(['candidate', 'tested', 'promoted', 'rejected', 'revoked', 'all']);
     if (!allowed.has(status)) { res.status(400).json({ error: 'Invalid lesson status' }); return; }
-    res.json(listLessons(workspace(res), { status: status as 'candidate' | 'tested' | 'promoted' | 'rejected' | 'all', limit: 100 }));
+    res.json(listLessons(workspace(res), { status: status as 'candidate' | 'tested' | 'promoted' | 'rejected' | 'revoked' | 'all', limit: 100 }));
   }));
 
   router.get('/lessons/:id', asyncWrap((req, res) => {
@@ -459,6 +463,12 @@ function highRiskAgentCapabilities(permissions: readonly string[], tools: readon
     if (!rateLimit(workspace(res), 20)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
     const body = z.object({ missionId: z.string().trim().min(1).max(100) }).strict().parse(req.body ?? {});
     res.json(collectCandidateLessons(workspace(res), body.missionId, actor(res)));
+  }));
+
+  router.get('/lessons/:id/history', asyncWrap((req, res) => {
+    const lesson = getLesson(workspace(res), param(req, 'id'));
+    if (!lesson) { res.status(404).json({ error: 'Lesson not found' }); return; }
+    res.json(listLessonEvents(workspace(res), lesson.id));
   }));
 
   router.post('/lessons/:id/evaluate', asyncWrap((req, res) => {
@@ -477,6 +487,21 @@ function highRiskAgentCapabilities(permissions: readonly string[], tools: readon
     res.json(rejectLesson(workspace(res), param(req, 'id'), actor(res), body.reason));
   }));
 
+  router.post('/lessons/:id/revoke', asyncWrap((req, res) => {
+    if (!rateLimit(workspace(res), 10)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    const body = z.object({ reason: z.string().trim().min(3).max(500) }).strict().parse(req.body ?? {});
+    res.json(revokeLesson(workspace(res), param(req, 'id'), actor(res), body.reason));
+  }));
+
+  router.post('/lessons/:id/outcomes', asyncWrap((req, res) => {
+    if (!rateLimit(workspace(res), 30)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    const body = z.object({
+      success: z.boolean(), missionId: z.string().trim().max(100).optional(), taskId: z.string().trim().max(100).optional(),
+      evidence: z.unknown().optional(),
+    }).strict().parse(req.body ?? {});
+    res.json(recordLessonOutcome(workspace(res), param(req, 'id'), body, actor(res)));
+  }));
+
   router.post('/problems/understand', asyncWrap((req, res) => {
     if (!rateLimit(workspace(res), 60)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
     const body = z.object({
@@ -492,8 +517,32 @@ function highRiskAgentCapabilities(permissions: readonly string[], tools: readon
     res.json(profile);
   }));
 
+  router.get('/missions/:id/plans', asyncWrap((req, res) => {
+    res.json(listPlanVersions(workspace(res), param(req, 'id')));
+  }));
+
+  router.post('/missions/:id/replan', asyncWrap((req, res) => {
+    if (!rateLimit(workspace(res), 20)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    const body = z.object({ reason: z.string().trim().min(3).max(500) }).strict().parse(req.body ?? {});
+    res.json(replanMission(workspace(res), param(req, 'id'), body.reason, actor(res)));
+  }));
+
   router.get('/settings/action-budget', asyncWrap((_req, res) => {
     res.json(getActionBudget(workspace(res)));
+  }));
+
+  router.get('/settings/execution-limits', asyncWrap((_req, res) => {
+    res.json(getExecutionLimits(workspace(res)));
+  }));
+
+  router.post('/settings/execution-limits', asyncWrap((req, res) => {
+    if (!rateLimit(workspace(res), 10)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    const body = z.object({
+      maxConcurrentTasks: z.number().int().min(1).max(8).optional(),
+      leaseTtlMs: z.number().int().min(1_000).max(600_000).optional(),
+      maxAttempts: z.number().int().min(1).max(5).optional(),
+    }).strict().parse(req.body ?? {});
+    res.json(setExecutionLimits(workspace(res), body, actor(res)));
   }));
 
   router.post('/settings/action-budget', asyncWrap((req, res) => {

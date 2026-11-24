@@ -36,3 +36,9 @@ test('executor failure is recorded and cannot be reported as passed', () => {
   assert.ok(failed.checks.some((check) => check.id === 'executor-result' && check.status === 'failed'));
   assert.ok(failed.failures.includes('process failed'));
 });
+
+test('a successful but empty output fails the independent quality check', () => {
+  const empty = verifyIndependently({ tool: 'text.extract_summary', toolOk: true, output: { summary: '' } });
+  assert.equal(empty.passed, false);
+  assert.ok(empty.checks.some((check) => check.id === 'output-quality' && check.status === 'failed'));
+});

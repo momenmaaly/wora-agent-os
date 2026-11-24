@@ -313,11 +313,42 @@ CREATE TABLE IF NOT EXISTS os_lessons (
   created_by TEXT NOT NULL,
   promoted_by TEXT,
   promoted_at TEXT,
+  memory_id TEXT,
+  revoked_by TEXT,
+  revoked_at TEXT,
+  revocation_reason TEXT NOT NULL DEFAULT '',
+  outcome_count INTEGER NOT NULL DEFAULT 0,
+  success_count INTEGER NOT NULL DEFAULT 0,
+  effectiveness REAL NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS os_lesson_events (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  lesson_id TEXT NOT NULL,
+  action TEXT NOT NULL,
+  actor TEXT NOT NULL,
+  detail TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_os_lesson_events_lesson ON os_lesson_events(workspace_id, lesson_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_os_lessons_ws ON os_lessons(workspace_id, status, created_at);
 CREATE INDEX IF NOT EXISTS idx_os_lessons_mission ON os_lessons(workspace_id, mission_id);
+CREATE TABLE IF NOT EXISTS os_plan_versions (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  mission_id TEXT NOT NULL REFERENCES os_missions(id) ON DELETE CASCADE,
+  version INTEGER NOT NULL,
+  strategy TEXT NOT NULL,
+  plan TEXT NOT NULL,
+  comparison TEXT NOT NULL DEFAULT '{}',
+  reason TEXT NOT NULL DEFAULT '',
+  actor TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE(workspace_id, mission_id, version)
+);
+CREATE INDEX IF NOT EXISTS idx_os_plan_versions_mission ON os_plan_versions(workspace_id, mission_id, version);
 CREATE TABLE IF NOT EXISTS os_problem_profiles (
   workspace_id TEXT NOT NULL,
   mission_id TEXT NOT NULL REFERENCES os_missions(id) ON DELETE CASCADE,
@@ -405,6 +436,13 @@ function migrate(db: OsDatabase): void {
   if (!has('os_approvals', 'amount_usd')) db.exec('ALTER TABLE os_approvals ADD COLUMN amount_usd REAL');
   if (!has('os_approvals', 'consumed_at')) db.exec('ALTER TABLE os_approvals ADD COLUMN consumed_at TEXT');
   if (!has('os_approvals', 'consumed_by')) db.exec('ALTER TABLE os_approvals ADD COLUMN consumed_by TEXT');
+  if (!has('os_lessons', 'memory_id')) db.exec('ALTER TABLE os_lessons ADD COLUMN memory_id TEXT');
+  if (!has('os_lessons', 'revoked_by')) db.exec('ALTER TABLE os_lessons ADD COLUMN revoked_by TEXT');
+  if (!has('os_lessons', 'revoked_at')) db.exec('ALTER TABLE os_lessons ADD COLUMN revoked_at TEXT');
+  if (!has('os_lessons', 'revocation_reason')) db.exec("ALTER TABLE os_lessons ADD COLUMN revocation_reason TEXT NOT NULL DEFAULT ''");
+  if (!has('os_lessons', 'outcome_count')) db.exec('ALTER TABLE os_lessons ADD COLUMN outcome_count INTEGER NOT NULL DEFAULT 0');
+  if (!has('os_lessons', 'success_count')) db.exec('ALTER TABLE os_lessons ADD COLUMN success_count INTEGER NOT NULL DEFAULT 0');
+  if (!has('os_lessons', 'effectiveness')) db.exec('ALTER TABLE os_lessons ADD COLUMN effectiveness REAL NOT NULL DEFAULT 0');
 }
 
 export function nowIso(): string {

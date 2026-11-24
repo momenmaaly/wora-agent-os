@@ -45,9 +45,10 @@ test('the scientific map covers twelve domains with honest gaps', () => {
 
 test('the real benchmark suite passes its fixed fixtures and records limitations', async () => {
   const run = await runBenchmarkSuite(WS);
-  assert.equal(run.summary.total, 7);
+  assert.equal(run.summary.total, 14);
+  assert.equal(run.suiteVersion, '1.1.0');
   assert.equal(run.summary.failed, 0, JSON.stringify(run.results.filter((entry) => !entry.correctness)));
-  assert.equal(run.summary.passed, 7);
+  assert.equal(run.summary.passed, 14);
   for (const entry of run.results) {
     assert.ok(entry.limitations.length > 0, entry.name);
     assert.ok(entry.reference.length > 0, entry.name);
@@ -71,6 +72,6 @@ test('the domain map and run endpoints are real HTTP endpoints', async () => {
   const run = await fetch(`${baseUrl}/benchmarks/run`, { method: 'POST' });
   assert.equal(run.status, 200);
   const body = await run.json() as { summary?: { total?: number; failed?: number } };
-  assert.equal(body.summary?.total, 7);
+  assert.equal(body.summary?.total, 14);
   assert.equal(body.summary?.failed, 0);
 });

@@ -41,11 +41,20 @@ const SECRET_PATTERNS: Array<{ id: string; pattern: RegExp }> = [
 ];
 
 function strings(value: unknown, out: string[] = [], depth = 0): string[] {
-  if (depth > 8 || value == null) return out;
+  if (depth > 20 || value == null) return out;
   if (typeof value === 'string') { out.push(value); return out; }
   if (Array.isArray(value)) { for (const entry of value) strings(entry, out, depth + 1); return out; }
   if (isRecord(value)) { for (const entry of Object.values(value)) strings(entry, out, depth + 1); }
   return out;
+}
+
+function hasContent(value: unknown, depth = 0): boolean {
+  if (depth > 20 || value == null) return false;
+  if (typeof value === 'string') return value.trim().length > 0;
+  if (typeof value === 'number' || typeof value === 'boolean') return true;
+  if (Array.isArray(value)) return value.some((entry) => hasContent(entry, depth + 1));
+  if (isRecord(value)) return Object.values(value).some((entry) => hasContent(entry, depth + 1));
+  return false;
 }
 
 function contractCheck(tool: string | null, output: unknown): IndependentCheck {
@@ -134,10 +143,16 @@ export function verifyIndependently(input: {
     failures.push(input.error ?? 'Tool execution failed');
   }
   checks.push(contractCheck(input.tool, input.output));
+  checks.push({
+    id: 'output-quality', kind: 'quality', description: 'A successful tool produced non-empty output',
+    status: input.toolOk && hasContent(input.output) ? 'passed' : 'failed',
+    evidence: input.toolOk ? (hasContent(input.output) ? 'Output contains content.' : 'Output was empty.') : 'Tool did not succeed.',
+  });
   checks.push(...propertyChecks(input.tool, input.output));
 
   const leaked: string[] = [];
-  for (const text of strings(input.output)) {
+  const scan = [...strings(input.output), ...strings(input.evidence)];
+  for (const text of scan) {
     for (const signature of SECRET_PATTERNS) if (signature.pattern.test(text)) leaked.push(signature.id);
   }
   checks.push({

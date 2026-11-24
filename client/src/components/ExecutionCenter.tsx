@@ -1,19 +1,19 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  ArrowRight, Bot, CheckCircle2, ChevronDown, ChevronLeft, Circle, CircleAlert,
-  Check, Download, FileText, FlaskConical, LoaderCircle, Play, RefreshCw, Rocket, ScrollText, ShieldAlert, ShieldCheck, Wrench, X, XCircle,
+  ArrowRight, Ban, Bot, CheckCircle2, ChevronDown, ChevronLeft, Circle, CircleAlert,
+  Check, Download, FileText, FlaskConical, GitBranch, LoaderCircle, Network, Pause, Play, RefreshCw, Rocket, ScrollText, ShieldAlert, ShieldCheck, Wrench, X, XCircle,
 } from 'lucide-react';
-import { OsApiError, osApi, type ApprovalRecord, type MissionDetail, type MissionSummary, type OsTask } from '../os/api.js';
+import { OsApiError, osApi, type ApprovalRecord, type MissionDetail, type MissionSummary, type OsTask, type TaskLease, type VerificationRecord } from '../os/api.js';
 
 const STATUS_LABEL: Record<MissionSummary['status'], string> = {
-  planning: 'يخطط', running: 'قيد التنفيذ', awaiting_approval: 'بانتظار موافقتك', completed: 'مكتملة', failed: 'متعثرة',
+  planning: 'يخطط', running: 'قيد التنفيذ', awaiting_approval: 'بانتظار موافقتك', completed: 'مكتملة', failed: 'متعثرة', cancelled: 'ملغاة',
 };
 const TASK_STATUS_LABEL: Record<OsTask['status'], string> = {
-  created: 'منشأة', planned: 'مخططة', assigned: 'مُسندة', running: 'قيد التنفيذ', reviewing: 'قيد المراجعة', completed: 'مكتملة', failed: 'فشلت', blocked: 'محظورة',
+  created: 'منشأة', planned: 'مخططة', assigned: 'مُسندة', running: 'قيد التنفيذ', reviewing: 'قيد المراجعة', completed: 'مكتملة', failed: 'فشلت', blocked: 'محظورة', cancelled: 'ملغاة',
 };
 const TASK_ICON: Record<OsTask['status'], typeof CheckCircle2> = {
   created: Circle, planned: Circle, assigned: Circle, running: LoaderCircle, reviewing: LoaderCircle,
-  completed: CheckCircle2, failed: XCircle, blocked: CircleAlert,
+  completed: CheckCircle2, failed: XCircle, blocked: CircleAlert, cancelled: Ban,
 };
 
 const EXAMPLES = [
@@ -97,6 +97,13 @@ function PendingApproval({ approval, onDecide }: { approval: ApprovalRecord; onD
         <span className="os-risk-chip">{approval.toolId ?? approval.kind} · {approval.risk === 'high' ? 'خطورة عالية' : approval.risk}</span>
       </div>
       <p dir="auto">{approval.actionSummary}</p>
+      <div className="os-detail-meta">
+        {approval.actionClass && <span className="os-risk-chip">فئة {approval.actionClass}</span>}
+        {approval.amountUsd != null && <span className="os-risk-chip">مبلغ {approval.amountUsd} USD</span>}
+        {approval.expiresAt && <small className="subtle">تنتهي {new Date(approval.expiresAt).toLocaleString('ar')}</small>}
+      </div>
+      {approval.scope && <small className="subtle mono" dir="ltr">{approval.scope}</small>}
+      {approval.payloadDigest && <small className="subtle mono" dir="ltr">digest: {approval.payloadDigest.slice(0, 24)}…</small>}
       <details>
         <summary>الحمولة الدقيقة (المعتمدة عند الموافقة)</summary>
         <pre className="os-pre">{JSON.stringify(approval.toolInput, null, 2).slice(0, 2500)}</pre>
@@ -120,6 +127,10 @@ export function ExecutionCenter() {
   const [objective, setObjective] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [leases, setLeases] = useState<TaskLease[]>([]);
+  const [verifications, setVerifications] = useState<VerificationRecord[]>([]);
+  const [replanReason, setReplanReason] = useState('');
+  const [concurrency, setConcurrency] = useState(2);
 
   const refreshMissions = useCallback(async () => {
     try {
@@ -133,7 +144,14 @@ export function ExecutionCenter() {
   }, []);
 
   const refreshDetail = useCallback(async (id: string) => {
-    try { setDetail(await osApi.mission(id)); } catch { /* transient poll failure */ }
+    try {
+      const [mission, leaseList, verificationList] = await Promise.all([
+        osApi.mission(id), osApi.missionLeases(id), osApi.missionVerifications(id),
+      ]);
+      setDetail(mission);
+      setLeases(leaseList);
+      setVerifications(verificationList);
+    } catch { /* transient poll failure */ }
   }, []);
 
   useEffect(() => {
@@ -188,6 +206,38 @@ export function ExecutionCenter() {
     } finally {
       setBusy(false);
     }
+  }
+
+  async function pauseMission() {
+    if (!selectedId || busy) return;
+    setBusy(true);
+    try { setDetail(await osApi.pauseMission(selectedId)); await refreshMissions(); }
+    catch (err) { setError(err instanceof OsApiError ? err.message : 'تعذر إيقاف المهمة مؤقتًا.'); }
+    finally { setBusy(false); }
+  }
+
+  async function cancelMission() {
+    if (!selectedId || busy || !window.confirm('إلغاء المهمة نهائيًا؟ ستبقى المخرجات والأدلة السابقة محفوظة، لكن لن يُقبل أي تنفيذ لاحق.')) return;
+    setBusy(true);
+    try { setDetail(await osApi.cancelMission(selectedId)); await refreshMissions(); }
+    catch (err) { setError(err instanceof OsApiError ? err.message : 'تعذر إلغاء المهمة.'); }
+    finally { setBusy(false); }
+  }
+
+  async function executeParallel() {
+    if (!selectedId || busy) return;
+    setBusy(true);
+    try { setDetail(await osApi.executeMission(selectedId, concurrency)); await refreshMissions(); }
+    catch (err) { setError(err instanceof OsApiError ? err.message : 'تعذر تشغيل المهمة.'); }
+    finally { setBusy(false); }
+  }
+
+  async function replan() {
+    if (!selectedId || busy || replanReason.trim().length < 3) return;
+    setBusy(true);
+    try { await osApi.replanMission(selectedId, replanReason.trim()); setReplanReason(''); await refreshDetail(selectedId); }
+    catch (err) { setError(err instanceof OsApiError ? err.message : 'تعذر إنشاء خطة بديلة.'); }
+    finally { setBusy(false); }
   }
 
   async function decideApproval(approvalId: string, decision: 'approved' | 'denied') {
@@ -280,11 +330,28 @@ export function ExecutionCenter() {
                 <h2 dir="auto">{detail.objective}</h2>
                 <div className="os-detail-meta">
                   <StatusPill status={detail.status} />
-                  {(detail.status === 'failed' || detail.status === 'awaiting_approval') && (
+                  {(detail.status === 'failed' || detail.status === 'awaiting_approval' || detail.status === 'planning') && (
                     <button type="button" className="button ghost small" onClick={() => void resumeMission()} disabled={busy}>
                       <Play size={12} aria-hidden="true" /> استئناف
                     </button>
                   )}
+                  {(detail.status === 'running' || detail.status === 'planning') && (
+                    <button type="button" className="button ghost small" onClick={() => void pauseMission()} disabled={busy}>
+                      <Pause size={12} aria-hidden="true" /> إيقاف مؤقت
+                    </button>
+                  )}
+                  {detail.status !== 'completed' && detail.status !== 'cancelled' && (
+                    <button type="button" className="button ghost small danger" onClick={() => void cancelMission()} disabled={busy}>
+                      <Ban size={12} aria-hidden="true" /> إلغاء
+                    </button>
+                  )}
+                  <label className="os-inline-control">
+                    <Network size={12} aria-hidden="true" />
+                    <select value={concurrency} onChange={(event) => setConcurrency(Number(event.target.value))} aria-label="عدد العمال المتوازيين" disabled={busy}>
+                      {[1, 2, 3, 4, 5, 6, 7, 8].map((value) => <option key={value} value={value}>{value}</option>)}
+                    </select>
+                    <button type="button" className="button ghost small" onClick={() => void executeParallel()} disabled={busy}>تشغيل</button>
+                  </label>
                   {taskProgress && <span className="subtle">{taskProgress.done}/{taskProgress.total} مهام مكتملة</span>}
                   <small className="subtle mono">{detail.id}</small>
                 </div>
@@ -305,6 +372,77 @@ export function ExecutionCenter() {
               <ol className="os-task-list">
                 {detail.tasks.map((task) => <li key={task.id}><TaskRow task={task} /></li>)}
               </ol>
+
+              {detail.problemProfile && (
+                <details className="os-handoffs" open>
+                  <summary><GitBranch size={14} aria-hidden="true" /> فهم المشكلة واختيار الخوارزمية</summary>
+                  <div className="os-columns">
+                    <div>
+                      <p><strong>المجال:</strong> {detail.problemProfile.domain} · <strong>الثقة:</strong> {Math.round(detail.problemProfile.confidence * 100)}%</p>
+                      <p><strong>الخوارزمية:</strong> {detail.problemProfile.algorithmSelection.primary?.name ?? 'غير محسومة'} ({detail.problemProfile.algorithmSelection.primary?.toolId ?? '—'})</p>
+                      <p className="subtle">{detail.problemProfile.algorithmSelection.primary?.guarantee ?? detail.problemProfile.algorithmSelection.rationale.join(' ')}</p>
+                    </div>
+                    <div>
+                      <h4>قيود مستخرجة</h4>
+                      <ul className="os-acceptance">{detail.problemProfile.constraints.map((item) => <li key={item}>{item}</li>)}</ul>
+                      <h4>معلومات ناقصة</h4>
+                      <ul className="os-acceptance">{detail.problemProfile.missingInformation.map((item) => <li key={item}>{item}</li>)}</ul>
+                    </div>
+                  </div>
+                </details>
+              )}
+
+              {detail.planVersions && detail.planVersions.length > 0 && (
+                <details className="os-handoffs">
+                  <summary><GitBranch size={14} aria-hidden="true" /> إصدارات الخطة ({detail.planVersions.length})</summary>
+                  {detail.planVersions.map((version) => (
+                    <div key={version.id} className="os-run">
+                      <div className="os-run-head"><strong>v{version.version} · {version.strategy}</strong><span className="subtle">{version.reason}</span><small className="subtle">{new Date(version.createdAt).toLocaleString('ar')}</small></div>
+                      <p className="subtle">تكلفة تقديرية {version.plan.metrics.totalCost} · مخاطر {version.plan.metrics.maxRisk} · مسار حرج {version.plan.criticalPath.join(' → ')}</p>
+                      <ul className="os-acceptance">
+                        {version.plan.tasks.map((task) => <li key={task.index}><strong>{task.title}</strong> — {task.uncertainty.risk} · {task.preconditions.join('؛ ')}</li>)}
+                      </ul>
+                    </div>
+                  ))}
+                </details>
+              )}
+
+              {detail.planVerification && (
+                <details className="os-handoffs">
+                  <summary><ShieldCheck size={14} aria-hidden="true" /> تحقق بنية الخطة ({detail.planVerification.passed ? 'سليم' : 'فشل'})</summary>
+                  <ul className="os-acceptance">
+                    {detail.planVerification.checks.map((check) => <li key={check.id}><strong>{check.id}</strong>: {check.status} — {check.evidence}</li>)}
+                  </ul>
+                </details>
+              )}
+
+              <details className="os-handoffs">
+                <summary><Network size={14} aria-hidden="true" /> العمال والعقود ({leases.length})</summary>
+                {leases.length === 0 ? <p className="subtle">لا يوجد عامل يحمل عقد مهمة الآن.</p> : (
+                  <ul className="os-acceptance">
+                    {leases.map((lease) => <li key={lease.taskId}><code dir="ltr">{lease.ownerId}</code> · مهمة {lease.taskId.slice(0, 8)}… · تنتهي {new Date(lease.expiresAt).toLocaleTimeString('ar')}</li>)}
+                  </ul>
+                )}
+              </details>
+
+              <details className="os-handoffs">
+                <summary><ShieldCheck size={14} aria-hidden="true" /> سجل التحقق المستقل ({verifications.length})</summary>
+                {verifications.map((verification) => (
+                  <div key={verification.id} className="os-run">
+                    <div className="os-run-head"><strong>{verification.result} · {verification.independence}</strong><span className="subtle">{verification.verifier}</span><small className="subtle">{new Date(verification.createdAt).toLocaleString('ar')}</small></div>
+                    {verification.failureReason && <p className="os-issues">{verification.failureReason}</p>}
+                    <ul className="os-acceptance">
+                      {verification.checks.map((check) => <li key={check.id}><strong>{check.id}</strong>: {check.status}{check.evidence ? ` — ${check.evidence}` : ''}</li>)}
+                    </ul>
+                  </div>
+                ))}
+              </details>
+
+              <form className="os-memory-row" onSubmit={(event) => { event.preventDefault(); void replan(); }}>
+                <input dir="auto" value={replanReason} onChange={(event) => setReplanReason(event.target.value)} placeholder="سبب إعادة التخطيط (مثال: فشل مهمة سابقة)" maxLength={500} aria-label="سبب إعادة التخطيط" />
+                <button type="submit" className="button small" disabled={busy || replanReason.trim().length < 3}>إعادة تخطيط المتبقي</button>
+              </form>
+
               {detail.handoffs.length > 0 && (
                 <details className="os-handoffs">
                   <summary><ScrollText size={14} aria-hidden="true" /> عقود التسليم ({detail.handoffs.length})</summary>

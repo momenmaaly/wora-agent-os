@@ -139,7 +139,7 @@ The **Executive Command bar** at the bottom of every screen now launches a real 
 
 ## Test results (this branch)
 
-- `api-server`: full suite **168 tests: 167 pass, 1 skipped** (Mongo integration, opt-in), 0 failed —
+- `api-server`: full suite **183 tests: 182 pass, 1 skipped** (Mongo integration, opt-in), 0 failed —
   `npm test`. Coverage includes solvers, tools, memory isolation + ACL + TTL + version snapshots, registry
   and agent versions, orchestrator journeys 1–5 + failure/approval/denial paths, autonomy policy, device
   pairing, RBAC, boards, digital twins, playbook reuse, SQLite lease fencing, extensions, and the new
@@ -149,7 +149,7 @@ The **Executive Command bar** at the bottom of every screen now launches a real 
   classification and enforcement (binding, replay, expiry, budgets, bypass attempts), durable task
   leases/checkpoints, structured problem understanding, independent verification, lesson promotion
   controls and reproducible benchmarks.
-- `client`: 44/44 pass — `npm test`; typecheck + production build green.
+- `client`: 48/48 pass — `npm test`; typecheck + production build green.
 - Production bundle builds: client `npm run build`, api-server `npm run build`.
 
 ## Six worlds — mapping (honest)
