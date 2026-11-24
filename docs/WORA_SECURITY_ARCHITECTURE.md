@@ -31,7 +31,7 @@ No second registry, database or approval system was created.
 - `security/keyring.ts` loads deployment keys from, in order:
   - `WORA_SECRET_KEYS` JSON: `{"active":"v1","keys":{"v1":"<base64 32 bytes>","v2":"..."}}`
   - `WORA_SECRET_KEY`: one base64 32-byte key, label `env-v1`
-  - `WORA_SECRET_KEY_FILE`: 0600 JSON file with the same shape
+  - `WORA_SECRET_KEY_FILE`: 0600 JSON file with the same shape; group/other-readable files are refused in production
 - Keys are validated as exactly 32 bytes. The active key id is stored with each ciphertext.
 - `security/field-crypto.ts` provides AES-256-GCM envelope encryption:
   - field format: `wora:enc:v1:<keyId>:<base64 iv>:<base64 tag>:<base64 ciphertext>`
