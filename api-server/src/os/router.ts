@@ -22,6 +22,7 @@ import { listVerifications, getVerification } from './verification.js';
 import { listTaskLeases, listTaskCheckpoints, getExecutionLimits, setExecutionLimits } from './task-queue.js';
 import { understandProblem, getProblemProfile } from './problem.js';
 import { listPlanVersions, replanMission } from './planning.js';
+import { previewTeam, getTeamPlan, listSelectionDecisions, performanceReport, requirementsForPlan } from './selection.js';
 import { listLessons, getLesson, collectCandidateLessons, evaluateLesson, promoteLesson, rejectLesson, revokeLesson, recordLessonOutcome, listLessonEvents } from './lessons.js';
 import { redactSecrets } from './secrets.js';
 import { listScientificDomains, runBenchmarkSuite, listBenchmarkRuns } from './benchmarks.js';
@@ -34,7 +35,7 @@ import {
   createAgent, listAgents, getAgent, updateAgent, deleteAgent, ensureSeedAgents,
 } from './registry.js';
 import {
-  createMission, executeMission, getMissionDetail, listMissions, getOsState, markInterruptedMissions, pauseMission, resumeMission, cancelMission,
+  createMission, executeMission, getMissionDetail, listMissions, getOsState, markInterruptedMissions, pauseMission, resumeMission, cancelMission, buildPlan,
 } from './orchestrator.js';
 import { addMemory, listMemories, searchMemories, deleteMemory, listMemoryVersions, MEMORY_SCOPES, type MemoryScope } from './memory.js';
 import { getWorkspaceRole, roleRank, listWorkspaceRoles, setWorkspaceRole, removeWorkspaceRole, type WorkspaceRole } from './roles.js';
@@ -249,6 +250,33 @@ export function createOsRouter(options: { production?: boolean } = {}): Router {
 
   router.get('/specializations', asyncWrap((_req, res) => {
     res.json(SPECIALIZATIONS.map(({ id, label, description, skills, tools, permissions, modelTier }) => ({ id, label, description, skills, tools, permissions, modelTier })));
+  }));
+
+  /* ─── Dynamic capability analysis and team preview ─── */
+  const capabilityAnalysisSchema = z.object({
+    objective: z.string().trim().min(3).max(4000),
+    track: z.string().trim().min(1).max(40).optional(),
+  }).strict();
+
+  router.post('/capabilities/analyze', asyncWrap((req, res) => {
+    if (!rateLimit(workspace(res), 60, req.path)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    const body = capabilityAnalysisSchema.parse(req.body ?? {});
+    const problem = understandProblem({ objective: body.objective, track: body.track });
+    const plan = buildPlan(body.objective, body.track, workspace(res));
+    const requirements = requirementsForPlan(plan, workspace(res));
+    const team = previewTeam(workspace(res), plan, problem);
+    res.json({ problem, plan, requirements, team });
+  }));
+
+  router.get('/capabilities/performance', asyncWrap((req, res) => {
+    const agentId = typeof req.query['agentId'] === 'string' ? req.query['agentId'] : undefined;
+    res.json(performanceReport(workspace(res), agentId));
+  }));
+
+  router.get('/missions/:id/team', asyncWrap((req, res) => {
+    const detail = getMissionDetail(workspace(res), param(req, 'id'));
+    if (!detail) { res.status(404).json({ error: 'Mission not found' }); return; }
+    res.json({ team: getTeamPlan(workspace(res), detail.id), decisions: listSelectionDecisions(workspace(res), detail.id) });
   }));
 
   router.get('/tools', asyncWrap((_req, res) => {

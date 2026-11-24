@@ -15,7 +15,7 @@ import { runTool, getTool, type ToolContext } from './tools.js';
 import { requiresHumanApproval, createApproval, getTaskApproval, listMissionApprovals, actionScope, extractAmount } from './governance.js';
 import { classifyAction } from './actions.js';
 import { maybeDistillPlaybook, findPlaybookFor, recordPlaybookReuse } from './playbooks.js';
-import { listAgents, pickAgent, ensureSeedAgents, type AgentRecord } from './registry.js';
+import { listAgents, getAgent, ensureSeedAgents, type AgentRecord } from './registry.js';
 import { addMemory } from './memory.js';
 import { workspacePath } from './workspace.js';
 import { resolveAndSnapshot, authorizeTool } from '../extensions/capabilities.js';
@@ -29,6 +29,7 @@ import { redactSecrets } from './secrets.js';
 import { openTaskToolInput, sealTaskToolInput } from '../security/task-fields.js';
 import { collectCandidateLessons } from './lessons.js';
 import { comparePlans, savePlanVersion, listPlanVersions, verifyPlanExecution } from './planning.js';
+import { persistTeamPlan, resolveTaskAgent, selectReplacement, recordAgentPerformance, getTeamPlan, listSelectionDecisions } from './selection.js';
 import { logger } from '../lib/logger.js';
 
 export type MissionStatus = 'planning' | 'running' | 'awaiting_approval' | 'paused' | 'cancelled' | 'completed' | 'failed';
@@ -359,6 +360,12 @@ export function createMission(input: { workspaceId: string; objective: string; a
     }
     saveProblemProfile(input.workspaceId, missionId, problem);
     savePlanVersion({ workspaceId: input.workspaceId, missionId, plan: planComparison.preferred, comparison: planComparison, reason: 'initial deterministic plan', actor: input.actor ?? 'user' });
+    try {
+      persistTeamPlan({ workspaceId: input.workspaceId, missionId, plan, taskIds, problem, actor: input.actor ?? 'user' });
+    } catch (err) {
+      logger.warn({ err, missionId }, 'dynamic team selection failed; mission remains executable by capability resolution');
+      audit(db, { workspaceId: input.workspaceId, actor: input.actor ?? 'user', action: 'team.plan.failed', subject: missionId, detail: { reason: err instanceof Error ? err.message.slice(0, 300) : 'unknown' } });
+    }
     db.exec('COMMIT');
   } catch (err) {
     db.exec('ROLLBACK');
@@ -468,9 +475,21 @@ export async function executeMission(missionId: string, actor = 'orchestrator', 
     if (options.workerMode && task.status === 'failed') continue;
     if (options.workerMode && task.status === 'blocked' && /side_effect_uncertain/i.test(task.detail)) continue;
 
-    const agent = pickAgent(mission.workspace_id, task.specialization);
+    const selection = resolveTaskAgent(mission.workspace_id, {
+      id: task.id, title: task.title, objective: task.objective, specialization: task.specialization,
+      tool: task.tool, acceptance: parseJson<string[]>(task.acceptance, []), dependsOn: [], agentId: task.agent_id,
+    }, missionId);
+    let agent = selection.agent;
+    if (!agent && task.agent_id) {
+      // Keep the persisted assignee for an authorization-denial audit when a
+      // capability was revoked after planning. Execution still re-resolves the
+      // profile and refuses the tool; this is not a permission bypass.
+      const persisted = getAgent(mission.workspace_id, task.agent_id);
+      if (persisted?.status === 'active') agent = persisted;
+    }
     if (!agent) {
-      db.prepare('UPDATE os_tasks SET status = ?, detail = detail || ?, updated_at = ? WHERE id = ?').run('failed', ' No agent available for specialization.', nowIso(), task.id);
+      db.prepare('UPDATE os_tasks SET status = ?, detail = ?, updated_at = ? WHERE id = ?')
+        .run('failed', `capability_gap: ${selection.decision.gap ?? 'no eligible agent'}`, nowIso(), task.id);
       failed = true;
       continue;
     }
@@ -565,6 +584,7 @@ export async function executeMission(missionId: string, actor = 'orchestrator', 
       }
 
     let attempt = 1;
+    let reassignments = 0;
     let reviewPassed = false;
     let lastOutput: unknown = null;
     let lastIssues: string[] = [];
@@ -682,6 +702,23 @@ export async function executeMission(missionId: string, actor = 'orchestrator', 
         verifier: 'wora.verifier/independent',
       });
 
+      recordAgentPerformance({
+        workspaceId: mission.workspace_id, agentId: agent.id, taskCategory: task.specialization,
+        result: reviewPassed ? 'passed' : 'failed', durationMs: lastDuration,
+      });
+      if (!reviewPassed && attempt >= maxAttempts && reassignments < 1) {
+        const replacement = selectReplacement(mission.workspace_id, {
+          id: task.id, title: task.title, objective: task.objective, specialization: task.specialization,
+          tool: task.tool, acceptance: parseJson<string[]>(task.acceptance, []), dependsOn: [], agentId: agent.id,
+        }, missionId, agent.id);
+        if (replacement.agent) {
+          audit(db, { workspaceId: mission.workspace_id, actor: 'orchestrator', action: 'task.reassign', subject: task.id, detail: { missionId, from: agent.id, to: replacement.agent.id, reason: lastIssues.join('; ').slice(0, 300) } });
+          agent = replacement.agent;
+          reassignments += 1;
+          attempt = 1;
+          continue;
+        }
+      }
       if (!reviewPassed) attempt += 1;
     }
     if (cancelledMidRun) continue;
@@ -692,8 +729,13 @@ export async function executeMission(missionId: string, actor = 'orchestrator', 
     }
 
     // Mandatory handoff contract
+    const failureCategory = reviewPassed ? null : classifyFailure(lastIssues);
     const contract = {
       taskId: task.id,
+      fromAgent: { id: agent.id, name: agent.name, specialization: agent.specialization },
+      taskState: reviewPassed ? 'completed_verified' : 'failed_review',
+      failureCategory,
+      reassignmentCount: reassignments,
       objective: task.objective,
       inputContext: { tool: task.tool, toolInput: openTaskToolInput(mission.workspace_id, task.id, task.tool_input, {}), mission: missionId },
       workPerformed: reviewPassed
@@ -712,6 +754,7 @@ export async function executeMission(missionId: string, actor = 'orchestrator', 
         permissions: lastProfile?.permissions ?? [],
       },
       dependencies: deps,
+      evidenceReferences: lastEvidence.map((entry) => entry['artifactDigest']).filter(Boolean),
       recommendedNextAction: reviewPassed
         ? (tasks.some((t) => parseJson<string[]>(t.depends_on, []).includes(task.id)) ? 'Hand off to dependent specialists; they will validate this contract before proceeding.' : 'Include in the mission deliverable for user review.')
         : 'Return to the authoring agent for correction or escalate — do not build on this output.',
@@ -750,6 +793,16 @@ async function afterMission(missionId: string, actor: string, mission: { workspa
   } catch (err) {
     logger.warn({ err, missionId }, 'playbook or lesson collection failed (mission unaffected)');
   }
+}
+
+function classifyFailure(issues: string[]): string {
+  const text = issues.join('; ').toLowerCase();
+  if (/permission|not enabled|not assigned|not available|authoriz|denied/u.test(text)) return 'authorization';
+  if (/timed out|timeout/u.test(text)) return 'timeout';
+  if (/invalid input|schema/u.test(text)) return 'invalid_input';
+  if (/no output|empty/u.test(text)) return 'empty_output';
+  if (/infeasible|solver|status:/u.test(text)) return 'solver_failure';
+  return 'verification_failed';
 }
 
 function summarizeDeliverables(tool: string | null, output: unknown): string[] {
@@ -934,6 +987,8 @@ export function getMissionDetail(workspaceId: string, missionId: string) {
     problemProfile: getProblemProfile(workspaceId, missionId),
     planVersions: listPlanVersions(workspaceId, missionId),
     planVerification: verifyPlanExecution(tasks.map((task) => ({ id: task.id, status: task.status, dependsOn: parseJson<string[]>(task.depends_on, []) }))),
+    teamPlan: getTeamPlan(workspaceId, missionId),
+    selectionDecisions: listSelectionDecisions(workspaceId, missionId),
     verifications: listVerifications(workspaceId, { missionId, limit: 100 }),
     capabilitySnapshots: listCapabilitySnapshots(workspaceId, { missionId, limit: 100 }),
     id: mission.id,

@@ -14,6 +14,7 @@ mkdirSync(process.env['WORA_WORKSPACE']!, { recursive: true });
 
 const { createOsRouter } = await import('./router.js');
 const { workspacePath } = await import('./workspace.js');
+const { createMission } = await import('./orchestrator.js');
 const express = (await import('express')).default;
 const WS = 'wora-security-api-test';
 let server: Server;
@@ -78,4 +79,30 @@ test('invalid code repair input is rejected before the engine runs', async () =>
     body: JSON.stringify({ repoPath: '../outside', defect: 'x', testPath: 'test/x.test.mjs', patch: 'not a diff' }),
   });
   assert.equal(response.status, 422);
+});
+
+
+test('dynamic capability analysis, team status and performance endpoints are wired', async () => {
+  const analyze = await fetch(`${baseUrl}/capabilities/analyze`, {
+    method: 'POST', headers,
+    body: JSON.stringify({ objective: 'build and verify a secure web application with tests' }),
+  });
+  assert.equal(analyze.status, 200);
+  const analysis = await analyze.json() as Record<string, unknown>;
+  assert.ok(Array.isArray(analysis['requirements']));
+  const team = analysis['team'] as Record<string, unknown>;
+  assert.ok(Array.isArray(team['decisions']));
+  assert.ok(['single_agent', 'multi_agent', 'capability_gap'].includes(String(team['strategy'])));
+
+  const missionId = createMission({ workspaceId: WS, objective: 'inspect my computer', actor: 'test', track: 'diagnostics' });
+  const status = await fetch(`${baseUrl}/missions/${missionId}/team`, { headers });
+  assert.equal(status.status, 200);
+  const statusBody = await status.json() as Record<string, unknown>;
+  const missionTeam = statusBody['team'] as Record<string, unknown>;
+  assert.ok(missionTeam);
+  assert.equal(missionTeam['strategy'], 'single_agent');
+
+  const performance = await fetch(`${baseUrl}/capabilities/performance`, { headers });
+  assert.equal(performance.status, 200);
+  assert.ok(Array.isArray(await performance.json()));
 });

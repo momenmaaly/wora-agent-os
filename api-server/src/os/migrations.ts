@@ -57,6 +57,39 @@ export const MIGRATIONS: Migration[] = [
     name: 'mission-correlation-id',
     up: (db) => addColumn(db, 'os_missions', 'correlation_id', 'TEXT'),
   },
+  {
+    version: 5,
+    name: 'dynamic-team-orchestration',
+    up: (db) => {
+      db.exec(`CREATE TABLE IF NOT EXISTS os_team_plans (
+        id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL,
+        mission_id TEXT NOT NULL UNIQUE REFERENCES os_missions(id) ON DELETE CASCADE,
+        strategy TEXT NOT NULL, requirements TEXT NOT NULL DEFAULT '[]',
+        decisions TEXT NOT NULL DEFAULT '[]', team TEXT NOT NULL DEFAULT '[]',
+        graph TEXT NOT NULL DEFAULT '{}', gaps TEXT NOT NULL DEFAULT '[]',
+        explanation TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
+      )`);
+      db.exec('CREATE INDEX IF NOT EXISTS idx_os_team_plans_ws ON os_team_plans(workspace_id, created_at)');
+      db.exec(`CREATE TABLE IF NOT EXISTS os_selection_decisions (
+        id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL,
+        mission_id TEXT NOT NULL REFERENCES os_missions(id) ON DELETE CASCADE,
+        task_id TEXT NOT NULL REFERENCES os_tasks(id) ON DELETE CASCADE,
+        requirement_id TEXT NOT NULL, selected_agent_id TEXT,
+        candidates TEXT NOT NULL DEFAULT '[]', explanation TEXT NOT NULL DEFAULT '{}',
+        confidence REAL NOT NULL DEFAULT 0, created_at TEXT NOT NULL,
+        UNIQUE(mission_id, task_id)
+      )`);
+      db.exec('CREATE INDEX IF NOT EXISTS idx_os_selection_decisions_task ON os_selection_decisions(workspace_id, mission_id, task_id)');
+      db.exec(`CREATE TABLE IF NOT EXISTS os_agent_performance (
+        workspace_id TEXT NOT NULL, agent_id TEXT NOT NULL, task_category TEXT NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0, verified_successes INTEGER NOT NULL DEFAULT 0,
+        verified_failures INTEGER NOT NULL DEFAULT 0, total_duration_ms INTEGER NOT NULL DEFAULT 0,
+        last_failure_at TEXT, updated_at TEXT NOT NULL,
+        PRIMARY KEY(workspace_id, agent_id, task_category)
+      )`);
+      db.exec('CREATE INDEX IF NOT EXISTS idx_os_agent_performance_agent ON os_agent_performance(workspace_id, agent_id)');
+    },
+  },
 ];
 
 function tableExists(db: OsDatabase, name: string): boolean {
