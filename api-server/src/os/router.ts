@@ -18,6 +18,7 @@ import { listPlaybooks, deletePlaybook } from './playbooks.js';
 import { listTools, runTool, getTool } from './tools.js';
 import { listAlgorithms, selectAlgorithm, PROBLEM_KINDS } from './algorithms.js';
 import { listVerifications, getVerification } from './verification.js';
+import { classifyAction } from './actions.js';
 import { SPECIALIZATIONS } from './specializations.js';
 import {
   createAgent, listAgents, getAgent, updateAgent, deleteAgent, ensureSeedAgents,
@@ -195,6 +196,18 @@ export function createOsRouter(options: { production?: boolean } = {}): Router {
       }).strict().optional(),
     }).strict().parse(req.body ?? {});
     res.json(selectAlgorithm(body));
+  }));
+
+  router.post('/actions/classify', asyncWrap((req, res) => {
+    if (!rateLimit(workspace(res), 60)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    const body = z.object({
+      action: z.string().trim().min(1).max(500),
+      risk: z.enum(['low', 'medium', 'high']),
+      reversible: z.boolean().optional(), externalCommitment: z.boolean().optional(), spendsMoney: z.boolean().optional(),
+      amountUsd: z.number().finite().min(0).max(100_000_000).optional(), sensitiveData: z.boolean().optional(),
+      scope: z.string().trim().min(1).max(200).optional(), expiresAt: z.string().datetime({ offset: true }).optional(),
+    }).strict().parse(req.body ?? {});
+    res.json(classifyAction(body));
   }));
 
   router.post('/tools/:id/execute', asyncWrap(async (req, res) => {

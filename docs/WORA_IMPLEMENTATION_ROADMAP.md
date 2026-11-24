@@ -66,6 +66,8 @@ Remaining acceptance work:
 
 ## Phase 3 — Action-class governance
 
+**First slice completed:** A/B/C classifier, fail-closed validation, tool and HTTP route. Enforcement, payload-digest binding, budgets and expiry sweeper remain.
+
 Add explicit action classes:
 
 - **A:** safe, authorized reversible action; automatic within scope.
@@ -162,4 +164,4 @@ No result is reported until the fixture and command are committed.
 
 ## Immediate next eligible task
 
-Implement Phase 3 action-class governance on top of the verification record: A/B/C classification, scope, expiry, payload-bound approvals and budget limits.
+Complete Phase 3 enforcement: persist action contracts with payload digest, scope and expiry, enforce B/C before every side effect, and add the budget/expiry machinery.

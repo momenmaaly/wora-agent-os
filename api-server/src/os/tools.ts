@@ -18,6 +18,7 @@ import { openWorkspaceFile, resolveInWorkspace, workspacePath } from './workspac
 import { safeFetch } from '../lib/safe-fetch.js';
 import { solveAssignment, solveEmployeeSchedule, solveLp } from './ortools.js';
 import { PROBLEM_KINDS, selectAlgorithm } from './algorithms.js';
+import { classifyAction } from './actions.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -722,6 +723,43 @@ const algorithmSelectTool: ToolDefinition = {
   },
 };
 
+/* ─── meta.classify_action ─────────────────────────────── */
+const actionClassifySchema = z.object({
+  action: z.string().trim().min(1).max(500),
+  risk: z.enum(['low', 'medium', 'high']),
+  reversible: z.boolean().optional(),
+  externalCommitment: z.boolean().optional(),
+  spendsMoney: z.boolean().optional(),
+  amountUsd: z.number().finite().min(0).max(100_000_000).optional(),
+  sensitiveData: z.boolean().optional(),
+  scope: z.string().trim().min(1).max(200).optional(),
+  expiresAt: z.string().datetime({ offset: true }).optional(),
+}).strict();
+
+const actionClassifyTool: ToolDefinition = {
+  id: 'meta.classify_action',
+  name: 'Action Classification',
+  description: 'Classifies a proposed action as A (safe automatic), B (controlled policy check) or C (explicit payload-bound approval). It does not grant authority or execute the action.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      action: { type: 'string' }, risk: { enum: ['low', 'medium', 'high'] },
+      reversible: { type: 'boolean' }, externalCommitment: { type: 'boolean' }, spendsMoney: { type: 'boolean' },
+      amountUsd: { type: 'number' }, sensitiveData: { type: 'boolean' }, scope: { type: 'string' }, expiresAt: { type: 'string' },
+    },
+    required: ['action', 'risk'],
+    additionalProperties: false,
+  },
+  schema: actionClassifySchema,
+  permission: null,
+  risk: 'low',
+  environment: 'host',
+  timeoutMs: 5_000,
+  execute(input: z.infer<typeof actionClassifySchema>) {
+    return classifyAction(input);
+  },
+};
+
 /* ─── Registry ─────────────────────────────────────────── */
 import { scaffoldWebappTool, hostExecTool } from './scaffold.js';
 
@@ -794,6 +832,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   orgBuildTool,
   agentsCreateTool,
   algorithmSelectTool,
+  actionClassifyTool,
 ];
 
 const toolMap = new Map(ALL_TOOLS.map((tool) => [tool.id, tool]));

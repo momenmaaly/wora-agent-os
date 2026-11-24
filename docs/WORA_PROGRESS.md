@@ -3,8 +3,8 @@
 **Updated:** 2026-11-24
 **Branch:** `feat/extensions-subsystem`
 **HEAD at audit:** `a5a4e0a` — Remediate Phase 1 security findings F1–F13
-**Latest unit:** `07d34f1` — Add deterministic algorithm catalog and selection layer
-**Working tree:** verification unit implemented, pending final commit
+**Latest committed units:** `07d34f1` algorithm catalog; `6b5c483` verification records
+**Working tree:** action-classification unit implemented, pending final commit
 **Remote main at audit:** `a1ca08c`
 **Rule:** this file records only work verified by source inspection, commands, tests or live HTTP probes. It is not a marketing status page.
 
@@ -100,11 +100,27 @@ Evidence: `api-server/src/os/verification.test.ts` (4 tests: passed mission, exp
 
 Limitations: deterministic review only, not external audit; no signed artifact binding; no property-based/performance/API-contract check families yet.
 
+## 4c. Third implementation unit — action classification
+
+**Status:** implemented and locally tested. Pending final commit.
+
+Added `api-server/src/os/actions.ts`:
+
+- A/B/C classification for safe, controlled and high-risk actions.
+- Escalation for high risk, money, external/legal commitment, sensitive disclosure and irreversibility.
+- Expired authorizations are downgraded to B and cannot run automatically.
+- Invalid expiry and negative/oversized amounts fail closed.
+- `meta.classify_action` tool and `POST /api/os/actions/classify`.
+
+Evidence: `api-server/src/os/actions.test.ts` (8 tests). API suite after this unit: **132 tests, 131 passed, 1 skipped, 0 failed**.
+
+Limitation: the classifier is available to agents and the API but is not yet enforced for every orchestrator action. Class C approvals still use the existing high-risk tool gate; payload-digest, scope and expiry binding in the approval table is not yet implemented.
+
 ## 5. Next eligible tasks
 
 In dependency order:
 
-1. **Action-class governance**: A/B/C classification, scope, expiry, payload-bound approvals and budget limits; migrate existing tool-risk approvals without breaking them.
+1. **Complete action-class governance**: persist action contracts with payload digest, scope and expiry; enforce B/C before every side effect; add budget ledger and expiry sweeper.
 2. **Durable execution queue**: lease-based worker claim, heartbeat, retry policy, cancellation and restart recovery; keep SQLite single-writer semantics.
 3. **Problem-understanding model**: structured problem profile with constraints, uncertainty, dependencies and confidence; feed the algorithm selector.
 4. **Skill context injection**: load assigned skill instructions into the planner/agent context with provenance and token budgets.
@@ -112,7 +128,7 @@ In dependency order:
 
 ## 6. Current evidence and limitations
 
-After the algorithm unit: **API 120 tests: 119 passed, 1 skipped, 0 failed**. After the verification unit: **API 124 tests: 123 passed, 1 skipped, 0 failed**. API typecheck and build pass.
+After the algorithm unit: **API 120 tests: 119 passed, 1 skipped, 0 failed**. After the verification unit: **API 124 tests: 123 passed, 1 skipped, 0 failed**. After the action-classification unit: **API 132 tests: 131 passed, 1 skipped, 0 failed**. API typecheck and build pass.
 
 - The first unit is locally tested; it is not yet exercised by a live external marketplace or a model-driven planner.
 - The selector is deterministic and intentionally conservative. It does not claim semantic understanding of arbitrary natural language.
