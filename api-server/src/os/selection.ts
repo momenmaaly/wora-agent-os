@@ -130,7 +130,7 @@ function capabilityProfile(workspaceId: string, agent: AgentRecord): CapabilityP
 function scoreCandidate(workspaceId: string, requirement: CapabilityRequirement, agent: AgentRecord): CandidateEvaluation {
   const spec = specOf(requirement.specialization);
   const profile = capabilityProfile(workspaceId, agent);
-  const skills = new Set(agent.skills);
+  const skills = new Set([...agent.skills, ...(profile?.skills.map((skill) => skill.key) ?? [])]);
   const tools = new Set(profile?.tools ?? agent.tools);
   const permissions = new Set(profile?.permissions ?? agent.permissions);
   const exact = agent.specialization === requirement.specialization;
