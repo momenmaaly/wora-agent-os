@@ -187,7 +187,7 @@ export function promoteLesson(workspaceId: string, lessonId: string, actor: stri
       workspaceId, scope: 'semantic', scopeId: 'lessons', content: lesson.content,
       tags: ['lesson', 'verified'], provenance: `lesson:${lesson.id}`, actor,
       sourceClass: 'promoted-lesson', verificationStatus: 'verified', knowledgeStatus: 'active',
-      reviewedBy: actor, reviewedAt, evidenceDigest: digest(lesson.evidence),
+      reviewedBy: actor, reviewedAt, evidenceDigest: digest(lesson.evidence), evidenceRef: `lesson:${lesson.id}`,
     });
     db.prepare('UPDATE os_lessons SET memory_id = ? WHERE workspace_id = ? AND id = ?').run(memory.id, workspaceId, lessonId);
     recordLessonEvent(workspaceId, lessonId, 'promote', actor, { memoryId: memory.id, version: lesson.version + 1 });
@@ -223,7 +223,7 @@ export function revokeLesson(workspaceId: string, lessonId: string, actor: strin
     if (!lesson) throw new Error('Lesson not found');
     if (lesson.status !== 'promoted') throw new Error('Only a promoted lesson can be revoked');
     if (lesson.memoryId) deleteMemory(workspaceId, lesson.memoryId, actor, { inTransaction: true, skipLinkedLessons: true });
-    db.prepare("UPDATE os_lessons SET status = 'revoked', revoked_by = ?, revoked_at = ?, revocation_reason = ?, updated_at = ? WHERE workspace_id = ? AND id = ? AND status = 'promoted'")
+    db.prepare("UPDATE os_lessons SET status = 'revoked', revoked_by = ?, revoked_at = ?, revocation_reason = ?, updated_at = ?, title = 'Revoked lesson', content = '[content erased on revocation]', evidence = '[]' WHERE workspace_id = ? AND id = ? AND status = 'promoted'")
       .run(actor.slice(0, 200), nowIso(), reason.slice(0, 500), nowIso(), workspaceId, lessonId);
     recordLessonEvent(workspaceId, lessonId, 'revoke', actor, { reason: reason.slice(0, 300), memoryId: lesson.memoryId });
     audit(db, { workspaceId, actor, action: 'lesson.revoke', subject: lessonId, detail: { reason: reason.slice(0, 300), memoryId: lesson.memoryId } });
@@ -298,17 +298,30 @@ export function recordLessonOutcome(workspaceId: string, lessonId: string, input
   if (!['completed', 'failed'].includes(mission.status)) throw new Error('Mission has not reached a terminal state');
   const success = mission.status === 'completed' && mission.outcome_status === 'verified';
   const inconclusive = !success && !(mission.status === 'failed' || mission.outcome_status === 'failed');
-  db.prepare(`UPDATE os_lessons SET
-      outcome_count = outcome_count + 1,
-      success_count = success_count + ?,
-      inconclusive_count = inconclusive_count + ?,
-      effectiveness = CAST(success_count + ? AS REAL) / (outcome_count + 1),
-      updated_at = ? WHERE workspace_id = ? AND id = ?`)
-    .run(success ? 1 : 0, inconclusive ? 1 : 0, success ? 1 : 0, nowIso(), workspaceId, lessonId);
-  recordLessonEvent(workspaceId, lessonId, 'outcome', actor, {
-    success, inconclusive, missionId: mission.id, taskId: application['task_id'] ?? null,
-    applicationId: application['id'], outcomeStatus: mission.outcome_status, evidence: input.evidence ?? null,
-  });
-  audit(db, { workspaceId, actor, action: 'lesson.outcome', subject: lessonId, detail: { success, inconclusive, missionId: mission.id, applicationId: application['id'], outcomeStatus: mission.outcome_status } });
+  const ownsTransaction = !db.isTransaction;
+  if (ownsTransaction) db.exec('BEGIN IMMEDIATE');
+  try {
+    const claim = db.prepare('UPDATE os_lesson_applications SET outcome_recorded_at = ? WHERE workspace_id = ? AND lesson_id = ? AND id = ? AND outcome_recorded_at IS NULL')
+      .run(nowIso(), workspaceId, lessonId, String(application['id']));
+    if (Number(claim.changes ?? 0) !== 1) {
+      throw new Error('This lesson application already has a recorded outcome; outcomes cannot be replayed.');
+    }
+    db.prepare(`UPDATE os_lessons SET
+        outcome_count = outcome_count + 1,
+        success_count = success_count + ?,
+        inconclusive_count = inconclusive_count + ?,
+        effectiveness = CAST(success_count + ? AS REAL) / (outcome_count + 1),
+        updated_at = ? WHERE workspace_id = ? AND id = ?`)
+      .run(success ? 1 : 0, inconclusive ? 1 : 0, success ? 1 : 0, nowIso(), workspaceId, lessonId);
+    recordLessonEvent(workspaceId, lessonId, 'outcome', actor, {
+      success, inconclusive, missionId: mission.id, taskId: application['task_id'] ?? null,
+      applicationId: application['id'], outcomeStatus: mission.outcome_status, evidence: input.evidence ?? null,
+    });
+    audit(db, { workspaceId, actor, action: 'lesson.outcome', subject: lessonId, detail: { success, inconclusive, missionId: mission.id, applicationId: application['id'], outcomeStatus: mission.outcome_status } });
+    if (ownsTransaction) db.exec('COMMIT');
+  } catch (error) {
+    if (ownsTransaction) { try { db.exec('ROLLBACK'); } catch { /* preserve the original error */ } }
+    throw error;
+  }
   return getLesson(workspaceId, lessonId)!;
 }

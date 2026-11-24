@@ -799,7 +799,7 @@ function highRiskAgentCapabilities(permissions: readonly string[], tools: readon
     }));
     const result = addReasoningEvidence({ workspaceId: workspace(res), missionId: detail.id, evidence, actor: actor(res) });
     if (!result) { res.status(404).json({ error: 'Reasoning model not found' }); return; }
-    res.status(201).json(result);
+    res.status(201).json({ ...result, model: filterReasoningForActor(result.model, workspace(res), actor(res)) });
   }));
 
   router.post('/problems/analyze', asyncWrap((req, res) => {

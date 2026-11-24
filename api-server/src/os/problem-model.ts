@@ -183,7 +183,7 @@ export function modelProblem(input: {
     rationale: [...profile.scientific.rationale],
     assumptions: [...profile.scientific.assumptions],
   };
-  return {
+  return redactSecrets({
     schemaVersion: UNIFIED_PROBLEM_SCHEMA_VERSION,
     objective,
     desiredOutcome: profile.successCriteria[0] ?? objective,
@@ -217,7 +217,7 @@ export function modelProblem(input: {
     baseProfile: profile,
     memoryRetrieval,
     createdAt: nowIso(),
-  };
+  }).value as UnifiedProblem;
 }
 
 export function saveProblemModel(workspaceId: string, missionId: string, model: UnifiedProblem): void {
@@ -226,17 +226,18 @@ export function saveProblemModel(workspaceId: string, missionId: string, model: 
   const ts = nowIso();
   if (existing?.id) {
     db.prepare('UPDATE os_problem_models SET model = ?, created_at = ? WHERE workspace_id = ? AND mission_id = ?')
-      .run(JSON.stringify(model).slice(0, 120_000), ts, workspaceId, missionId);
+      .run(JSON.stringify(redactSecrets(model).value).slice(0, 120_000), ts, workspaceId, missionId);
     return;
   }
   db.prepare('INSERT INTO os_problem_models (id, workspace_id, mission_id, model, created_at) VALUES (?, ?, ?, ?, ?)')
-    .run(newId('pmd'), workspaceId, missionId, JSON.stringify(model).slice(0, 120_000), ts);
+    .run(newId('pmd'), workspaceId, missionId, JSON.stringify(redactSecrets(model).value).slice(0, 120_000), ts);
 }
 
 export function getProblemModel(workspaceId: string, missionId: string): UnifiedProblem | null {
   const row = getOsDb().prepare('SELECT model FROM os_problem_models WHERE workspace_id = ? AND mission_id = ?')
     .get(workspaceId, missionId) as { model?: string } | undefined;
-  return row ? parseJson<UnifiedProblem | null>(row.model, null) : null;
+  const parsed = row ? parseJson<UnifiedProblem | null>(row.model, null) : null;
+  return parsed ? redactSecrets(parsed).value : null;
 }
 
 /** Re-authorize persisted memory evidence at read time; revocation must apply to old snapshots. */

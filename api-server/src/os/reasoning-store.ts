@@ -8,6 +8,7 @@
  */
 import { getOsDb, newId, nowIso, parseJson, audit } from './db.js';
 import { updateReasoningWithEvidence } from './reasoning-engine.js';
+import { redactSecrets } from './secrets.js';
 import type { ReasoningChange, ReasoningEvidenceInput, ReasoningModel } from './reasoning-types.js';
 
 interface Row { id: string; workspace_id: string; mission_id: string; version: number; parent_version: number | null; model: string; created_at: string }
@@ -20,7 +21,7 @@ export function saveReasoningModel(model: ReasoningModel): ReasoningModel {
   const max = (db.prepare('SELECT MAX(version) AS version FROM os_reasoning_models WHERE workspace_id = ? AND mission_id = ?')
     .get(workspaceId, missionId) as { version?: number | null } | undefined)?.version ?? 0;
   const version = Math.max(model.version, Number(max) + 1);
-  const stored: ReasoningModel = { ...model, version, parentVersion: Number(max) || null };
+  const stored: ReasoningModel = redactSecrets({ ...model, version, parentVersion: Number(max) || null }).value;
   db.prepare('INSERT INTO os_reasoning_models (id, workspace_id, mission_id, version, parent_version, model, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
     .run(newId('rsn'), workspaceId, missionId, version, stored.parentVersion, JSON.stringify(stored).slice(0, 240_000), nowIso());
   return stored;
@@ -30,7 +31,7 @@ export function getReasoningModel(workspaceId: string, missionId: string): Reaso
   const row = getOsDb().prepare('SELECT model FROM os_reasoning_models WHERE workspace_id = ? AND mission_id = ? ORDER BY version DESC LIMIT 1')
     .get(workspaceId, missionId) as { model?: string } | undefined;
   const parsed = row?.model ? parseJson<ReasoningModel | null>(row.model, null) : null;
-  return parsed && parsed.schemaVersion === '1.0' && Array.isArray(parsed.claims) ? parsed : null;
+  return parsed && parsed.schemaVersion === '1.0' && Array.isArray(parsed.claims) ? redactSecrets(parsed).value : null;
 }
 
 export function listReasoningVersions(workspaceId: string, missionId: string, limit = 20): Array<{ id: string; version: number; parentVersion: number | null; mode: string; createdAt: string; model: ReasoningModel }> {
@@ -39,7 +40,7 @@ export function listReasoningVersions(workspaceId: string, missionId: string, li
   return rows.map((row) => ({
     id: row.id, version: Number(row.version), parentVersion: row.parent_version == null ? null : Number(row.parent_version),
     mode: (parseJson<{ mode?: string }>(row.model, {}).mode ?? 'deterministic'), createdAt: row.created_at,
-    model: parseJson<ReasoningModel>(row.model, {} as ReasoningModel),
+    model: redactSecrets(parseJson<ReasoningModel>(row.model, {} as ReasoningModel)).value,
   }));
 }
 

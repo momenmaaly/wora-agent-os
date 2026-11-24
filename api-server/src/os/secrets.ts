@@ -17,15 +17,17 @@ export const SECRET_PATTERNS: SecretPattern[] = [
   { id: 'github-token', pattern: /gh[pousr]_[A-Za-z0-9]{20,}/ },
   { id: 'github-pat', pattern: /github_pat_[A-Za-z0-9_]{20,}/ },
   { id: 'openai-key', pattern: /sk-[A-Za-z0-9]{20,}/ },
-  { id: 'private-key', pattern: /-----BEGIN (RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----/ },
+  { id: 'private-key', pattern: /-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----[\s\S]*?(?:-----END (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----|$)/u },
   { id: 'slack-token', pattern: /xox[baprs]-[A-Za-z0-9-]{10,}/ },
   { id: 'google-api-key', pattern: /AIza[0-9A-Za-z_-]{35}/ },
   { id: 'stripe-secret', pattern: /sk_(?:live|test)_[0-9A-Za-z]{16,}/ },
   { id: 'jwt', pattern: /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/ },
-  { id: 'authorization-header', pattern: /\b(?:authorization|proxy-authorization)\s*[:=]\s*(?:Bearer\s+|Basic\s+)?[A-Za-z0-9._~+/=-]{8,}/giu },
-  { id: 'cookie-header', pattern: /\b(?:set-cookie|cookie)\s*[:=]\s*[^\n\r]{4,}/giu },
+  { id: 'authorization-header', pattern: /\b(?:authorization|proxy-authorization)\b["']?\s*[:=]\s*["']?(?:Bearer\s+|Basic\s+)?[A-Za-z0-9._~+/=-]{8,}/giu },
+  { id: 'cookie-header', pattern: /\b(?:set-cookie|cookie)\b["']?\s*[:=]\s*[^\n\r]{4,}/giu },
   { id: 'bearer-token', pattern: /\bBearer\s+[A-Za-z0-9._~+/=-]{12,}/gu },
-  { id: 'password-assignment', pattern: /\b(?:password|passwd|pwd|client_secret|secret)\s*[:=]\s*[^\s,;]{4,}/giu },
+  { id: 'password-assignment', pattern: /\b(?:password|passwd|pwd|client[_-]?secret|aws[_-]?secret[_-]?access[_-]?key|secret)\b["']?\s*[:=]\s*["']?[^\s,;"'}]{4,}/giu },
+  { id: 'api-key-header', pattern: /\b(?:x-api-key|api[-_]?key)\b["']?\s*[:=]\s*["']?[A-Za-z0-9._~+/=-]{8,}/giu },
+  { id: 'token-assignment', pattern: /\b(?:access[_-]?token|refresh[_-]?token|id[_-]?token|auth[_-]?token|token)\b["']?\s*[:=]\s*["']?[A-Za-z0-9._~+/=-]{8,}/giu },
 ];
 
 const SECRET_ENV_NAME = /(?:^|_)(?:TOKEN|SECRET|PASSWORD|PASSWD|PRIVATE_KEY|API_KEY|APIKEY|CREDENTIAL|ACCESS_KEY|AUTH_KEY)(?:_|$)/i;

@@ -10,6 +10,7 @@
 import { createHash } from 'node:crypto';
 import { nowIso } from './db.js';
 import { filterProblemForActor, modelProblem, type UnifiedProblem } from './problem-model.js';
+import { redactSecrets } from './secrets.js';
 import { getMemory, type MemoryScope } from './memory.js';
 import { inferProblemStructure, type ProblemStructure } from './problem-structure.js';
 import { listScientificDomains } from './science.js';
@@ -524,7 +525,7 @@ export function buildDeterministicReasoning(input: AnalyzeReasoningInput): Reaso
     : status.configured
       ? { name: status.name, model: status.model, status: 'disabled', notice: 'Provider is configured but not requested for this analysis; deterministic reasoning is active.' }
       : { name: 'none', model: null, status: 'not-configured', notice: status.notice };
-  return {
+  return redactSecrets({
     schemaVersion: REASONING_SCHEMA_VERSION, workspaceId: input.workspaceId ?? null, missionId: input.missionId ?? null,
     version: 1, parentVersion: null, mode: 'deterministic', provider, objective: base.objective, desiredOutcome,
     problemType, domain: base.domain, claims, hypotheses: hypotheses.hypotheses, causalGraph, informationNeeds: needs, methods,
@@ -541,7 +542,7 @@ export function buildDeterministicReasoning(input: AnalyzeReasoningInput): Reaso
     ]),
     changes: [{ version: 1, kind: 'initial', description: 'Initial deterministic reasoning model.', affectedClaimIds: claims.map((item) => item.id), invalidatedAssumptionIds: [], replanRecommended: false, affectedTaskIds: [], createdAt: nowIso() }],
     baseProblem: base, problemStructure: structure, createdAt: nowIso(),
-  };
+  }).value as ReasoningModel;
 }
 
 export async function analyzeProblemReasoning(input: AnalyzeReasoningInput): Promise<ReasoningModel> {
@@ -556,12 +557,12 @@ export async function analyzeProblemReasoning(input: AnalyzeReasoningInput): Pro
     evidence: baseModel.claims.filter((item) => item.kind === 'retrieved-evidence' || item.kind === 'observed-fact').map((item) => ({ id: item.id, statement: item.statement, kind: item.kind, source: item.provenance.source, trust: item.provenance.trust })),
     methods: baseModel.methods.map((item) => ({ id: item.id, name: item.name, status: item.status })), signal: input.signal,
   });
-  if (result.ok && result.proposal) return mergeProposal(baseModel, result.proposal);
-  return {
+  if (result.ok && result.proposal) return redactSecrets(mergeProposal(baseModel, result.proposal)).value;
+  return redactSecrets({
     ...baseModel, mode: 'deterministic-fallback',
     provider: { name: result.provider.name, model: result.provider.model, status: 'failed', notice: `Provider proposal failed (${result.error ?? 'unknown error'}); deterministic reasoning remains active.` },
     limitations: unique([...baseModel.limitations, 'The optional provider failed; no model-assisted conclusion is claimed.']),
-  };
+  }).value as ReasoningModel;
 }
 
 export function summarizeReasoning(model: ReasoningModel): ReasoningSummary {

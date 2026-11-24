@@ -158,6 +158,7 @@ export function addMemory(input: {
   reviewedBy?: string;
   reviewedAt?: string;
   evidenceDigest?: string;
+  evidenceRef?: string;
 }): MemoryRecord {
   if (!MEMORY_SCOPES.includes(input.scope)) throw new Error(`Unknown memory scope "${input.scope}"`);
   if (input.visibility && !['workspace', 'owner'].includes(input.visibility)) throw new Error(`Unknown visibility "${input.visibility}"`);
@@ -187,6 +188,34 @@ export function addMemory(input: {
     policyError('User-provided semantic memory must remain a candidate until reviewed.');
   }
   const db = getOsDb();
+  let verifiedLesson: { id: string; content: string } | null = null;
+  if (verificationStatus === 'verified') {
+    const evidenceRef = String(input.evidenceRef ?? '').trim();
+    if (!evidenceRef.startsWith('lesson:')) {
+      policyError('Verified memory requires a resolvable evidence reference; a digest alone is not proof.', 'MEMORY_EVIDENCE_REQUIRED');
+    }
+    const lessonId = evidenceRef.slice('lesson:'.length);
+    const row = db.prepare('SELECT id, content, evidence, status, promoted_by, memory_id FROM os_lessons WHERE workspace_id = ? AND id = ?')
+      .get(input.workspaceId, lessonId) as { id: string; content: string; evidence: string; status: string; promoted_by: string | null; memory_id: string | null } | undefined;
+    if (!row) policyError('Verified memory evidence lesson was not found in this workspace.', 'MEMORY_EVIDENCE_NOT_FOUND');
+    if (row.status !== 'promoted') policyError('Verified memory evidence must be a promoted lesson.', 'MEMORY_EVIDENCE_INVALID');
+    if (row.memory_id) policyError('This lesson already produced verified memory; promotion cannot be replayed.', 'MEMORY_EVIDENCE_REPLAYED');
+    if (row.promoted_by !== actor) policyError('The reviewer must be the same authorized actor that promoted the lesson.', 'MEMORY_REVIEWER_MISMATCH');
+    if (input.reviewedBy !== actor) policyError('The reviewer identity must match the acting principal.', 'MEMORY_REVIEWER_MISMATCH');
+    if (!input.reviewedAt || Number.isNaN(Date.parse(input.reviewedAt))) policyError('Reviewed timestamp must be a valid ISO timestamp.');
+    const evidence = parseJson<unknown[]>(row.evidence, []);
+    const lessonDigest = createHash('sha256').update(JSON.stringify(evidence ?? null)).digest('hex').slice(0, 32);
+    if (input.evidenceDigest !== lessonDigest) {
+      policyError('Evidence digest does not match the accessible lesson evidence record.', 'MEMORY_EVIDENCE_MISMATCH');
+    }
+    if (redactSecrets(input.content).value !== redactSecrets(row.content).value) {
+      policyError('Verified memory content must match the reviewed lesson content.', 'MEMORY_CONTENT_MISMATCH');
+    }
+    if (roleRank(getWorkspaceRole(input.workspaceId, actor)) < roleRank('admin')) {
+      policyError('Verified knowledge promotion requires an admin or owner review.', 'MEMORY_REVIEW_REQUIRED');
+    }
+    verifiedLesson = { id: row.id, content: row.content };
+  }
   const id = newId('mem');
   const ts = nowIso();
   const content = redactSecrets(input.content).value.slice(0, 20_000);
@@ -194,25 +223,40 @@ export function addMemory(input: {
   const tags = safeTags(rawTags, verificationStatus);
   const provenance = redactSecrets(input.provenance ?? 'user').value;
   const contentDigest = digest(content);
-  db.prepare(
-    'INSERT INTO os_memory (id, workspace_id, scope, scope_id, content, tags, provenance, agent_id, visibility, owner_id, expires_at, source_class, verification_status, knowledge_status, reviewed_by, reviewed_at, evidence_digest, content_digest, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-  ).run(
-    id, input.workspaceId, input.scope, input.scopeId ?? '', content, JSON.stringify(tags), provenance,
-    input.agentId ?? null, visibility, actor, expiresAt, sourceClass, verificationStatus,
-    knowledgeStatus, input.reviewedBy ?? null, input.reviewedAt ?? null, input.evidenceDigest ?? '', contentDigest, ts, ts,
-  );
-  snapshotVersion(db, db.prepare('SELECT * FROM os_memory WHERE id = ?').get(id) as unknown as MemoryRow, 'create', actor);
-  audit(db, {
-    workspaceId: input.workspaceId, actor, action: 'memory.write', subject: id,
-    detail: { scope: input.scope, scopeId: input.scopeId ?? '', visibility, expiresAt, sourceClass, verificationStatus, knowledgeStatus, contentDigest },
-  });
+  const ownsTransaction = Boolean(verifiedLesson) && !db.isTransaction;
+  if (ownsTransaction) db.exec('BEGIN IMMEDIATE');
+  try {
+    db.prepare(
+      'INSERT INTO os_memory (id, workspace_id, scope, scope_id, content, tags, provenance, agent_id, visibility, owner_id, expires_at, source_class, verification_status, knowledge_status, reviewed_by, reviewed_at, evidence_digest, content_digest, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    ).run(
+      id, input.workspaceId, input.scope, input.scopeId ?? '', content, JSON.stringify(tags), provenance,
+      input.agentId ?? null, visibility, actor, expiresAt, sourceClass, verificationStatus,
+      knowledgeStatus, input.reviewedBy ?? null, input.reviewedAt ?? null, input.evidenceDigest ?? '', contentDigest, ts, ts,
+    );
+    if (verifiedLesson) {
+      const claim = db.prepare("UPDATE os_lessons SET memory_id = ? WHERE workspace_id = ? AND id = ? AND memory_id IS NULL AND status = 'promoted'")
+        .run(id, input.workspaceId, verifiedLesson.id);
+      if (Number(claim.changes ?? 0) !== 1) {
+        policyError('This lesson already produced verified memory; promotion cannot be replayed.', 'MEMORY_EVIDENCE_REPLAYED');
+      }
+    }
+    snapshotVersion(db, db.prepare('SELECT * FROM os_memory WHERE id = ?').get(id) as unknown as MemoryRow, 'create', actor);
+    audit(db, {
+      workspaceId: input.workspaceId, actor, action: 'memory.write', subject: id,
+      detail: { scope: input.scope, scopeId: input.scopeId ?? '', visibility, expiresAt, sourceClass, verificationStatus, knowledgeStatus, contentDigest },
+    });
+    if (ownsTransaction) db.exec('COMMIT');
+  } catch (error) {
+    if (ownsTransaction) { try { db.exec('ROLLBACK'); } catch { /* preserve the original error */ } }
+    throw error;
+  }
   return getMemory(input.workspaceId, id, actor)!;
 }
 
 export function getMemory(workspaceId: string, id: string, actor = 'system'): MemoryRecord | null {
   const db = getOsDb();
   const row = db.prepare('SELECT * FROM os_memory WHERE workspace_id = ? AND id = ?').get(workspaceId, id) as MemoryRow | undefined;
-  if (!row || (row.expires_at && row.expires_at <= nowIso()) || !canSee(row, actor)) return null;
+  if (!row || row.knowledge_status === 'revoked' || (row.expires_at && row.expires_at <= nowIso()) || !canSee(row, actor)) return null;
   return rowToMemory(row);
 }
 
@@ -298,7 +342,7 @@ export function deleteMemory(workspaceId: string, id: string, actor = 'system', 
       ? []
       : db.prepare("SELECT id FROM os_lessons WHERE workspace_id = ? AND memory_id = ? AND status = 'promoted'").all(workspaceId, id) as Array<{ id: string }>;
     for (const lesson of linked) {
-      db.prepare("UPDATE os_lessons SET status = 'revoked', revoked_at = ?, revocation_reason = 'linked memory deleted' WHERE workspace_id = ? AND id = ?")
+      db.prepare("UPDATE os_lessons SET status = 'revoked', revoked_at = ?, revocation_reason = 'linked memory deleted', title = 'Revoked lesson', content = '[content erased: linked memory deleted]', evidence = '[]' WHERE workspace_id = ? AND id = ?")
         .run(nowIso(), workspaceId, lesson.id);
       db.prepare('INSERT INTO os_lesson_events (id, workspace_id, lesson_id, action, actor, detail, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
         .run(newId('lse'), workspaceId, lesson.id, 'revoke', actor, JSON.stringify({ reason: 'linked memory deleted', contentDigest }), nowIso());
@@ -315,8 +359,8 @@ export function deleteMemory(workspaceId: string, id: string, actor = 'system', 
 
 export function listMemoryVersions(workspaceId: string, memoryId: string, actor = 'system'): Array<{ id: string; memoryId: string; action: string; actor: string; createdAt: string; content: string; tags: string[] }> | null {
   const db = getOsDb();
-  const parent = db.prepare('SELECT visibility, owner_id, expires_at FROM os_memory WHERE workspace_id = ? AND id = ?').get(workspaceId, memoryId) as Pick<MemoryRow, 'visibility' | 'owner_id' | 'expires_at'> | undefined;
-  if (!parent || (parent.expires_at && parent.expires_at <= nowIso()) || !canSee(parent, actor)) return null;
+  const parent = db.prepare('SELECT visibility, owner_id, expires_at, knowledge_status FROM os_memory WHERE workspace_id = ? AND id = ?').get(workspaceId, memoryId) as Pick<MemoryRow, 'visibility' | 'owner_id' | 'expires_at' | 'knowledge_status'> | undefined;
+  if (!parent || parent.knowledge_status === 'revoked' || (parent.expires_at && parent.expires_at <= nowIso()) || !canSee(parent, actor)) return null;
   const rows = db.prepare('SELECT * FROM os_memory_versions WHERE workspace_id = ? AND memory_id = ? ORDER BY created_at DESC LIMIT 50').all(workspaceId, memoryId) as unknown as MemoryVersionRow[];
   return rows.map((row) => ({
     id: row.id, memoryId: row.memory_id, action: row.action, actor: row.actor, createdAt: row.created_at,

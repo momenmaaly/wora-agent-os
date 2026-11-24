@@ -9,6 +9,7 @@
  */
 import { nowIso } from './db.js';
 import type { OsDatabase } from './db.js';
+import { redactSecrets } from './secrets.js';
 
 export interface Migration {
   version: number;
@@ -23,6 +24,59 @@ const hasColumn = (db: OsDatabase, table: string, column: string): boolean =>
 const addColumn = (db: OsDatabase, table: string, column: string, definition: string): void => {
   if (!hasColumn(db, table, column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
 };
+
+type ScrubTarget = { table: string; columns: string[]; sealedColumns?: string[] };
+
+const LEGACY_SCRUB_TARGETS: ScrubTarget[] = [
+  { table: 'os_memory', columns: ['content', 'tags', 'provenance'] },
+  { table: 'os_memory_versions', columns: ['content', 'tags'] },
+  { table: 'os_lessons', columns: ['title', 'content', 'evidence', 'provenance', 'revocation_reason'] },
+  { table: 'os_lesson_events', columns: ['detail'] },
+  { table: 'os_playbooks', columns: ['name', 'keywords', 'tool_input', 'validation'] },
+  { table: 'os_missions', columns: ['objective', 'summary', 'outcome_evidence'] },
+  { table: 'os_tasks', columns: ['title', 'objective', 'detail', 'tool_input'], sealedColumns: ['tool_input'] },
+  { table: 'os_approvals', columns: ['action_summary', 'target', 'consequences', 'resource_impact', 'tool_input'], sealedColumns: ['tool_input'] },
+  { table: 'os_verifications', columns: ['objective', 'expected_output', 'actual_output', 'evidence', 'checks', 'failure_reason'] },
+  { table: 'os_runs', columns: ['summary', 'evidence', 'issues'] },
+  { table: 'os_reasoning_models', columns: ['model'] },
+  { table: 'os_problem_models', columns: ['model'] },
+  { table: 'os_capability_compositions', columns: ['graph', 'strategies', 'gaps', 'explanation'] },
+  { table: 'os_artifacts', columns: ['content'] },
+  { table: 'os_audit', columns: ['detail'] },
+];
+
+/**
+ * Redacts secrets from rows that predate the redaction boundary. This is an
+ * in-place presentation-layer scrub, not encryption: content that was never
+ * stored in a recognized secret format remains readable in the database file.
+ */
+export function scrubLegacySecrets(db: OsDatabase): { updated: number } {
+  let updated = 0;
+  for (const target of LEGACY_SCRUB_TARGETS) {
+    if (!tableExists(db, target.table)) continue;
+    const columns = target.columns.filter((column) => hasColumn(db, target.table, column));
+    if (!columns.length) continue;
+    const select = `SELECT rowid AS scrub_rowid, ${columns.join(', ')} FROM ${target.table}`;
+    const update = db.prepare(`UPDATE ${target.table} SET ${columns.map((column) => `${column} = ?`).join(', ')} WHERE rowid = ?`);
+    const rows = db.prepare(select).all() as Array<Record<string, unknown>>;
+    for (const row of rows) {
+      let changed = false;
+      const next: Array<string | null> = columns.map((column) => {
+        const value = row[column];
+        if (typeof value !== 'string') return value === null || value === undefined ? null : String(value);
+        if (target.sealedColumns?.includes(column) && value.startsWith('wora:enc:v1:')) return value;
+        const redacted = redactSecrets(value).value;
+        if (redacted !== value) changed = true;
+        return redacted;
+      });
+      if (changed) {
+        update.run(...next, Number(row['scrub_rowid']));
+        updated += 1;
+      }
+    }
+  }
+  return { updated };
+}
 
 export const MIGRATIONS: Migration[] = [
   {
@@ -261,6 +315,14 @@ export const MIGRATIONS: Migration[] = [
         const filtered = tools.filter((tool) => tool !== 'memory.search' && tool !== 'memory.write');
         if (filtered.length !== tools.length) updateAgent.run(JSON.stringify(filtered), nowIso(), row.id);
       }
+    },
+  },
+  {
+    version: 14,
+    name: 'lesson-outcome-idempotency-and-legacy-secret-scrub',
+    up(db) {
+      addColumn(db, 'os_lesson_applications', 'outcome_recorded_at', 'TEXT');
+      scrubLegacySecrets(db);
     },
   },
 ];
