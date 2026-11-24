@@ -329,3 +329,17 @@ Limitations: no user namespaces/real sandbox in this environment; additive migra
 - **Limits:** deterministic scoring, not calibrated probability; no semantic planner, causal inference, MDP/POMDP, MCTS/A*, CP-SAT, robust optimization or formal model checker; no genuine plugin sandbox; SQLite single writer and no distributed mission lease; no auto-created specialist; no UI changes in this workstream.
 
 See `WORA_SCIENTIFIC_EXECUTION.md`, `WORA_DECISION_ENGINE.md`, `WORA_SCIENTIFIC_EVALUATION.md` and the updated scientific/algorithm/runtime docs.
+
+## 4t. Workstream 17 — durable mission leases, crash recovery and multi-agent execution
+
+**Status:** implemented and tested across real OS process boundaries.
+
+- **Mission leases:** additive migration 7 adds `os_mission_leases`; `claimMissionLease`, `heartbeatMissionLease`, `releaseMissionLease`, `recoverExpiredMissionLeases` sit above task leases and prevent two API/worker processes from executing one mission. Workers use the workspace execution TTL for both claim and heartbeat.
+- **Worker:** `scripts/os-worker.ts` marks itself `WORA_OS_ROLE=worker` before the database module loads; the API keeps its advisory singleton writer lease while workers are separate SQLite WAL write clients serialized by transactions and leases. Workers now pick queued `planning` missions and finalize them after execution.
+- **Recovery:** a completed checkpoint is authoritative and recovered without rerunning the tool. A started checkpoint retries only when the tool is idempotent; non-idempotent tools become `side_effect_uncertain` and require manual review. Interrupted attempts are recorded as `interrupted`, not silently completed.
+- **Idempotency:** `tools.ts` declares `idempotent` for core and plugin tools. Core read/analysis tools are retry-safe; plugin tools must opt in explicitly.
+- **Reassignment:** a persisted team assignment is attempted first, then a denied capability triggers one audited reassignment; the new agent is persisted on the task. The capability snapshot still records the authorization boundary.
+- **Adaptive replanning:** `adaptive-replan.ts` transitions assignment and scheduling methods to an equivalent implemented MIP only when it can prove input equivalence, records the prior failure and creates a new plan version. It never relaxes the objective or bypasses permissions. `POST /missions/:id/tasks/:taskId/replan` exposes a member-level manual transition.
+- **Sandbox hardening:** `host.exec` now runs Node tests under `--permission` with workspace-only read/write, no child processes/addons, a scrubbed environment and optional `prlimit` limits. Network isolation is explicitly not claimed.
+- **Evidence:** `process-recovery.test.ts` 1/1 (real API + worker SIGKILL mid-read, dependent task, interrupted and completed runs), `process-faults.test.ts` 5/5 (verification, handoff, start checkpoint, approval wait, two workers), `multi-agent.test.ts` 2/2 (three specialists, ordered handoffs, denied-specialist reassignment), `adaptive-replan.test.ts` 3/3, isolation regression in `security-adversarial.test.ts`. Full API suite **292 tests, 291 passed, 1 skipped, 0 failed**; typecheck and build pass.
+- **Limits:** SQLite serializes writes and there is no cross-host consensus/queue; Node permissions do not restrict network; no user/network namespaces in this environment; non-idempotent crash recovery is manual; adaptive replanning only covers implemented equivalent methods.
