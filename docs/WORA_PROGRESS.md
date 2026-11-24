@@ -305,3 +305,12 @@ Limitations: preview auth only in browser E2E; one Chromium version; SQLite sing
 - **Defects fixed:** `migrate` was unversioned; approval payloads and task inputs were plaintext; extension secret rotation did not exist; session revocation did not exist; stdio MCP had no OS resource ceiling; no code-repair path existed.
 
 Limitations: no user namespaces/real sandbox in this environment; additive migrations require backup rollback; legacy sid-less tokens cannot be revoked; metrics are in-process; code repair produces a patch but does not apply it to the source.
+
+## 4r. Workstream 15 — security audit and dynamic team orchestration
+
+- **Security audit:** `WORA_SECURITY_AUDIT_2026-11.md` records SEC-01..SEC-08. Fixed all-failed rotation false success (SEC-01), rotation read/write TOCTOU (SEC-02) and sealed-JSON silent fallback (SEC-03). Verified AES-GCM nonce/tag/AAD, approval replay/substitution boundaries, session revocation, migration idempotency and MCP resource-limit versus sandbox distinction.
+- **Dynamic selection:** `os/selection.ts` derives capability requirements from real plan tasks, scores registry agents against verified evidence, workload, tools, permissions and relative cost/latency, and returns explainable alternatives. Additive migration 5 adds `os_team_plans`, `os_selection_decisions`, `os_agent_performance`.
+- **Orchestration:** `createMission` persists the team and task assignments; `executeMission` prefers persisted eligible assignments, revalidates revocations, records one bounded reassignment on final failure, enriches handoffs with agent/state/failure category, and records verified performance.
+- **APIs:** `POST /capabilities/analyze`, `GET /capabilities/performance`, `GET /missions/:id/team`; mission detail includes `teamPlan` and `selectionDecisions`.
+- **Evidence:** selection scenarios 12/12; benchmark dynamic accuracy 1.0 vs static 0.0 and expected verified success 1.0 vs 0.0; extension suite 26/26.
+- **Limitations:** no genuine sandbox; no auto-created specialists; no provider-specific model routing; performance evidence is workspace-scoped and starts cold.
