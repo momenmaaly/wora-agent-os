@@ -18,6 +18,7 @@ import { addMemory } from './memory.js';
 import { workspacePath } from './workspace.js';
 import { resolveAndSnapshot, authorizeTool } from '../extensions/capabilities.js';
 import { listRegisteredTools, listCapabilitySnapshots } from '../extensions/store.js';
+import { selectAlgorithm } from './algorithms.js';
 import { logger } from '../lib/logger.js';
 
 export type MissionStatus = 'planning' | 'running' | 'awaiting_approval' | 'completed' | 'failed';
@@ -177,6 +178,7 @@ export function buildPlan(objective: string, track?: string, workspaceId = 'wora
   // Journey 5 — optimization / scheduling / allocation
   if (/optimi[sz]e|schedul|allocat|assignment|linear program|shift|employee|مخزون|جدولة|توزيع|تخصيص/i.test(text)) {
     const wantsEmployees = /employee|shift|staff|workforce|وردية|موظف/i.test(text);
+    const algorithmSelection = selectAlgorithm({ objective: text });
     const sample = sampleEmployeeInput();
     // A validated playbook distilled from an earlier mission outranks the bundled sample.
     const playbook = findPlaybookFor(workspaceId, 'or.employee_schedule', text);
@@ -197,7 +199,7 @@ export function buildPlan(objective: string, track?: string, workspaceId = 'wora
           toolInput: employeeToolInput,
           dependsOn: [],
           acceptance: ['Feasible MIP solution (HiGHS)', 'Demand met per shift', 'Availability respected', 'Min labor cost achieved', 'Constraints independently revalidated'],
-          detail: provenanceDetail,
+          detail: `${provenanceDetail} Algorithm selection: ${algorithmSelection.primary?.name ?? 'unresolved'} (${algorithmSelection.primary?.toolId ?? 'no tool'}); ${algorithmSelection.primary?.guarantee ?? 'No algorithm was selected.'}`,
         }
       : {
           title: 'Solve the assignment problem',
@@ -207,7 +209,7 @@ export function buildPlan(objective: string, track?: string, workspaceId = 'wora
           toolInput: { costMatrix: [[12, 7, 9], [8, 14, 5], [6, 9, 11]], rowLabels: ['option-A', 'option-B', 'option-C'], colLabels: ['candidate-1', 'candidate-2', 'candidate-3'] },
           dependsOn: [],
           acceptance: ['Optimal assignment found (Hungarian algorithm)', 'Total cost reported'],
-          detail: 'No numeric parameters were embedded in the instruction, so a small SAMPLE cost matrix was solved to demonstrate the pipeline. Provide the real matrix in Intelligence.',
+          detail: `No numeric parameters were embedded in the instruction, so a small SAMPLE cost matrix was solved to demonstrate the pipeline. Provide the real matrix in Intelligence. Algorithm selection: ${algorithmSelection.primary?.name ?? 'unresolved'} (${algorithmSelection.primary?.toolId ?? 'no tool'}); ${algorithmSelection.primary?.guarantee ?? 'No algorithm was selected.'}`,
         };
     return [task];
   }

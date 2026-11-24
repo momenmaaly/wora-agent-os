@@ -17,6 +17,7 @@ import { getOsDb, audit, newId, nowIso } from './db.js';
 import { openWorkspaceFile, resolveInWorkspace, workspacePath } from './workspace.js';
 import { safeFetch } from '../lib/safe-fetch.js';
 import { solveAssignment, solveEmployeeSchedule, solveLp } from './ortools.js';
+import { PROBLEM_KINDS, selectAlgorithm } from './algorithms.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -679,6 +680,48 @@ const agentsCreateTool: ToolDefinition = {
   },
 };
 
+/* ─── meta.select_algorithm ────────────────────────────── */
+const algorithmSelectSchema = z.object({
+  objective: z.string().trim().max(4000).optional(),
+  kind: z.enum(PROBLEM_KINDS).optional(),
+  features: z.object({
+    hasCostMatrix: z.boolean().optional(),
+    matrixRows: z.number().int().positive().max(200).optional(),
+    matrixCols: z.number().int().positive().max(200).optional(),
+    hasEmployees: z.boolean().optional(),
+    hasShifts: z.boolean().optional(),
+    hasUncertainty: z.boolean().optional(),
+    hasTimeSeries: z.boolean().optional(),
+    hasCriteria: z.boolean().optional(),
+    hasAlternatives: z.boolean().optional(),
+    integerVariables: z.boolean().optional(),
+    nonlinear: z.boolean().optional(),
+  }).strict().optional(),
+}).strict();
+
+const algorithmSelectTool: ToolDefinition = {
+  id: 'meta.select_algorithm',
+  name: 'Algorithm Selection',
+  description: 'Selects an implemented WORA algorithm from an explicit problem kind, structured features or objective text. Returns required inputs, verification checks, limitations and alternatives; it never invents an unsupported solver.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      objective: { type: 'string', maxLength: 4000 },
+      kind: { enum: PROBLEM_KINDS },
+      features: { type: 'object' },
+    },
+    additionalProperties: false,
+  },
+  schema: algorithmSelectSchema,
+  permission: null,
+  risk: 'low',
+  environment: 'host',
+  timeoutMs: 5_000,
+  execute(input: z.infer<typeof algorithmSelectSchema>) {
+    return selectAlgorithm(input);
+  },
+};
+
 /* ─── Registry ─────────────────────────────────────────── */
 import { scaffoldWebappTool, hostExecTool } from './scaffold.js';
 
@@ -750,6 +793,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   hostExecTool,
   orgBuildTool,
   agentsCreateTool,
+  algorithmSelectTool,
 ];
 
 const toolMap = new Map(ALL_TOOLS.map((tool) => [tool.id, tool]));

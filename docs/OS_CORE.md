@@ -13,8 +13,13 @@ An in-process execution platform behind the product surface:
 - **Persistent agent registry** (`os/registry.ts`): 18 seeded specializations plus user-created and
   organization-created agents. Agents carry identity, role, skills, tools, permissions, model config,
   limits, instructions, status and evaluation criteria. They are executable entities, not profile cards.
-- **Unified tool registry** (`os/tools.ts`, `os/scaffold.ts`, `os/ortools.ts`): 17 tools, each with a
+- **Unified tool registry** (`os/tools.ts`, `os/scaffold.ts`, `os/ortools.ts`): 18 tools, each with a
   JSON-schema contract, risk tier, required permission, environment and timeout; audited on every call.
+  `meta.select_algorithm` exposes the deterministic algorithm selector over the real solvers.
+- **Algorithm selection** (`os/algorithms.ts`): a versioned catalog of implemented algorithms plus a
+  deterministic selector (`meta.select_algorithm`, `GET /api/os/algorithms`, `POST /api/os/algorithms/select`).
+  It returns required inputs, guarantees, verification checks, limitations and alternatives, and fails closed
+  for unknown or nonlinear problems instead of inventing a solver.
 - **Operations Research** (`os/ortools.ts`): HiGHS (WASM LP/MIP solver) behind `or.solve_lp` and
   `or.employee_schedule`; Hungarian algorithm behind `or.assignment`; seeded triangular PERT Monte
   Carlo behind `sim.monte_carlo`; `forecast.linear` (least-squares trend with an 80/20 holdout
@@ -120,13 +125,14 @@ The **Executive Command bar** at the bottom of every screen now launches a real 
 
 ## Test results (this branch)
 
-- `api-server`: 30 OS tests (solvers, tools, memory isolation + ACL + TTL + version snapshots, registry
-  including agent version snapshots, orchestrator journeys 1–5 + failure path + approval pause/approve/deny
-  paths + autonomy policy + device pairing lifecycle + RBAC bootstrap/rank/grant/remove/self-change guards
-  + board round-trip/oversize/clear + digital twin create/observe/scenario + playbook planner preference) —
-  full suite 57 pass / 1 skipped (Mongo integration, opt-in) — `npm test`.
-- `client`: 27/27 pass — `npm test`; typecheck + production build green.
-- Production bundle builds: client `npm run build` (lazy chunks per world), api-server `npm run build`.
+- `api-server`: full suite **120 tests: 119 pass, 1 skipped** (Mongo integration, opt-in), 0 failed —
+  `npm test`. Coverage includes solvers, tools, memory isolation + ACL + TTL + version snapshots, registry
+  and agent versions, orchestrator journeys 1–5 + failure/approval/denial paths, autonomy policy, device
+  pairing, RBAC, boards, digital twins, playbook reuse, SQLite lease fencing, extensions, and the new
+  algorithm catalog/selector (catalog integrity, explicit/feature/keyword precedence, fail-closed
+  nonlinear/unknown handling, tool execution and HTTP routes).
+- `client`: 44/44 pass — `npm test`; typecheck + production build green.
+- Production bundle builds: client `npm run build`, api-server `npm run build`.
 
 ## Six worlds — mapping (honest)
 

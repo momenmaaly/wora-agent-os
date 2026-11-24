@@ -16,6 +16,7 @@ import { getOsDb, parseJson } from './db.js';
 import { getAiUsageSummary } from './usage.js';
 import { listPlaybooks, deletePlaybook } from './playbooks.js';
 import { listTools, runTool, getTool } from './tools.js';
+import { listAlgorithms, selectAlgorithm, PROBLEM_KINDS } from './algorithms.js';
 import { SPECIALIZATIONS } from './specializations.js';
 import {
   createAgent, listAgents, getAgent, updateAgent, deleteAgent, ensureSeedAgents,
@@ -174,6 +175,25 @@ export function createOsRouter(options: { production?: boolean } = {}): Router {
 
   router.get('/tools', asyncWrap((_req, res) => {
     res.json(listTools(workspace(res)));
+  }));
+
+  router.get('/algorithms', asyncWrap((_req, res) => {
+    res.json({ catalogVersion: '2026-11-24.1', algorithms: listAlgorithms() });
+  }));
+
+  router.post('/algorithms/select', asyncWrap((req, res) => {
+    if (!rateLimit(workspace(res), 60)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    const body = z.object({
+      objective: z.string().trim().max(4000).optional(),
+      kind: z.enum(PROBLEM_KINDS).optional(),
+      features: z.object({
+        hasCostMatrix: z.boolean().optional(), matrixRows: z.number().int().positive().max(200).optional(), matrixCols: z.number().int().positive().max(200).optional(),
+        hasEmployees: z.boolean().optional(), hasShifts: z.boolean().optional(), hasUncertainty: z.boolean().optional(),
+        hasTimeSeries: z.boolean().optional(), hasCriteria: z.boolean().optional(), hasAlternatives: z.boolean().optional(),
+        integerVariables: z.boolean().optional(), nonlinear: z.boolean().optional(),
+      }).strict().optional(),
+    }).strict().parse(req.body ?? {});
+    res.json(selectAlgorithm(body));
   }));
 
   router.post('/tools/:id/execute', asyncWrap(async (req, res) => {
