@@ -24,7 +24,7 @@ const { modelProblem, filterProblemForActor } = await import('./problem-model.js
 const { createMission, executeMission, getMissionDetail } = await import('./orchestrator.js');
 const { collectCandidateLessons, evaluateLesson, promoteLesson, revokeLesson, getLesson, recordLessonOutcome } = await import('./lessons.js');
 const { redactSecrets } = await import('./secrets.js');
-const { setWorkspaceRole } = await import('./roles.js');
+const { setWorkspaceRole, removeWorkspaceRole } = await import('./roles.js');
 
 const WS = 'phase8-1-1';
 
@@ -337,6 +337,10 @@ test('HTTP memory routes enforce signed workspace, actor and role boundaries', a
     const memberRecord = await memberWrite.json() as { id: string };
     assert.equal((await call('DELETE', `/memory/${memberRecord.id}`, aliceToken)).status, 204);
     assert.equal((await call('GET', `/memory/${memberRecord.id}/versions`, aliceToken)).status, 404);
+    removeWorkspaceRole('wora-alice', 'alice', 'root');
+    const revokedWrite = await call('POST', '/memory', aliceToken, { scope: 'workspace', content: 'removed member must not write' });
+    assert.equal(revokedWrite.status, 403);
+    assert.equal((await call('GET', `/memory/${record.id}/versions`, aliceToken)).status, 200);
   } finally {
     server.close();
   }
