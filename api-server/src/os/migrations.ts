@@ -171,6 +171,16 @@ export const MIGRATIONS: Migration[] = [
       db.exec('CREATE INDEX IF NOT EXISTS idx_os_capability_compositions_ws ON os_capability_compositions(workspace_id, created_at)');
     },
   },
+  {
+    version: 10,
+    name: 'semantic-contracts-and-outcome-verification',
+    up(db) {
+      if (tableExists(db, 'ext_tools')) addColumn(db, 'ext_tools', 'semantic_contract', 'TEXT');
+      addColumn(db, 'os_tasks', 'input_bindings', "TEXT NOT NULL DEFAULT '[]'");
+      addColumn(db, 'os_missions', 'outcome_status', "TEXT NOT NULL DEFAULT 'unverified'");
+      addColumn(db, 'os_missions', 'outcome_evidence', "TEXT NOT NULL DEFAULT '{}'");
+    },
+  },
 ];
 
 function tableExists(db: OsDatabase, name: string): boolean {

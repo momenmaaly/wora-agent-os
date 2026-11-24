@@ -58,13 +58,13 @@ function domainOf(text: string): { domain: ProblemDomain; track: string | null; 
   if (/forecast|time series|statistic|data pipeline|analytics|dataset|تنبؤ|بيانات/i.test(text)) {
     return { domain: 'data_intelligence', track: 'data', confidence: 0.75 };
   }
-  if (/organization|organisation|company|marketplace|startup|منظمة|شركة/i.test(text)) {
+  if (/organization|organisation|company|marketplace|startup|retailer|subscription service|go-to-market|منظمة|شركة|متجر/i.test(text)) {
     return { domain: 'organization', track: 'organization', confidence: 0.75 };
   }
   if (/research|investigate|study|source|url|بحث/i.test(text)) {
     return { domain: 'research', track: 'research', confidence: 0.7 };
   }
-  if (/(build|create|develop|make|scaffold|implement)\b.{0,80}\b(web\s*(app|application|site)|application|app|platform|portal|saas|code|software|api)\b|تطبيق ويب|موقع|برمج/i.test(text)) {
+  if (/(build|create|develop|make|scaffold|implement|deliver|coordinate|architect)\b.{0,100}\b(web\s*(app|application|site)|application|app|platform|portal|saas|code|software|api)\b|software architecture|qa specialist|specialist agents|تطبيق ويب|موقع|برمج/i.test(text)) {
     return { domain: 'software_engineering', track: 'webapp', confidence: 0.75 };
   }
   return { domain: 'general', track: null, confidence: 0.35 };

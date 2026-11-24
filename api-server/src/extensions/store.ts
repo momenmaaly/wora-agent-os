@@ -119,6 +119,7 @@ export interface RegisteredTool {
   description: string;
   inputSchema: Record<string, unknown>;
   outputSchema: Record<string, unknown> | null;
+  semanticContract: Record<string, unknown> | null;
   permissions: string[];
   timeoutMs: number;
   risk: 'low' | 'medium' | 'high';
@@ -581,7 +582,7 @@ export function removeInstallation(workspaceId: string, id: string, actor: strin
 /* ─── Plugin tools ──────────────────────────────────────── */
 export function replaceTools(workspaceId: string, installationId: string, pluginKey: string, packageId: string, tools: Array<{
   toolId: string; toolKey: string; name: string; description: string; inputSchema: Record<string, unknown>;
-  outputSchema?: Record<string, unknown>; permissions: string[]; timeoutMs: number; risk: 'low' | 'medium' | 'high';
+  outputSchema?: Record<string, unknown>; semanticContract?: Record<string, unknown>; permissions: string[]; timeoutMs: number; risk: 'low' | 'medium' | 'high';
   executionMode: RegisteredTool['executionMode'];
 }>): RegisteredTool[] {
   ensureExtensionSchema();
@@ -592,18 +593,18 @@ export function replaceTools(workspaceId: string, installationId: string, plugin
   try {
     db.prepare('DELETE FROM ext_tools WHERE installation_id = ?').run(installationId);
     const insert = db.prepare(
-      `INSERT INTO ext_tools (id, workspace_id, installation_id, package_id, plugin_key, tool_key, tool_id, name, description, input_schema, output_schema, permissions, timeout_ms, risk, execution_mode, status, health, audit, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 'unknown', 1, ?, ?)`,
+      `INSERT INTO ext_tools (id, workspace_id, installation_id, package_id, plugin_key, tool_key, tool_id, name, description, input_schema, output_schema, semantic_contract, permissions, timeout_ms, risk, execution_mode, status, health, audit, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 'unknown', 1, ?, ?)`,
     );
     for (const tool of tools) {
       const id = newId('tl');
       insert.run(id, workspaceId, installationId, packageId, pluginKey, tool.toolKey, tool.toolId, tool.name, tool.description,
         JSON.stringify(tool.inputSchema), tool.outputSchema ? JSON.stringify(tool.outputSchema) : null,
-        JSON.stringify(tool.permissions), tool.timeoutMs, tool.risk, tool.executionMode, ts, ts);
+        tool.semanticContract ? JSON.stringify(tool.semanticContract) : null, JSON.stringify(tool.permissions), tool.timeoutMs, tool.risk, tool.executionMode, ts, ts);
       created.push({
         id, workspaceId, installationId, packageId, pluginKey, toolKey: tool.toolKey, toolId: tool.toolId,
         name: tool.name, description: tool.description, inputSchema: tool.inputSchema,
-        outputSchema: tool.outputSchema ?? null, permissions: tool.permissions, timeoutMs: tool.timeoutMs,
+        outputSchema: tool.outputSchema ?? null, semanticContract: tool.semanticContract ?? null, permissions: tool.permissions, timeoutMs: tool.timeoutMs,
         risk: tool.risk, executionMode: tool.executionMode, status: 'active', health: 'unknown', audit: true,
       });
     }
@@ -624,6 +625,7 @@ function toolFromRow(row: ToolRow): RegisteredTool {
     toolId: String(row['tool_id']), name: String(row['name']), description: String(row['description']),
     inputSchema: parseJson<Record<string, unknown>>(String(row['input_schema'] ?? '{}'), {}),
     outputSchema: row['output_schema'] ? parseJson<Record<string, unknown>>(String(row['output_schema']), {}) : null,
+    semanticContract: row['semantic_contract'] ? parseJson<Record<string, unknown>>(String(row['semantic_contract']), {}) : null,
     permissions: parseJson<string[]>(String(row['permissions'] ?? '[]'), []),
     timeoutMs: Number(row['timeout_ms'] ?? 15_000), risk: String(row['risk']) as RegisteredTool['risk'],
     executionMode: String(row['execution_mode']) as RegisteredTool['executionMode'],

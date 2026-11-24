@@ -428,6 +428,19 @@ export function ExecutionCenter() {
                 </details>
               )}
 
+              {detail.outcomeVerification && (
+                <div className="os-subpanel" aria-label="التحقق من النتيجة">
+                  <h3><FlaskConical size={15} aria-hidden="true" /> التحقق المستقل من النتيجة</h3>
+                  <p><strong>الحالة:</strong> {detail.outcomeStatus ?? detail.outcomeVerification.status}</p>
+                  {(detail.outcomeVerification.reasons ?? []).length > 0 && <ul className="os-acceptance">{(detail.outcomeVerification.reasons ?? []).map((reason) => <li key={reason}>{reason}</li>)}</ul>}
+                  <ul className="os-acceptance">
+                    {(detail.outcomeVerification.checks ?? []).slice(0, 24).map((check) => (
+                      <li key={check.id}><strong>{check.status}</strong> · {check.description} <span className="subtle">({check.evidence})</span></li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
               {detail.composition && (
                 <details className="os-handoffs" open>
                   <summary><Network size={14} aria-hidden="true" /> تركيب القدرات والاستراتيجية المختارة</summary>

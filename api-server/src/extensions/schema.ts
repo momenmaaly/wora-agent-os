@@ -141,6 +141,7 @@ CREATE TABLE IF NOT EXISTS ext_tools (
   description TEXT NOT NULL,
   input_schema TEXT NOT NULL DEFAULT '{}',
   output_schema TEXT,
+  semantic_contract TEXT,
   permissions TEXT NOT NULL DEFAULT '[]',
   timeout_ms INTEGER NOT NULL DEFAULT 15000,
   risk TEXT NOT NULL DEFAULT 'medium',
@@ -237,6 +238,11 @@ CREATE INDEX IF NOT EXISTS idx_ext_skill_contexts_task ON ext_skill_contexts(wor
 
 let ready = false;
 
+function addToolColumns(db: ReturnType<typeof getOsDb>): void {
+  const columns = (db.prepare('PRAGMA table_info(ext_tools)').all() as Array<{ name: string }>).map((column) => column.name);
+  if (!columns.includes('semantic_contract')) db.exec('ALTER TABLE ext_tools ADD COLUMN semantic_contract TEXT');
+}
+
 function addSecretColumns(db: ReturnType<typeof getOsDb>): void {
   const columns = (db.prepare('PRAGMA table_info(ext_secrets)').all() as Array<{ name: string }>).map((column) => column.name);
   const add = (name: string, ddl: string) => {
@@ -252,6 +258,7 @@ export function ensureExtensionSchema(): void {
   if (ready) return;
   const db = getOsDb();
   db.exec(EXTENSION_SCHEMA);
+  addToolColumns(db);
   addSecretColumns(db);
   ready = true;
 }

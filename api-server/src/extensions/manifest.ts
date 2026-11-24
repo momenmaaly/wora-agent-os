@@ -248,6 +248,8 @@ const pluginToolSchema = z.strictObject({
   risk: z.enum(['low', 'medium', 'high']).default('medium'),
   path: z.string().trim().max(300).optional(),
   method: z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']).optional(),
+  /** Optional machine-readable meaning/units/side-effects contract. */
+  semantic_contract: jsonObjectSchema.optional(),
 });
 
 export const pluginManifestSchema = z.strictObject({

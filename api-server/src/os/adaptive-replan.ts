@@ -155,7 +155,7 @@ export function applyAdaptiveReplan(input: {
   let version: PlanVersion | null = null;
   db.exec('BEGIN IMMEDIATE');
   try {
-    db.prepare("UPDATE os_tasks SET tool = ?, tool_input = ?, fallback_tools = '[]', status = ?, detail = ?, agent_id = NULL, updated_at = ? WHERE id = ?")
+    db.prepare("UPDATE os_tasks SET tool = ?, tool_input = ?, fallback_tools = '[]', input_bindings = '[]', status = ?, detail = ?, agent_id = NULL, updated_at = ? WHERE id = ?")
       .run(candidate.tool, sealTaskToolInput(input.workspaceId, task.id, candidate.input), 'planned',
         `adaptive_replan: ${task.tool ?? 'none'} -> ${candidate.tool}; ${candidate.rationale}`.slice(0, 500), nowIso(), task.id);
     version = replanMission(input.workspaceId, input.missionId, `adaptive method transition ${task.tool} -> ${candidate.tool}: ${input.reason}`, input.actor);

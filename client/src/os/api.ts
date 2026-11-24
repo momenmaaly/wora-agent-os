@@ -132,7 +132,18 @@ export interface MissionSummary {
   id: string; objective: string;
   status: 'planning' | 'running' | 'paused' | 'awaiting_approval' | 'completed' | 'failed' | 'cancelled';
   summary: string; requestedBy: string; artifactId: string | null;
+  outcomeStatus?: OutcomeStatus;
   createdAt: string; updatedAt: string;
+}
+
+export type OutcomeStatus = 'verified' | 'partially_verified' | 'unverified' | 'failed' | 'blocked' | 'requires_human_review';
+
+export interface OutcomeVerification {
+  missionId: string; workspaceId: string; status: OutcomeStatus;
+  checks: Array<{ id: string; kind: string; status: 'passed' | 'failed' | 'not_run'; description: string; evidence: string }>;
+  reasons: string[];
+  taskEvidence: Array<{ taskId: string; tool: string | null; status: string; verification: string | null; outcome: string }>;
+  artifactId: string | null; generatedAt: string;
 }
 
 export interface MissionDetail extends MissionSummary {
@@ -146,6 +157,8 @@ export interface MissionDetail extends MissionSummary {
   planVersions?: PlanVersion[];
   planVerification?: { passed: boolean; checks: Array<{ id: string; status: 'passed' | 'failed'; evidence: string }> };
   verifications?: VerificationRecord[];
+  outcomeStatus?: OutcomeStatus;
+  outcomeVerification?: OutcomeVerification | null;
 }
 
 
@@ -285,6 +298,7 @@ export const osApi = {
   missionPlans: (id: string) => request<PlanVersion[]>(`/missions/${encodeURIComponent(id)}/plans`),
   replanMission: (id: string, reason: string) => request<PlanVersion>(`/missions/${encodeURIComponent(id)}/replan`, { method: 'POST', body: JSON.stringify({ reason }) }),
   missionVerifications: (id: string) => request<VerificationRecord[]>(`/missions/${encodeURIComponent(id)}/verifications`),
+  missionOutcome: (id: string) => request<OutcomeVerification>(`/missions/${encodeURIComponent(id)}/outcome`),
   understandProblem: (objective: string, track?: string) => request<ProblemProfile>('/problems/understand', { method: 'POST', body: JSON.stringify({ objective, ...(track ? { track } : {}) }) }),
   launchMission: (objective: string, track?: string) =>
     request<MissionDetail>('/missions', { method: 'POST', body: JSON.stringify({ objective, ...(track ? { track } : {}) }) }),

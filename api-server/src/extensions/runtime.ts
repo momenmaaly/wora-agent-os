@@ -17,6 +17,7 @@ import { callMcpTool, probeMcp, type McpOptions } from './mcp.js';
 import { validateAgainstSchema } from './json-schema.js';
 import { safeFetch } from '../lib/safe-fetch.js';
 import type { PluginToolDefinition, ToolContext } from '../os/tools.js';
+import { parseSemanticContract } from '../os/semantic-contracts.js';
 import { logger } from '../lib/logger.js';
 import { isolationStatus } from './sandbox.js';
 
@@ -121,6 +122,7 @@ export function syncInstallationResources(workspaceId: string, installationId: s
     description: tool.description,
     inputSchema: tool.input_schema,
     outputSchema: tool.output_schema,
+    semanticContract: tool.semantic_contract,
     permissions: [...new Set([...manifest.permissions, ...tool.permissions])],
     timeoutMs: tool.timeout_ms,
     risk: tool.risk,
@@ -214,6 +216,7 @@ export function pluginToolDefinitions(workspaceId: string): PluginToolDefinition
       name: tool.name,
       description: tool.description,
       inputSchema: tool.inputSchema,
+      semanticContract: tool.semanticContract ? parseSemanticContract(tool.semanticContract) ?? undefined : undefined,
       permissions: tool.permissions,
       risk: tool.risk,
       timeoutMs: tool.timeoutMs,

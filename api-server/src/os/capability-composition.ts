@@ -12,6 +12,7 @@ import { getTool } from './tools.js';
 import { listCapabilityCandidates, type CapabilityCandidate } from '../extensions/capability-intelligence.js';
 import { modelProblem, type UnifiedProblem } from './problem-model.js';
 import { synthesizeCompositionStrategy, type CompositionStrategyDecision } from './strategy-synthesis.js';
+import { evaluateSemanticCompatibility } from './semantic-contracts.js';
 import type { PlanTask } from './orchestrator.js';
 
 export const COMPOSITION_SCHEMA_VERSION = '1.0';
@@ -125,7 +126,11 @@ function compatibleFallbacks(candidate: CapabilityCandidate, candidates: Capabil
     .filter((entry) => {
       const fallback = getTool(entry.tool!, workspaceId);
       const output = JSON.stringify(registered.get(entry.tool!)?.outputSchema ?? null);
-      return Boolean(fallback) && JSON.stringify(fallback?.inputSchema ?? {}) === targetSchema && output === targetOutput;
+      if (!fallback || JSON.stringify(fallback.inputSchema ?? {}) !== targetSchema || output !== targetOutput) return false;
+      return evaluateSemanticCompatibility({
+        primaryTool: candidate.tool!, fallbackTool: entry.tool!, workspaceId,
+        risk: fallback.risk,
+      }).compatible;
     })
     .map((entry) => entry.tool!)
     .filter((tool, index, all) => all.indexOf(tool) === index)
@@ -229,6 +234,9 @@ export function buildCompositionGraph(input: { workspaceId: string; objective: s
   }
   if (needs.has('simulation') && !nodes.some((node) => node.tool === 'sim.monte_carlo')) addGap('simulation', 'No authorized simulation capability is available.');
   if (needs.has('decision') && !nodes.some((node) => node.tool === 'decision.weighted_matrix')) addGap('decision', 'No authorized multi-criteria decision capability is available.');
+  if (needs.has('formal_verification') && !nodes.some((node) => node.role === 'primary')) {
+    addGap('formal_verification', 'No authorized formal-verification or model-checking capability is installed; testing is not substituted for a proof.');
+  }
   if ((needs.has('optimization') || needs.has('scheduling') || needs.has('assignment')) && !nodes.some((node) => node.role === 'primary')) {
     addGap('optimization', 'No authorized solver matches the stated optimization problem and inputs.');
   }
@@ -257,13 +265,22 @@ export function buildCompositionGraph(input: { workspaceId: string; objective: s
 function planFromGraph(graph: CompositionGraph, selectedIds: string[]): PlanTask[] {
   const selected = graph.nodes.filter((node) => selectedIds.includes(node.id));
   const order = new Map(selected.map((node, index) => [node.id, index]));
-  return selected.map((node) => ({
+  return selected.map((node) => {
+    const input = inputFor(node.tool, graph.objective) ?? {};
+    const contextDependency = node.dependsOn
+      .map((id) => selected.find((candidate) => candidate.id === id))
+      .find((candidate) => candidate?.tool === 'text.extract_summary');
+    const inputBindings = contextDependency && typeof input['text'] === 'string'
+      ? [{ key: 'text', taskIndex: order.get(contextDependency.id)!, path: ['summary'] }]
+      : undefined;
+    return {
     title: node.title,
     objective: node.objective,
     specialization: node.specialization,
     agentId: node.agentId ?? undefined,
     tool: node.tool,
-    toolInput: inputFor(node.tool, graph.objective) ?? {}, 
+    toolInput: input,
+    inputBindings,
     dependsOn: node.dependsOn.map((id) => order.get(id)).filter((index): index is number => index !== undefined),
     acceptance: [
       `${node.tool} executes without an execution error`,
@@ -273,7 +290,8 @@ function planFromGraph(graph: CompositionGraph, selectedIds: string[]): PlanTask
     ],
     detail: `composition:${node.id}; role=${node.role}; kind=${node.capabilityKind}; ${node.reason}${node.fallbackTools.length ? `; compatible fallback(s): ${node.fallbackTools.join(', ')}` : ''}`,
     fallbackTools: node.fallbackTools,
-  }));
+  };
+  });
 }
 
 export function composeMissionPlan(input: { workspaceId: string; objective: string; track?: string; model?: UnifiedProblem }): ComposedMission {

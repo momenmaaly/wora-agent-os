@@ -23,6 +23,7 @@ import { classifyAction } from './actions.js';
 import { understandProblem } from './problem.js';
 import { selectScientificMethod } from './science.js';
 import { getApproval, consumeApproval, payloadDigest, actionScope, isApprovalExpired } from './governance.js';
+import type { SemanticContract } from './semantic-contracts.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -67,6 +68,8 @@ export interface ToolDefinition {
   timeoutMs: number;
   /** True only when repeating the tool after an uncertain interruption is safe. */
   idempotent?: boolean;
+  /** Machine-readable meaning/units/side effects used for semantic fallback checks. */
+  semanticContract?: SemanticContract;
   // `any` because tools are stored heterogeneously; runTool validates via `schema` before invoking.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   execute(input: any, ctx: ToolContext): unknown | Promise<unknown>;
@@ -852,6 +855,7 @@ export interface PluginToolDefinition {
   risk: ToolRisk;
   timeoutMs: number;
   idempotent?: boolean;
+  semanticContract?: SemanticContract;
   pluginId: string;
 }
 
@@ -885,6 +889,7 @@ function pluginToolAsDefinition(tool: PluginToolDefinition): ToolDefinition {
     environment: 'host',
     timeoutMs: tool.timeoutMs,
     idempotent: tool.idempotent === true,
+    semanticContract: tool.semanticContract,
     source: 'plugin',
     pluginId: tool.pluginId,
     async execute(input, ctx) {

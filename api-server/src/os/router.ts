@@ -23,6 +23,7 @@ import { listTaskLeases, listTaskCheckpoints, getExecutionLimits, setExecutionLi
 import { understandProblem, getProblemProfile } from './problem.js';
 import { modelProblem } from './problem-model.js';
 import { composeMissionPlan, getComposition } from './capability-composition.js';
+import { getMissionOutcome } from './outcome-verification.js';
 import { listPlanVersions, replanMission } from './planning.js';
 import { previewTeam, getTeamPlan, listSelectionDecisions, performanceReport, requirementsForPlan } from './selection.js';
 import { listLessons, getLesson, collectCandidateLessons, evaluateLesson, promoteLesson, rejectLesson, revokeLesson, recordLessonOutcome, listLessonEvents } from './lessons.js';
@@ -682,6 +683,14 @@ function highRiskAgentCapabilities(permissions: readonly string[], tools: readon
     const composition = getComposition(workspace(res), detail.id);
     if (!composition) { res.status(404).json({ error: 'Capability composition not found' }); return; }
     res.json(composition);
+  }));
+
+  router.get('/missions/:id/outcome', asyncWrap((req, res) => {
+    const detail = getMissionDetail(workspace(res), param(req, 'id'));
+    if (!detail) { res.status(404).json({ error: 'Mission not found' }); return; }
+    const outcome = getMissionOutcome(workspace(res), detail.id);
+    if (!outcome) { res.status(404).json({ error: 'Outcome verification not found' }); return; }
+    res.json(outcome);
   }));
 
   router.post('/problems/analyze', asyncWrap((req, res) => {

@@ -207,6 +207,11 @@ export function clearMissionLeases(workspaceId: string, missionId: string): numb
   return Number(result.changes ?? 0);
 }
 
+export function clearMissionLease(workspaceId: string, missionId: string): number {
+  const result = getOsDb().prepare('DELETE FROM os_mission_leases WHERE workspace_id = ? AND mission_id = ?').run(workspaceId, missionId);
+  return Number(result.changes ?? 0);
+}
+
 export interface ExecutionLimits {
   maxConcurrentTasks: number;
   leaseTtlMs: number;

@@ -49,6 +49,8 @@ CREATE TABLE IF NOT EXISTS os_missions (
   correlation_id TEXT,
   summary TEXT NOT NULL DEFAULT '',
   artifact_id TEXT,
+  outcome_status TEXT NOT NULL DEFAULT 'unverified',
+  outcome_evidence TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -69,6 +71,7 @@ CREATE TABLE IF NOT EXISTS os_tasks (
   tool TEXT,
   tool_input TEXT NOT NULL DEFAULT '{}',
   fallback_tools TEXT NOT NULL DEFAULT '[]',
+  input_bindings TEXT NOT NULL DEFAULT '[]',
   detail TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL

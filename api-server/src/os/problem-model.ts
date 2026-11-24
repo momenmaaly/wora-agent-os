@@ -86,11 +86,11 @@ function sentenceFacts(objective: string): ProblemFact[] {
 function needsFor(profile: ProblemProfile, objective: string): string[] {
   const needs = new Set<string>(['analysis', 'verification']);
   for (const requirement of profile.features.requires ?? []) needs.add(requirement);
-  if (profile.domain === 'software_engineering' || profile.domain === 'organization') needs.add('engineering');
+  if (profile.domain === 'software_engineering' || profile.domain === 'organization' || /software architecture|qa specialist|specialist agents|multi-agent/iu.test(objective)) needs.add('engineering');
   if (profile.domain === 'research') needs.add('research');
   if (profile.domain === 'diagnostics') needs.add('diagnostics');
   if (profile.features.hasTimeSeries) needs.add('forecasting');
-  if (profile.features.hasCriteria) needs.add('decision');
+  if (profile.features.hasCriteria || /compare|strateg(?:y|ies)|alternatives?|choose|rank|قارن|بدائل/iu.test(objective)) needs.add('decision');
   if (profile.features.hasUncertainty) needs.add('simulation');
   if (/plugin|mcp|integration|echo|external service|api/iu.test(objective)) needs.add('integration');
   if (profile.features.riskLevel === 'high') needs.add('approval');

@@ -19,6 +19,9 @@ test('execution UI controls are wired to real mission, lease and verification en
   assert.match(ui, /composition/);
   assert.match(ui, /تركيب القدرات/);
   assert.match(ui, /'composite'/);
+  assert.match(ui, /outcomeVerification/);
+  assert.match(ui, /التحقق المستقل من النتيجة/);
+  assert.match(ui, /capability-gap|outcomeStatus/);
 });
 
 test('lesson lifecycle and benchmark UI call the real APIs', () => {

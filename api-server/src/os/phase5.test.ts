@@ -106,6 +106,18 @@ function httpPlugin(id: string, name: string, pathName: string) {
     tools: [{
       id: 'echo', name: `${name} Echo`, description: 'Echoes the input text with a deterministic marker.',
       input_schema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'], additionalProperties: false },
+      semantic_contract: {
+        schemaVersion: '1.0', id: 'test.echo.v1', version: '1.0.0',
+        inputMeaning: 'UTF-8 text to echo', outputMeaning: 'The same UTF-8 text with an execution marker',
+        inputUnits: { text: 'utf8-text' }, outputUnits: { text: 'utf8-text' },
+        inputTypes: { text: 'string' }, outputTypes: { ok: 'boolean', text: 'string' },
+        preconditions: ['text is present'], postconditions: ['returned text equals the supplied text'],
+        sideEffects: 'none', deterministic: true, precision: { kind: 'exact' },
+        errorBehavior: 'returns an execution error instead of fabricating text',
+        security: { dataClasses: ['workspace-content'], network: true, requiredPermissions: [], maxRisk: 'low' },
+        verification: ['output-contract', 'output-quality', 'secret-leak'],
+        resource: { costClass: 'low', latencyClass: 'low' }, evidence: ['phase5 local HTTP fixture'], confidence: 0.9,
+      },
       permissions: [], timeout_ms: 5_000, risk: 'low', path: pathName, method: 'POST',
     }],
     health: { type: 'http', path: '/health', timeout_ms: 2_000 },
