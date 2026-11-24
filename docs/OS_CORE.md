@@ -54,6 +54,7 @@ An in-process execution platform behind the product surface:
 - **Playbook planner preference** (`os/playbooks.ts` + planner): the OR planner checks validated playbooks
   (Jaccard ≥ 0.5 on tokens) before falling back to the bundled SAMPLE roster; reuses are counted
   (`reuse_count`) and surfaced in the Intelligence playbooks tab.
+- **Verification records** (`os/verification.ts` + `os_verifications`): every run attempt persists objective, acceptance criteria, expected/actual output, evidence, structured checks, result, failure reason and verifier identity. Mission detail and `GET /api/os/missions/:id/verifications` expose them.
 - **Governance** (`os/governance.ts`): human approval gate for high-risk tools (balanced policy by default —
   `host.exec` pauses a mission until a person approves the exact payload; approving auto-resumes the mission),
   per-workspace autonomy policy (`balanced` | explicit `autopilot`) stored in `os_settings`, and revocable
@@ -125,12 +126,13 @@ The **Executive Command bar** at the bottom of every screen now launches a real 
 
 ## Test results (this branch)
 
-- `api-server`: full suite **120 tests: 119 pass, 1 skipped** (Mongo integration, opt-in), 0 failed —
+- `api-server`: full suite **124 tests: 123 pass, 1 skipped** (Mongo integration, opt-in), 0 failed —
   `npm test`. Coverage includes solvers, tools, memory isolation + ACL + TTL + version snapshots, registry
   and agent versions, orchestrator journeys 1–5 + failure/approval/denial paths, autonomy policy, device
   pairing, RBAC, boards, digital twins, playbook reuse, SQLite lease fencing, extensions, and the new
   algorithm catalog/selector (catalog integrity, explicit/feature/keyword precedence, fail-closed
-  nonlinear/unknown handling, tool execution and HTTP routes).
+  nonlinear/unknown handling, tool execution and HTTP routes), and verification records (passed,
+  explicit failure, blocked capability denial, workspace isolation and HTTP routes).
 - `client`: 44/44 pass — `npm test`; typecheck + production build green.
 - Production bundle builds: client `npm run build`, api-server `npm run build`.
 

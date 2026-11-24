@@ -282,6 +282,27 @@ CREATE TABLE IF NOT EXISTS os_ai_usage (
 CREATE INDEX IF NOT EXISTS idx_os_ai_usage_created ON os_ai_usage(created_at);
 CREATE INDEX IF NOT EXISTS idx_os_ai_usage_provider ON os_ai_usage(provider, model);
 
+CREATE TABLE IF NOT EXISTS os_verifications (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  mission_id TEXT NOT NULL REFERENCES os_missions(id) ON DELETE CASCADE,
+  task_id TEXT NOT NULL REFERENCES os_tasks(id) ON DELETE CASCADE,
+  run_id TEXT NOT NULL UNIQUE,
+  objective TEXT NOT NULL,
+  acceptance_criteria TEXT NOT NULL DEFAULT '[]',
+  expected_output TEXT NOT NULL DEFAULT '',
+  actual_output TEXT NOT NULL DEFAULT 'null',
+  evidence TEXT NOT NULL DEFAULT '[]',
+  checks TEXT NOT NULL DEFAULT '[]',
+  result TEXT NOT NULL,
+  independence TEXT NOT NULL DEFAULT 'deterministic-review',
+  failure_reason TEXT NOT NULL DEFAULT '',
+  verifier TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_os_verifications_mission ON os_verifications(workspace_id, mission_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_os_verifications_task ON os_verifications(workspace_id, task_id, created_at);
+
 CREATE TABLE IF NOT EXISTS os_runtime_leases (
   id TEXT PRIMARY KEY,
   owner_id TEXT NOT NULL,

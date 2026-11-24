@@ -19,6 +19,7 @@ import { workspacePath } from './workspace.js';
 import { resolveAndSnapshot, authorizeTool } from '../extensions/capabilities.js';
 import { listRegisteredTools, listCapabilitySnapshots } from '../extensions/store.js';
 import { selectAlgorithm } from './algorithms.js';
+import { recordVerification, listVerifications } from './verification.js';
 import { logger } from '../lib/logger.js';
 
 export type MissionStatus = 'planning' | 'running' | 'awaiting_approval' | 'completed' | 'failed';
@@ -490,6 +491,14 @@ export async function executeMission(missionId: string, actor = 'orchestrator'):
           db.prepare('UPDATE os_runs SET status = ?, finished_at = ?, summary = ?, evidence = ?, issues = ? WHERE id = ?')
             .run('failed', nowIso(), `Capability denied: ${reason}`, JSON.stringify(lastEvidence), JSON.stringify(lastIssues), runId);
           audit(db, { workspaceId: mission.workspace_id, actor: agent.name, action: 'capability.denied', subject: task.tool, detail: { missionId, taskId: task.id, reason, digest: profile.digest } });
+          recordVerification({
+            workspaceId: mission.workspace_id, missionId, taskId: task.id, runId,
+            objective: task.objective, acceptanceCriteria: parseJson<string[]>(task.acceptance, []),
+            expectedOutput: `A successful ${task.tool ?? 'task'} result satisfying the acceptance criteria`,
+            actualOutput: null, evidence: lastEvidence,
+            checks: [{ id: 'capability-authorization', kind: 'authorization', description: 'The agent is authorized for the assigned tool', status: 'failed', evidence: reason }],
+            result: 'blocked', failureReason: reason, verifier: 'wora.orchestrator/capability-check',
+          });
           break;
         }
       }
@@ -525,6 +534,22 @@ export async function executeMission(missionId: string, actor = 'orchestrator'):
           JSON.stringify(lastEvidence).slice(0, 60_000),
           JSON.stringify(review.issues),
           runId);
+
+      recordVerification({
+        workspaceId: mission.workspace_id, missionId, taskId: task.id, runId,
+        objective: task.objective,
+        acceptanceCriteria: parseJson<string[]>(task.acceptance, []),
+        expectedOutput: task.tool ? `A successful ${task.tool} result satisfying the task acceptance criteria` : 'Task output satisfying the acceptance criteria',
+        actualOutput: lastOutput,
+        evidence: lastEvidence,
+        checks: [
+          { id: 'tool-execution', kind: 'runtime', description: 'The assigned tool completed without an execution error', status: result.ok ? 'passed' : 'failed', evidence: result.ok ? `${result.tool} returned in ${result.durationMs} ms` : (result.error ?? 'unknown tool error') },
+          { id: 'acceptance-review', kind: 'acceptance', description: 'Deterministic acceptance review over the actual output and evidence', status: reviewPassed ? 'passed' : 'failed', evidence: review.issues.join('; ') || 'All deterministic acceptance checks passed.' },
+        ],
+        result: reviewPassed ? 'passed' : 'failed',
+        failureReason: reviewPassed ? '' : review.issues.join('; '),
+        verifier: 'wora.orchestrator/reviewRun',
+      });
 
       if (!reviewPassed) attempt += 1;
     }
@@ -710,6 +735,7 @@ export function getMissionDetail(workspaceId: string, missionId: string) {
   const approvals = listMissionApprovals(workspaceId, missionId);
   return {
     approvals,
+    verifications: listVerifications(workspaceId, { missionId, limit: 100 }),
     capabilitySnapshots: listCapabilitySnapshots(workspaceId, { missionId, limit: 100 }),
     id: mission.id,
     objective: mission.objective,

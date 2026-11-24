@@ -1,9 +1,11 @@
 # WORA Progress and Verified Baseline
 
-**Updated:** 2026-11-24  
-**Branch:** `feat/extensions-subsystem`  
-**HEAD at audit:** `a5a4e0a` — Remediate Phase 1 security findings F1–F13  
-**Remote main at audit:** `a1ca08c`  
+**Updated:** 2026-11-24
+**Branch:** `feat/extensions-subsystem`
+**HEAD at audit:** `a5a4e0a` — Remediate Phase 1 security findings F1–F13
+**Latest unit:** `07d34f1` — Add deterministic algorithm catalog and selection layer
+**Working tree:** verification unit implemented, pending final commit
+**Remote main at audit:** `a1ca08c`
 **Rule:** this file records only work verified by source inspection, commands, tests or live HTTP probes. It is not a marketing status page.
 
 ## 1. Verified repository baseline
@@ -83,20 +85,34 @@ Acceptance evidence:
 - Route test proves the HTTP API returns the catalog and a real selection.
 - Unsupported/nonlinear and unknown problems fail closed.
 
+## 4b. Second implementation unit — verification records
+
+**Status:** implemented and locally tested. Pending final commit.
+
+Added `api-server/src/os/verification.ts` and `os_verifications`:
+
+- One durable record per run attempt with objective, acceptance criteria, expected output, actual output, evidence, structured checks, result, independence, failure reason, verifier and timestamp.
+- Orchestrator writes a passed/failed record after every run review and a blocked record on capability denial.
+- Mission detail includes verification records; `GET /api/os/missions/:id/verifications` and `GET /api/os/verifications/:id` expose them.
+- Workspace isolation is enforced in every query.
+
+Evidence: `api-server/src/os/verification.test.ts` (4 tests: passed mission, explicit failure, workspace isolation, HTTP API). API suite after this unit: **124 tests, 123 passed, 1 skipped, 0 failed**.
+
+Limitations: deterministic review only, not external audit; no signed artifact binding; no property-based/performance/API-contract check families yet.
+
 ## 5. Next eligible tasks
 
 In dependency order:
 
-1. **General verification record** (`os_verifications`): bind objective, acceptance criteria, evidence, independent checks, outcome and failure reason; integrate into mission runs.
-2. **Action-class governance**: A/B/C classification, scope, expiry, payload-bound approvals and budget limits; migrate existing tool-risk approvals without breaking them.
-3. **Durable execution queue**: lease-based worker claim, heartbeat, retry policy, cancellation and restart recovery; keep SQLite single-writer semantics.
-4. **Problem-understanding model**: structured problem profile with constraints, uncertainty, dependencies and confidence; feed the algorithm selector.
-5. **Skill context injection**: load assigned skill instructions into the planner/agent context with provenance and token budgets.
-6. **Benchmark suite**: reproducible task fixtures for assignment, scheduling, forecasting, decision analysis and verification; no fabricated results.
+1. **Action-class governance**: A/B/C classification, scope, expiry, payload-bound approvals and budget limits; migrate existing tool-risk approvals without breaking them.
+2. **Durable execution queue**: lease-based worker claim, heartbeat, retry policy, cancellation and restart recovery; keep SQLite single-writer semantics.
+3. **Problem-understanding model**: structured problem profile with constraints, uncertainty, dependencies and confidence; feed the algorithm selector.
+4. **Skill context injection**: load assigned skill instructions into the planner/agent context with provenance and token budgets.
+5. **Benchmark suite**: reproducible task fixtures for assignment, scheduling, forecasting, decision analysis and verification; no fabricated results.
 
 ## 6. Current evidence and limitations
 
-After the first implementation unit: **API 120 tests: 119 passed, 1 skipped, 0 failed**; API typecheck and build pass.
+After the algorithm unit: **API 120 tests: 119 passed, 1 skipped, 0 failed**. After the verification unit: **API 124 tests: 123 passed, 1 skipped, 0 failed**. API typecheck and build pass.
 
 - The first unit is locally tested; it is not yet exercised by a live external marketplace or a model-driven planner.
 - The selector is deterministic and intentionally conservative. It does not claim semantic understanding of arbitrary natural language.

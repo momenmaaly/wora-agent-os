@@ -17,6 +17,7 @@ import { getAiUsageSummary } from './usage.js';
 import { listPlaybooks, deletePlaybook } from './playbooks.js';
 import { listTools, runTool, getTool } from './tools.js';
 import { listAlgorithms, selectAlgorithm, PROBLEM_KINDS } from './algorithms.js';
+import { listVerifications, getVerification } from './verification.js';
 import { SPECIALIZATIONS } from './specializations.js';
 import {
   createAgent, listAgents, getAgent, updateAgent, deleteAgent, ensureSeedAgents,
@@ -335,6 +336,16 @@ function highRiskAgentCapabilities(permissions: readonly string[], tools: readon
     const detail = getMissionDetail(workspace(res), param(req, 'id'));
     if (!detail) { res.status(404).json({ error: 'Mission not found' }); return; }
     res.json(detail);
+  }));
+
+  router.get('/missions/:id/verifications', asyncWrap((req, res) => {
+    res.json(listVerifications(workspace(res), { missionId: param(req, 'id'), limit: 100 }));
+  }));
+
+  router.get('/verifications/:id', asyncWrap((req, res) => {
+    const record = getVerification(workspace(res), param(req, 'id'));
+    if (!record) { res.status(404).json({ error: 'Verification not found' }); return; }
+    res.json(record);
   }));
 
   router.post('/missions/:id/execute', asyncWrap(async (req, res) => {

@@ -38,6 +38,8 @@ Remaining:
 
 **Priority:** highest next.
 
+**First slice completed:** durable `os_verifications` records, orchestrator integration, workspace-scoped API, failure/blocked records and four tests.
+
 Build a first-class verification record that binds:
 
 - objective;
@@ -49,12 +51,18 @@ Build a first-class verification record that binds:
 - failure reason;
 - verifier identity and timestamp.
 
-Acceptance criteria:
+Completed acceptance evidence:
 
 - New durable table with foreign keys and workspace isolation.
-- Existing `reviewRun` behavior preserved or wrapped, not silently changed.
-- At least one real independent recheck per tool class (solver, generated test, fetch, static scan).
-- Tests prove pass, fail, missing-evidence and cross-workspace isolation.
+- Existing `reviewRun` behavior preserved and wrapped; no solver review was removed.
+- Tool execution and acceptance-review checks are persisted per attempt.
+- Tests prove pass, explicit failure, blocked capability denial and cross-workspace isolation.
+
+Remaining acceptance work:
+
+- Add property-based, database-integrity, API-contract and performance check families.
+- Bind verification records to capability snapshot digests and signed artifacts.
+- Add an external-verifier adapter without claiming third-party audit by default.
 
 ## Phase 3 — Action-class governance
 
@@ -154,4 +162,4 @@ No result is reported until the fixture and command are committed.
 
 ## Immediate next eligible task
 
-Implement the verification record in Phase 2. It is the dependency for trustworthy learning, action governance evidence and benchmark scoring, and it can be added without replacing the existing orchestrator.
+Implement Phase 3 action-class governance on top of the verification record: A/B/C classification, scope, expiry, payload-bound approvals and budget limits.
