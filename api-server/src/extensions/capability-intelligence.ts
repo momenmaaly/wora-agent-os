@@ -162,7 +162,7 @@ function candidatesForAgent(workspaceId: string, agent: AgentRecord, profile: Ca
   return out;
 }
 
-export function matchCapabilities(input: { workspaceId: string; objective: string; agentId?: string | null; requiredCapabilities?: string[] }): CapabilityMatch {
+export function listCapabilityCandidates(input: { workspaceId: string; objective: string; agentId?: string | null; requiredCapabilities?: string[] }): CapabilityCandidate[] {
   const required = (input.requiredCapabilities ?? []).filter(Boolean).slice(0, 12);
   const agents = input.agentId
     ? listAgents(input.workspaceId).filter((agent) => agent.id === input.agentId)
@@ -172,7 +172,12 @@ export function matchCapabilities(input: { workspaceId: string; objective: strin
     try { candidates.push(...candidatesForAgent(input.workspaceId, agent, resolveCapabilities(input.workspaceId, agent.id), input.objective, required)); }
     catch { /* an invalid/archived agent cannot contribute */ }
   }
-  candidates.sort((a, b) => b.score - a.score || a.id.localeCompare(b.id));
+  return candidates.sort((a, b) => b.score - a.score || a.id.localeCompare(b.id));
+}
+
+export function matchCapabilities(input: { workspaceId: string; objective: string; agentId?: string | null; requiredCapabilities?: string[] }): CapabilityMatch {
+  const required = (input.requiredCapabilities ?? []).filter(Boolean).slice(0, 12);
+  const candidates = listCapabilityCandidates(input);
   const selected = candidates.find((candidate) => candidate.available && candidate.tool && candidate.score >= 3) ?? null;
   const gap = selected ? null : {
     missing: required.length ? required : terms(input.objective).slice(0, 8),

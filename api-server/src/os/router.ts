@@ -21,6 +21,8 @@ import { listAlgorithms, selectAlgorithm, PROBLEM_KINDS, algorithmSelectionInput
 import { listVerifications, getVerification } from './verification.js';
 import { listTaskLeases, listTaskCheckpoints, getExecutionLimits, setExecutionLimits } from './task-queue.js';
 import { understandProblem, getProblemProfile } from './problem.js';
+import { modelProblem } from './problem-model.js';
+import { composeMissionPlan, getComposition } from './capability-composition.js';
 import { listPlanVersions, replanMission } from './planning.js';
 import { previewTeam, getTeamPlan, listSelectionDecisions, performanceReport, requirementsForPlan } from './selection.js';
 import { listLessons, getLesson, collectCandidateLessons, evaluateLesson, promoteLesson, rejectLesson, revokeLesson, recordLessonOutcome, listLessonEvents } from './lessons.js';
@@ -665,6 +667,34 @@ function highRiskAgentCapabilities(permissions: readonly string[], tools: readon
     const profile = getProblemProfile(workspace(res), param(req, 'id'));
     if (!profile) { res.status(404).json({ error: 'Problem profile not found' }); return; }
     res.json(profile);
+  }));
+
+  router.get('/missions/:id/problem-model', asyncWrap((req, res) => {
+    const detail = getMissionDetail(workspace(res), param(req, 'id'));
+    if (!detail) { res.status(404).json({ error: 'Mission not found' }); return; }
+    if (!detail.problemModel) { res.status(404).json({ error: 'Unified problem model not found' }); return; }
+    res.json(detail.problemModel);
+  }));
+
+  router.get('/missions/:id/composition', asyncWrap((req, res) => {
+    const detail = getMissionDetail(workspace(res), param(req, 'id'));
+    if (!detail) { res.status(404).json({ error: 'Mission not found' }); return; }
+    const composition = getComposition(workspace(res), detail.id);
+    if (!composition) { res.status(404).json({ error: 'Capability composition not found' }); return; }
+    res.json(composition);
+  }));
+
+  router.post('/problems/analyze', asyncWrap((req, res) => {
+    if (!rateLimit(workspace(res), 60, req.path)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    const body = z.object({ objective: z.string().trim().min(3).max(4000), track: z.string().trim().min(1).max(40).optional() }).strict().parse(req.body ?? {});
+    res.json(modelProblem({ workspaceId: workspace(res), objective: body.objective, track: body.track }));
+  }));
+
+  router.post('/problems/compose', asyncWrap((req, res) => {
+    if (!rateLimit(workspace(res), 30, req.path)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    const body = z.object({ objective: z.string().trim().min(3).max(4000), track: z.string().trim().max(40).optional() }).strict().parse(req.body ?? {});
+    const composed = composeMissionPlan({ workspaceId: workspace(res), objective: body.objective, track: body.track ?? 'composite' });
+    res.json({ model: composed.model, graph: composed.graph, strategy: composed.strategy, tasks: composed.tasks });
   }));
 
   router.get('/missions/:id/plans', asyncWrap((req, res) => {

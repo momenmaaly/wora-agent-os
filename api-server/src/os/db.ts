@@ -68,6 +68,7 @@ CREATE TABLE IF NOT EXISTS os_tasks (
   acceptance TEXT NOT NULL DEFAULT '[]',
   tool TEXT,
   tool_input TEXT NOT NULL DEFAULT '{}',
+  fallback_tools TEXT NOT NULL DEFAULT '[]',
   detail TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -375,6 +376,27 @@ CREATE TABLE IF NOT EXISTS os_problem_profiles (
   created_at TEXT NOT NULL,
   PRIMARY KEY (workspace_id, mission_id)
 );
+CREATE TABLE IF NOT EXISTS os_problem_models (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  mission_id TEXT NOT NULL UNIQUE REFERENCES os_missions(id) ON DELETE CASCADE,
+  model TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_os_problem_models_ws ON os_problem_models(workspace_id, created_at);
+CREATE TABLE IF NOT EXISTS os_capability_compositions (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  mission_id TEXT NOT NULL UNIQUE REFERENCES os_missions(id) ON DELETE CASCADE,
+  graph TEXT NOT NULL DEFAULT '{}',
+  selected_strategy TEXT NOT NULL DEFAULT '',
+  strategies TEXT NOT NULL DEFAULT '[]',
+  gaps TEXT NOT NULL DEFAULT '[]',
+  explanation TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_os_capability_compositions_ws ON os_capability_compositions(workspace_id, created_at);
 CREATE TABLE IF NOT EXISTS os_verifications (
   id TEXT PRIMARY KEY,
   workspace_id TEXT NOT NULL,

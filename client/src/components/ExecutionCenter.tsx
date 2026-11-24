@@ -137,6 +137,7 @@ export function ExecutionCenter() {
   const [verifications, setVerifications] = useState<VerificationRecord[]>([]);
   const [replanReason, setReplanReason] = useState('');
   const [concurrency, setConcurrency] = useState(2);
+  const [composite, setComposite] = useState(false);
 
   const refreshMissions = useCallback(async () => {
     try {
@@ -188,7 +189,7 @@ export function ExecutionCenter() {
     setBusy(true);
     setError(null);
     try {
-      const created = await osApi.launchMission(trimmed);
+      const created = await osApi.launchMission(trimmed, composite ? 'composite' : undefined);
       setObjective('');
       setSelectedId(created.id);
       setDetail(created);
@@ -300,6 +301,10 @@ export function ExecutionCenter() {
           placeholder="مثال: افحص جهازي وحدد المشاكل المحتملة…"
           aria-label="اكتب هدفك لـ WORA" disabled={busy}
         />
+        <label className="os-inline-control" title="يبني خطة من القدرات المعتمدة المتاحة ويسجل الفجوات بدل اختلاقها">
+          <input type="checkbox" checked={composite} onChange={(event) => setComposite(event.target.checked)} disabled={busy} />
+          تركيب القدرات
+        </label>
         <button type="submit" className="button primary" disabled={busy || !objective.trim()}>
           {busy ? <LoaderCircle size={16} className="os-spin" aria-hidden="true" /> : <Play size={16} aria-hidden="true" />} نفّذ
         </button>
@@ -395,6 +400,47 @@ export function ExecutionCenter() {
                       <ul className="os-acceptance">{detail.problemProfile.missingInformation.map((item) => <li key={item}>{item}</li>)}</ul>
                     </div>
                   </div>
+                </details>
+              )}
+
+              {detail.problemModel && (
+                <details className="os-handoffs" open>
+                  <summary><FlaskConical size={14} aria-hidden="true" /> المشكلة الموحدة: ما نعرفه وما نفترضه وما ينقص</summary>
+                  <div className="os-columns">
+                    <div>
+                      <p><strong>المجال:</strong> {detail.problemModel.domain} · <strong>الهدف:</strong> {detail.problemModel.desiredOutcome}</p>
+                      <p><strong>الثقة:</strong> {Math.round(detail.problemModel.confidence * 100)}% · <strong>المخاطر:</strong> {detail.problemModel.risk} · <strong>قابلية العكس:</strong> {detail.problemModel.reversibility}</p>
+                      <p><strong>الاحتياجات:</strong> {detail.problemModel.needs.join('، ') || '—'}</p>
+                      <h4>حقائق من طلبك</h4>
+                      <ul className="os-acceptance">{detail.problemModel.facts.map((fact) => <li key={fact.id}><span className="subtle">[{fact.provenance}]</span> {fact.statement}</li>)}</ul>
+                      {detail.problemModel.evidence.length > 0 && <><h4>أدلة مسترجعة</h4><ul className="os-acceptance">{detail.problemModel.evidence.map((item) => <li key={item.id}>{item.statement} <span className="subtle">({item.source})</span></li>)}</ul></>}
+                    </div>
+                    <div>
+                      <h4>افتراضات معلنة</h4>
+                      <ul className="os-acceptance">{detail.problemModel.assumptions.map((item) => <li key={item.id}>{item.statement}</li>)}</ul>
+                      <h4>معلومات ناقصة</h4>
+                      {detail.problemModel.unknowns.length ? <ul className="os-acceptance">{detail.problemModel.unknowns.map((item) => <li key={item}>{item}</li>)}</ul> : <p className="subtle">لا توجد معلومات ناقصة مسجلة.</p>}
+                      <h4>الطريقة العلمية</h4>
+                      <p>{detail.problemModel.methods.selected ? `${detail.problemModel.methods.selected.name} (${detail.problemModel.methods.selected.toolId ?? '—'})` : 'لم تُحدد طريقة قابلة للتنفيذ.'}</p>
+                      {detail.problemModel.methods.rejected.length > 0 && <ul className="os-acceptance">{detail.problemModel.methods.rejected.map((item) => <li key={item.name}>{item.name}: {item.reason}</li>)}</ul>}
+                    </div>
+                  </div>
+                </details>
+              )}
+
+              {detail.composition && (
+                <details className="os-handoffs" open>
+                  <summary><Network size={14} aria-hidden="true" /> تركيب القدرات والاستراتيجية المختارة</summary>
+                  <p className="subtle">{detail.composition.graph.explanation}</p>
+                  <p><strong>الاستراتيجية:</strong> {detail.composition.strategies.find((strategy) => strategy.id === detail.composition?.selectedStrategy)?.name ?? detail.composition.selectedStrategy ?? '—'}</p>
+                  <p className="subtle">{detail.composition.explanation}</p>
+                  <ul className="os-acceptance">
+                    {detail.composition.graph.nodes.map((node) => (
+                      <li key={node.id}><strong>{node.title}</strong> — {node.tool} · {node.role} · {node.capabilityKind} · وكيل {node.agentId ?? 'غير محدد'} · مخاطر {node.risk}{node.fallbackTools.length ? ` · بديل متوافق: ${node.fallbackTools.join('، ')}` : ''}</li>
+                    ))}
+                  </ul>
+                  {detail.composition.gaps.length > 0 && <><h4>فجوات حقيقية</h4><ul className="os-acceptance">{detail.composition.gaps.map((gap) => <li key={`${gap.node ?? 'global'}-${gap.message}`}>{gap.message} <span className="subtle">({gap.missing.join('، ')})</span></li>)}</ul></>}
+                  {detail.composition.strategies.length > 0 && <><h4>بدائل مقارنة</h4><ul className="os-acceptance">{detail.composition.strategies.map((strategy) => <li key={strategy.id}><strong>{strategy.name}</strong> — {strategy.feasible ? `قابلة للتنفيذ · ${strategy.score}` : `مرفوضة · ${strategy.rejectionReason ?? 'غير قابلة للتنفيذ'}`}</li>)}</ul></>}
                 </details>
               )}
 

@@ -207,6 +207,7 @@ export function replanMission(workspaceId: string, missionId: string, reason: st
     tool: (row['tool'] as string | null) ?? null, toolInput: openTaskToolInput<Record<string, unknown>>(workspaceId, String(row['id']), String(row['tool_input'] ?? '{}'), {}),
     dependsOn: parseJson<string[]>(String(row['depends_on'] ?? '[]'), []).map((id) => indexMap.get(id)).filter((index): index is number => index !== undefined),
     acceptance: parseJson<string[]>(String(row['acceptance'] ?? '[]'), []), detail: String(row['detail'] ?? ''),
+    fallbackTools: parseJson<string[]>(String(row['fallback_tools'] ?? '[]'), []),
   }));
   if (!plan.length) throw new Error('No remaining work to replan');
   const comparison = comparePlans(plan, workspaceId, profile);

@@ -119,7 +119,7 @@ export interface OsTask {
   agentId: string | null;
   agent: { id: string; name: string; specialization: string } | null;
   dependsOn: string[]; acceptance: string[];
-  tool: string | null; toolInput: Record<string, unknown>; detail: string;
+  tool: string | null; toolInput: Record<string, unknown>; fallbackTools?: string[]; detail: string;
   runs: OsRun[]; createdAt: string; updatedAt: string;
 }
 
@@ -141,9 +141,42 @@ export interface MissionDetail extends MissionSummary {
   approvals: ApprovalRecord[];
   artifacts: Array<{ id: string; name: string; kind: string; created_at?: string; createdAt?: string }>;
   problemProfile?: ProblemProfile | null;
+  problemModel?: UnifiedProblem | null;
+  composition?: CompositionRecord | null;
   planVersions?: PlanVersion[];
   planVerification?: { passed: boolean; checks: Array<{ id: string; status: 'passed' | 'failed'; evidence: string }> };
   verifications?: VerificationRecord[];
+}
+
+
+export interface UnifiedProblem {
+  schemaVersion: string; objective: string; desiredOutcome: string; successCriteria: string[];
+  domain: string; subdomains: string[]; problemTypes: string[];
+  facts: Array<{ id: string; statement: string; provenance: string; source: string; confidence: number | null }>;
+  evidence: Array<{ id: string; statement: string; provenance: string; source: string; confidence: number | null; memoryId?: string; score?: number }>;
+  assumptions: Array<{ id: string; statement: string; provenance: string; source: string; confidence: number | null }>;
+  unknowns: string[]; constraints: string[]; dependencies: string[]; resources: string[];
+  limits: { timeMs: number | null; costUsd: number | null; note: string };
+  risk: string; reversibility: string; uncertainty: string; deterministic: boolean; stochastic: boolean; precision: string;
+  approvals: string[]; needs: string[];
+  methods: { selected: { name: string; toolId: string | null; guarantee: string } | null; rejected: Array<{ name: string; reason: string; status: string }>; missing: string[]; rationale: string[]; assumptions: string[] };
+  confidence: number; provenance: string[]; createdAt: string;
+}
+
+export interface CompositionNode {
+  id: string; title: string; objective: string; role: string; capabilityKind: string; tool: string;
+  skillKeys: string[]; agentId: string | null; specialization: string; dependsOn: string[];
+  inputs: string[]; outputs: string[]; preconditions: string[]; postconditions: string[];
+  permissions: string[]; permissionsApproved: string[]; available: boolean; risk: string;
+  costClass: string; latencyClass: string; verification: string[]; fallbackTools: string[]; reason: string;
+}
+
+export interface CompositionRecord {
+  id: string; workspaceId: string; missionId: string; selectedStrategy: string;
+  graph: { schemaVersion: string; objective: string; nodes: CompositionNode[]; edges: Array<{ from: string; to: string; kind: string }>; gaps: Array<{ node: string | null; message: string; missing: string[] }>; explanation: string; createdAt: string };
+  strategies: Array<{ id: string; name: string; description: string; nodeIds: string[]; score: number; feasible: boolean; rejectionReason: string | null; assumptions: string[]; metrics: Record<string, number> }>;
+  gaps: Array<{ node: string | null; message: string; missing: string[] }>;
+  explanation: string; createdAt: string; updatedAt: string;
 }
 
 export interface ProblemProfile {
@@ -253,8 +286,8 @@ export const osApi = {
   replanMission: (id: string, reason: string) => request<PlanVersion>(`/missions/${encodeURIComponent(id)}/replan`, { method: 'POST', body: JSON.stringify({ reason }) }),
   missionVerifications: (id: string) => request<VerificationRecord[]>(`/missions/${encodeURIComponent(id)}/verifications`),
   understandProblem: (objective: string, track?: string) => request<ProblemProfile>('/problems/understand', { method: 'POST', body: JSON.stringify({ objective, ...(track ? { track } : {}) }) }),
-  launchMission: (objective: string) =>
-    request<MissionDetail>('/missions', { method: 'POST', body: JSON.stringify({ objective }) }),
+  launchMission: (objective: string, track?: string) =>
+    request<MissionDetail>('/missions', { method: 'POST', body: JSON.stringify({ objective, ...(track ? { track } : {}) }) }),
   artifact: (id: string) => request<{ id: string; name: string; kind: string; content: string }>(`/artifacts/${encodeURIComponent(id)}`),
 
   employeeSchedule: (body: ScheduleRequest) =>

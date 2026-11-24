@@ -143,6 +143,34 @@ export const MIGRATIONS: Migration[] = [
       db.exec('CREATE INDEX IF NOT EXISTS idx_ext_skill_contexts_task ON ext_skill_contexts(workspace_id, task_id, created_at)');
     },
   },
+  {
+    version: 9,
+    name: 'unified-problem-and-capability-composition',
+    up(db) {
+      addColumn(db, 'os_tasks', 'fallback_tools', "TEXT NOT NULL DEFAULT '[]'");
+      db.exec(`CREATE TABLE IF NOT EXISTS os_problem_models (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        mission_id TEXT NOT NULL UNIQUE REFERENCES os_missions(id) ON DELETE CASCADE,
+        model TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      )`);
+      db.exec('CREATE INDEX IF NOT EXISTS idx_os_problem_models_ws ON os_problem_models(workspace_id, created_at)');
+      db.exec(`CREATE TABLE IF NOT EXISTS os_capability_compositions (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        mission_id TEXT NOT NULL UNIQUE REFERENCES os_missions(id) ON DELETE CASCADE,
+        graph TEXT NOT NULL DEFAULT '{}',
+        selected_strategy TEXT NOT NULL DEFAULT '',
+        strategies TEXT NOT NULL DEFAULT '[]',
+        gaps TEXT NOT NULL DEFAULT '[]',
+        explanation TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`);
+      db.exec('CREATE INDEX IF NOT EXISTS idx_os_capability_compositions_ws ON os_capability_compositions(workspace_id, created_at)');
+    },
+  },
 ];
 
 function tableExists(db: OsDatabase, name: string): boolean {

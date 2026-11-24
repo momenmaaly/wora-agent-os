@@ -29,9 +29,11 @@ import { verifyIndependently } from './independent-verification.js';
 import { redactSecrets } from './secrets.js';
 import { openTaskToolInput, sealTaskToolInput } from '../security/task-fields.js';
 import { collectCandidateLessons } from './lessons.js';
-import { comparePlans, savePlanVersion, listPlanVersions, verifyPlanExecution } from './planning.js';
+import { comparePlans, savePlanVersion, listPlanVersions, verifyPlanExecution, replanMission } from './planning.js';
 import { compareSolutionStrategies, saveDecisionRecord, listDecisionRecords, assessReplan } from './decision.js';
 import { applyAdaptiveReplan, alternativeForTask } from './adaptive-replan.js';
+import { composeMissionPlan, saveComposition, getComposition } from './capability-composition.js';
+import { modelProblem, saveProblemModel, getProblemModel } from './problem-model.js';
 import { matchCapabilities } from '../extensions/capability-intelligence.js';
 import { persistTeamPlan, resolveTaskAgent, selectReplacement, recordAgentPerformance, getTeamPlan, listSelectionDecisions } from './selection.js';
 import { logger } from '../lib/logger.js';
@@ -50,6 +52,8 @@ export interface PlanTask {
   detail: string;
   /** Optional persisted assignment for capability-guided plans. */
   agentId?: string;
+  /** Only schema-compatible, already-authorized alternatives; never a silent substitution. */
+  fallbackTools?: string[];
 }
 
 /* ─── Sample optimization data (clearly labeled) ────────── */
@@ -117,6 +121,7 @@ function extractUrls(objective: string): string[] {
 
 export function buildPlan(objective: string, track?: string, workspaceId = 'wora-preview'): PlanTask[] {
   const text = objective.trim();
+  if (track === 'composite') return composeMissionPlan({ workspaceId, objective: text, track }).tasks;
   // 'generic' forces the grounded fallback pipeline (used for kickoff missions so org building never recurses).
   if (track === 'generic') {
     return [
@@ -383,8 +388,10 @@ export function createMission(input: { workspaceId: string; objective: string; a
   if (!objective) throw new Error('Objective is required');
   ensureSeedAgents(input.workspaceId);
   const db = getOsDb();
-  const problem = understandProblem({ objective, track: input.track });
-  const plan = buildPlan(objective, input.track, input.workspaceId);
+  const composed = input.track === 'composite' ? composeMissionPlan({ workspaceId: input.workspaceId, objective, track: input.track }) : null;
+  const unified = composed?.model ?? modelProblem({ workspaceId: input.workspaceId, objective, track: input.track });
+  const problem = unified.baseProfile;
+  const plan = composed?.tasks ?? buildPlan(objective, input.track, input.workspaceId);
   const planComparison = comparePlans(plan, input.workspaceId, problem);
   const decision = compareSolutionStrategies(plan, input.workspaceId, problem);
   const missionId = newId('msn');
@@ -395,13 +402,13 @@ export function createMission(input: { workspaceId: string; objective: string; a
       .run(missionId, input.workspaceId, objective, 'planning', input.requestedBy ?? 'user', input.correlationId ?? null, ts, ts);
     const taskIds: string[] = [];
     const insertTask = db.prepare(
-      `INSERT INTO os_tasks (id, mission_id, workspace_id, order_index, title, objective, specialization, agent_id, status, depends_on, acceptance, tool, tool_input, detail, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'planned', ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO os_tasks (id, mission_id, workspace_id, order_index, title, objective, specialization, agent_id, status, depends_on, acceptance, tool, tool_input, fallback_tools, detail, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'planned', ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     for (const [index, task] of plan.entries()) {
       const taskId = newId('tsk');
       taskIds.push(taskId);
-      insertTask.run(taskId, missionId, input.workspaceId, index, task.title, task.objective, task.specialization, task.agentId ?? null, JSON.stringify(task.dependsOn), JSON.stringify(task.acceptance), task.tool, sealTaskToolInput(input.workspaceId, taskId, task.toolInput), task.detail, ts, ts);
+      insertTask.run(taskId, missionId, input.workspaceId, index, task.title, task.objective, task.specialization, task.agentId ?? null, JSON.stringify(task.dependsOn), JSON.stringify(task.acceptance), task.tool, sealTaskToolInput(input.workspaceId, taskId, task.toolInput), JSON.stringify(task.fallbackTools ?? []), task.detail, ts, ts);
     }
     // Store resolved dependency ids
     const updateDeps = db.prepare('UPDATE os_tasks SET depends_on = ? WHERE id = ?');
@@ -409,9 +416,18 @@ export function createMission(input: { workspaceId: string; objective: string; a
       if (task.dependsOn.length) updateDeps.run(JSON.stringify(task.dependsOn.map((i) => taskIds[i]!)), taskIds[index]!);
     }
     saveProblemProfile(input.workspaceId, missionId, problem);
+    saveProblemModel(input.workspaceId, missionId, unified);
     const chosenPlan = planComparison.plans.find((candidate) => candidate.strategy === decision.preferredPlan.planStrategy) ?? planComparison.preferred;
     savePlanVersion({ workspaceId: input.workspaceId, missionId, plan: chosenPlan, comparison: { ...planComparison, decision }, reason: 'initial deterministic plan with scientific method comparison', actor: input.actor ?? 'user' });
     saveDecisionRecord({ workspaceId: input.workspaceId, missionId, kind: 'initial', comparison: decision, reason: decision.reason, actor: input.actor ?? 'user' });
+    if (composed) {
+      saveComposition(input.workspaceId, missionId, composed);
+      saveDecisionRecord({
+        workspaceId: input.workspaceId, missionId, kind: 'composition-strategy',
+        comparison: { selected: composed.strategy.selected, candidates: composed.strategy.candidates, rejected: composed.strategy.rejected, graph: composed.graph },
+        reason: composed.strategy.explanation, actor: input.actor ?? 'user',
+      });
+    }
     try {
       persistTeamPlan({ workspaceId: input.workspaceId, missionId, plan, taskIds, problem, actor: input.actor ?? 'user' });
     } catch (err) {
@@ -430,7 +446,7 @@ export function createMission(input: { workspaceId: string; objective: string; a
 interface TaskRow {
   id: string; mission_id: string; workspace_id: string; order_index: number; title: string; objective: string;
   specialization: string; status: string; agent_id: string | null; depends_on: string; acceptance: string;
-  tool: string | null; tool_input: string; detail: string; created_at: string; updated_at: string;
+  tool: string | null; tool_input: string; fallback_tools: string; detail: string; created_at: string; updated_at: string;
 }
 
 function reviewRun(task: TaskRow, toolOk: boolean, output: unknown, error: string | null): { passed: boolean; issues: string[] } {
@@ -705,6 +721,8 @@ async function executeMissionInner(missionId: string, actor = 'orchestrator', op
     let attempt = 1;
     let reassignments = 0;
     let adaptiveReplans = 0;
+    let fallbackAttempts = 0;
+    let fallbackTools = parseJson<string[]>(task.fallback_tools ?? '[]', []);
     let reviewPassed = false;
     let lastOutput: unknown = null;
     let lastIssues: string[] = [];
@@ -883,6 +901,75 @@ async function executeMissionInner(missionId: string, actor = 'orchestrator', op
         workspaceId: mission.workspace_id, agentId: agent.id, taskCategory: task.specialization,
         result: reviewPassed ? 'passed' : 'failed', durationMs: lastDuration,
       });
+      // Capability replacement: only a schema-compatible, already-authorized
+      // alternative may replace a failed capability. Completed tasks are not
+      // touched, the original failure stays in the decision record, and the
+      // replacement still runs through authorization and independent review.
+      if (!reviewPassed && attempt >= maxAttempts && fallbackAttempts < fallbackTools.length) {
+        const failedTool = task.tool;
+        const failureCategory = classifyFailure(lastIssues);
+        let replacement: { tool: string; remaining: string[] } | null = null;
+        let rejection = 'No schema-compatible fallback was available.';
+        while (fallbackAttempts < fallbackTools.length) {
+          const candidateTool = fallbackTools[fallbackAttempts]!;
+          fallbackAttempts += 1;
+          const currentDef = failedTool ? getTool(failedTool, mission.workspace_id) : null;
+          const candidateDef = getTool(candidateTool, mission.workspace_id);
+          const registered = new Map(listRegisteredTools(mission.workspace_id).map((tool) => [tool.toolId, tool]));
+          const outputEquivalent = JSON.stringify(registered.get(failedTool ?? '')?.outputSchema ?? null)
+            === JSON.stringify(registered.get(candidateTool)?.outputSchema ?? null);
+          const equivalent = Boolean(currentDef && candidateDef && outputEquivalent
+            && JSON.stringify(currentDef.inputSchema ?? {}) === JSON.stringify(candidateDef.inputSchema ?? {}));
+          const authorized = Boolean(lastProfile && authorizeTool(mission.workspace_id, lastProfile, candidateTool).allowed);
+          if (equivalent && authorized) {
+            replacement = { tool: candidateTool, remaining: fallbackTools.slice(fallbackAttempts) };
+            break;
+          }
+          rejection = !candidateDef ? `Fallback ${candidateTool} is not registered.`
+            : !equivalent ? `Fallback ${candidateTool} has a different input contract; substitution refused.`
+              : `Fallback ${candidateTool} is not authorized for ${agent.name}.`;
+        }
+        if (replacement) {
+          db.exec('BEGIN IMMEDIATE');
+          try {
+            db.prepare("UPDATE os_tasks SET tool = ?, fallback_tools = ?, status = 'planned', detail = ?, updated_at = ? WHERE id = ?")
+              .run(replacement.tool, JSON.stringify(replacement.remaining),
+                `capability_replacement: ${failedTool ?? 'none'} -> ${replacement.tool}; input schema verified equivalent and agent authorized`.slice(0, 500),
+                nowIso(), task.id);
+            db.exec('COMMIT');
+          } catch (error) {
+            try { db.exec('ROLLBACK'); } catch { /* preserve original */ }
+            throw error;
+          }
+          saveDecisionRecord({
+            workspaceId: mission.workspace_id, missionId, kind: 'capability-replacement',
+            comparison: {
+              taskId: task.id, fromTool: failedTool, toTool: replacement.tool,
+              failureCategory, previousFailure: lastIssues.slice(0, 12), inputSchemaEquivalent: true, outputSchemaEquivalent: true,
+              authorizedForAgent: agent.id, remainingFallbacks: replacement.remaining,
+            },
+            reason: `Compatible capability replacement ${failedTool ?? 'none'} -> ${replacement.tool}; original failure preserved.`,
+            actor: 'orchestrator',
+          });
+          audit(db, { workspaceId: mission.workspace_id, actor: 'orchestrator', action: 'task.capability_replacement', subject: task.id, detail: { missionId, from: failedTool, to: replacement.tool, failureCategory } });
+          try { replanMission(mission.workspace_id, missionId, `capability replacement ${failedTool ?? 'none'} -> ${replacement.tool}`, 'orchestrator'); } catch { /* plan version is best-effort; execution graph is already persisted */ }
+          task.tool = replacement.tool;
+          task.fallback_tools = JSON.stringify(replacement.remaining);
+          taskInput = openTaskToolInput<Record<string, unknown>>(mission.workspace_id, task.id, task.tool_input, {});
+          attempt = 1;
+          reassignments = 0;
+          lastOutput = null;
+          lastIssues = [];
+          lastEvidence = [];
+          fallbackTools = replacement.remaining;
+          continue;
+        }
+        saveDecisionRecord({
+          workspaceId: mission.workspace_id, missionId, kind: 'capability-replacement-gap',
+          comparison: { taskId: task.id, fromTool: failedTool, rejection, fallbackTools },
+          reason: rejection, actor: 'orchestrator',
+        });
+      }
       if (!reviewPassed && attempt >= maxAttempts && reassignments < 1) {
         const replacement = selectReplacement(mission.workspace_id, {
           id: task.id, title: task.title, objective: task.objective, specialization: task.specialization,
@@ -1183,6 +1270,7 @@ const taskView = (row: TaskRow) => ({
   acceptance: parseJson<string[]>(row.acceptance, []),
   tool: row.tool,
   toolInput: openTaskToolInput(String(row.workspace_id), String(row.id), row.tool_input, {}),
+  fallbackTools: parseJson<string[]>(row.fallback_tools ?? '[]', []),
   detail: row.detail,
   createdAt: row.created_at,
   updatedAt: row.updated_at,
@@ -1219,6 +1307,8 @@ export function getMissionDetail(workspaceId: string, missionId: string) {
     verifications: listVerifications(workspaceId, { missionId, limit: 100 }),
     capabilitySnapshots: listCapabilitySnapshots(workspaceId, { missionId, limit: 100 }),
     skillContexts: listSkillContexts(workspaceId, { missionId, limit: 100 }),
+    problemModel: getProblemModel(workspaceId, missionId),
+    composition: getComposition(workspaceId, missionId),
     id: mission.id,
     objective: mission.objective,
     status: mission.status,

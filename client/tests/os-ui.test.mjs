@@ -15,6 +15,10 @@ test('execution UI controls are wired to real mission, lease and verification en
   assert.match(ui, /planVerification/);
   assert.match(ui, /payloadDigest/);
   assert.match(ui, /expiresAt/);
+  assert.match(ui, /problemModel/);
+  assert.match(ui, /composition/);
+  assert.match(ui, /تركيب القدرات/);
+  assert.match(ui, /'composite'/);
 });
 
 test('lesson lifecycle and benchmark UI call the real APIs', () => {
@@ -35,7 +39,7 @@ test('execution limits UI persists through the admin API', () => {
 
 test('typed client exposes plan, lease, lesson and benchmark contracts', () => {
   const api = read('os/api.ts');
-  for (const token of ['interface PlanVersion', 'interface TaskLease', 'interface VerificationRecord', 'interface Lesson', 'interface BenchmarkRun', 'missionPlans', 'replanMission', 'executionLimits', 'runBenchmarks']) {
+  for (const token of ['interface PlanVersion', 'interface TaskLease', 'interface VerificationRecord', 'interface Lesson', 'interface BenchmarkRun', 'interface UnifiedProblem', 'interface CompositionRecord', 'missionPlans', 'replanMission', 'executionLimits', 'runBenchmarks']) {
     assert.ok(api.includes(token), `${token} is typed`);
   }
 });
