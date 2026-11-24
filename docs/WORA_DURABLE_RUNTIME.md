@@ -58,3 +58,34 @@ The lease transaction is the concurrency boundary. Multiple workers may claim di
 - Per-task wall-clock timeout is inherited from the tool registry timeout, not a separate task-level deadline.
 - There is no priority queue, fair scheduling, or automatic retry backoff policy yet.
 - The fully concurrent mission scheduler is not implemented; multi-worker claim safety is.
+
+## 9. Opt-in worker (2026-11-24)
+
+`api-server/src/os/worker.ts` adds a deliberately small worker for resumable failed missions:
+
+- `runWorkerOnce({ workspaceId, maxMissions })` selects failed missions with interrupted/blocked or failed tasks and executes them once;
+- `startWorker({ workspaceId, intervalMs })` polls until stopped or aborted;
+- `workerSnapshot(workspaceId)` is exposed at `GET /api/os/runtime/status`;
+- `npm run worker:os` starts a separate process with a file-backed `WORA_OS_DB` and `WORA_OS_WORKSPACE_ID`.
+
+The worker is **opt-in**. The API process does not spawn it automatically. It is not a distributed scheduler: SQLite remains a single-writer store, there is no mission-level lease, and task leases are the duplicate-side-effect boundary. Use one worker per database unless serialized writes are acceptable. A PostgreSQL adapter and a real distributed queue remain future work.
+
+## 10. Deployment architecture for continuous execution
+
+The verified architecture is a **single API process plus an optional single worker process** sharing one file-backed SQLite database:
+
+```
+reverse proxy / TLS
+        |
+   WORA API (AUTH_SECRET, extension keyring)
+        |  same WORA_OS_DB file
+   WORA worker (npm run worker:os)
+        |
+   workspace volume
+```
+
+- Run the API and worker on the same host or a host with a reliable shared filesystem and SQLite locking.
+- Do not run multiple SQLite writers against the same file without accepting serialized writes and testing contention.
+- The worker requires `WORA_OS_DB` to be a file path, not `:memory:`, and `WORA_OS_WORKSPACE_ID`.
+- The API boot recovery and worker recovery are idempotent for completed tasks; an in-flight tool call is not aborted mid-flight.
+- This is not a claim of 24/7 distributed operation. A PostgreSQL adapter, mission-level lease and external queue are required before horizontal scaling.

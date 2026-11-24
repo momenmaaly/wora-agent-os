@@ -69,3 +69,18 @@ The suite compares each tested method with an independent reference, a determini
 - Quality is null where the domain has no meaningful scalar quality.
 - Planning and multi-agent fixtures measure plan structure, not executed multi-agent coordination quality.
 - Human-intervention rate is computed over two illustrative actions, not a production workload.
+
+## 6. Scientific intelligence evaluation (2026-11-24)
+
+A separate deterministic evaluation now covers the end-to-end path:
+
+- analytical uncertainty selection and execution (`sim.monte_carlo`);
+- constrained optimization (`or.employee_schedule`);
+- software project with scaffold, security scan and approval-gated tests;
+- failure diagnosis and repaired-input retry;
+- missing capability/gap reporting;
+- class C approval enforcement;
+- runtime interruption and opt-in worker recovery;
+- structured selection accuracy vs a real keyword-only baseline.
+
+Current measured result: structured **1.00**, keyword baseline **0.75** on four disambiguating fixtures; scenarios **8/8 passed**. See `WORA_SCIENTIFIC_EVALUATION.md` for dataset, assumptions and limitations. The original 14-fixture suite remains unchanged and passing.

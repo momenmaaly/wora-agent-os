@@ -69,3 +69,25 @@ The following are legitimate research directions but are **not implemented** in 
 - General program synthesis and automated debugging.
 
 They must not appear in the product as live capabilities until implemented behind a tool, tested and documented with limitations.
+
+## 6. Current implementation status (2026-11-24 update)
+
+The machine-readable domain map now lives in `api-server/src/os/science.ts` and is exposed at `GET /api/os/science/domains`. Every method carries one of:
+
+- `implemented` — backed by a real tool and tests;
+- `partial` — useful but narrower than the name implies;
+- `experimental` — not currently used in this delivery;
+- `documented` — a design direction, not executable;
+- `not_implemented` — explicitly unavailable.
+
+The map is also consumed by `benchmarks.ts` so there is one domain source of truth. A domain entry never implies that all of its methods are implemented. The full lifecycle is documented in `WORA_SCIENTIFIC_EXECUTION.md`; method scoring is in `WORA_DECISION_ENGINE.md`.
+
+Newly verified in this update:
+
+- structured problem features (`problemType`, `requires`, uncertainty, risk, deterministic/stochastic, available tools);
+- method-selection explanations with assumptions, rejected alternatives and explicit gaps;
+- deterministic plan/method scoring and persisted decision records;
+- end-to-end scenarios A–G in `src/os/scientific-e2e.test.ts`;
+- opt-in durable worker in `src/os/worker.ts` and `src/scripts/os-worker.ts`.
+
+Still absent: general semantic planning, causal inference, POMDP/MDP planning, MCTS/A*, CP-SAT, robust/stochastic optimization, model checking, SAT/SMT, robotics control and general program synthesis.

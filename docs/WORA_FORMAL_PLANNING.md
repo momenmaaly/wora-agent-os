@@ -50,3 +50,14 @@ The result is exposed as `planVerification` in mission detail.
 - Cost is a planning estimate, not money or measured wall-clock time.
 - The planner remains deterministic and template-based; HTN, A*, MDP/POMDP and constraint solvers are not claimed as implemented.
 - Replanning is a proposal. It does not silently rewrite tasks or restart execution.
+
+## 2026-11-24 update — decision engine
+
+Plan versions now include a `decision` object from `api-server/src/os/decision.ts`:
+
+- deterministic scores for direct and risk-first plans over the same task graph;
+- deterministic scores for the selected scientific method and its implemented alternatives;
+- an execution-shape recommendation and smallest capable team size;
+- assumptions, confidence, missing information and replan conditions.
+
+Initial mission creation writes an `os_decision_records` row and embeds the comparison in plan version 1. Failure assessments, authorization reassignments and explicit replans are recorded separately. Replanning still produces a new plan version and does not silently rewrite a running graph. See `WORA_DECISION_ENGINE.md`.

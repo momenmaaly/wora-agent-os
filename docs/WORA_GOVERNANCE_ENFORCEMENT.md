@@ -67,3 +67,13 @@ Existing mission tests still cover approval, denial and automatic resume.
 - The approval UI already shows the payload; it does not yet render every new field (digest, expiry, amount) as a dedicated review panel.
 - The amount budget applies when a numeric `amountUsd`, `amount`, `budgetUsd` or `costUsd` field is present in the action payload.
 - There is no multi-approver quorum or approval delegation yet.
+
+## 2026-11-24 update — complete-path enforcement
+
+The scientific end-to-end suite adds execution-path evidence for the A/B/C policy:
+
+- Class A low-risk tools execute automatically inside granted permissions (analytical and optimization scenarios).
+- Class B medium-risk tools pass the policy/scope path (software scan scenario).
+- Class C high-risk `host.exec` produces no run before approval and consumes a payload-bound approval once (restricted-operation scenario).
+- Dynamically selected agents and plugin tools go through the same capability profile, tool allowlist, permission check, action classification and approval consumption. A missing capability produces `capability_gap`; it does not widen permissions.
+- A capability denial can trigger one qualified reassignment, recorded as a decision; it cannot bypass authorization.

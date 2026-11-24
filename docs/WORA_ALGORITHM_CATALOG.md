@@ -94,9 +94,7 @@ There is **no fabricated benchmark table** here. Current evidence is:
 
 - Unit and route tests in `api-server/src/os/algorithms.test.ts` (9 tests).
 - Existing solver tests in `api-server/src/os/os.test.ts` for Hungarian, HiGHS, employee scheduling and forecast.
-- No comparative benchmark has been run against alternative implementations.
-
-A reproducible benchmark suite is a roadmap item. Until it exists, the catalog describes guarantees and limitations, not measured superiority.
+- A comparative benchmark against external libraries has not been run. The internal 14-fixture correctness suite and the structured-vs-keyword evaluation are documented in `WORA_BENCHMARKS.md` and `WORA_SCIENTIFIC_EVALUATION.md`.
 
 ## 6. Extension rules
 
@@ -107,3 +105,34 @@ To add an algorithm:
 3. Add a catalog entry with a real `toolId`, guarantee, complexity, inputs, outputs, verification and limitations.
 4. Do not mark a research method as implemented until it has a reproducible test.
 5. Update the catalog version and this document.
+
+## 7. Scientific selection extension (2026-11-24)
+
+`ProblemFeatures` now accepts structured fields beyond the original keyword features:
+
+- `problemType`: prediction, optimization, planning, causal_analysis, simulation, formal_verification, decision, allocation, scheduling or classification;
+- `requires`: explicit scientific requirements such as assignment, scheduling, optimization, simulation, forecasting, statistics, decision, causal_analysis, formal_verification, reinforcement_learning, deep_learning, bayesian_inference or mcts;
+- `uncertaintyLevel`, `constraintsCount`, `variableCount`, `dependencyCount`, `precision`, `timeLimitMs`, `riskLevel`, `deterministic`, `stochastic` and `availableTools`.
+
+Selection order is explicit `kind` → structured `problemType`/`requires` → legacy structured features → keyword fallback. Unsupported requirements and unavailable tools return `unsupported` with a gap; they are never mapped to an unrelated solver.
+
+Every catalog entry now also declares a scientific `domain`, `preconditions`, `failureConditions` and `assumptions`. `AlgorithmChoice` carries a suitability score and the selected domain.
+
+`describeScientificSelection` / `selectScientificMethod` add:
+
+- the scientific domain and method status;
+- required inputs, outputs, guarantees, limitations and verification;
+- assumptions and rejected alternatives;
+- an explicit `gap` when no valid method exists.
+
+APIs:
+
+```http
+GET  /api/os/science/domains
+POST /api/os/science/select
+POST /api/os/algorithms/select   # same structured input schema
+```
+
+The tool registry exposes the same behavior as `meta.select_scientific_method` (low risk, no permission).
+
+The older statement that no comparative benchmark exists is superseded by `WORA_SCIENTIFIC_EVALUATION.md`; the original 14-fixture benchmark remains the correctness suite.

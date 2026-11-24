@@ -200,3 +200,16 @@ Remaining blockers:
 
 - Secrets at rest, production signed-session browser E2E, OS-level plugin sandbox, distributed scheduler, CI/OTel and a general code-repair workflow.
 - Evidence: `WORA_PRODUCTION_READINESS.md`, `WORA_PLANNING_EVALUATION.md`.
+
+## Scientific intelligence follow-ups (2026-11-24)
+
+Completed in this slice: structured method selection, domain/method status map, deterministic decision scoring, decision persistence, scenarios A–G, opt-in worker and runtime status.
+
+Next candidates, in priority order:
+
+1. Inject approved skill instructions and scientific method context into planner/model prompts with provenance and token budgets.
+2. Add an explicit `applyReplan` transition that rewrites only not-yet-started tasks after a justified `assessReplan`.
+3. Add alternative-method task templates so a failed solver can be replanned to a different tool without hand-written inputs.
+4. Add a PostgreSQL adapter and distributed mission lease before claiming multi-process/24×7 execution.
+5. Add real sandboxing for untrusted plugin/MCP execution.
+6. Add calibrated decision evaluation against a held-out dataset; do not claim calibrated confidence before that.

@@ -314,3 +314,18 @@ Limitations: no user namespaces/real sandbox in this environment; additive migra
 - **APIs:** `POST /capabilities/analyze`, `GET /capabilities/performance`, `GET /missions/:id/team`; mission detail includes `teamPlan` and `selectionDecisions`.
 - **Evidence:** full API suite 262 tests (261 passed, 1 skipped); selection scenarios 12/12; benchmark dynamic accuracy 1.0 vs static 0.0 and expected verified success 1.0 vs 0.0; extension suite 26/26; client 50/50.
 - **Limitations:** no genuine sandbox; no auto-created specialists; no provider-specific model routing; performance evidence is workspace-scoped and starts cold.
+
+## 4s. Workstream 16 — scientific intelligence and autonomous execution core
+
+**Status:** implemented and tested vertical slice; not a claim of universal intelligence.
+
+- **Scientific map:** `os/science.ts` is the single source for 12 domains and method-level implementation status (`implemented`, `partial`, `experimental`, `documented`, `not_implemented`). `benchmarks.ts` now re-exports this map instead of maintaining a second copy.
+- **Method selection:** `os/algorithms.ts` accepts structured problem type/requirements, uncertainty, risk, precision, time limits and authorized tools. It explains assumptions and rejects unavailable or unimplemented methods with an explicit gap. Every algorithm entry declares domain, preconditions, failure conditions and assumptions.
+- **Decision engine:** `os/decision.ts` scores direct/risk-first plans and implemented method alternatives on quality, feasibility, cost, time, resources, risk, uncertainty, reversibility, verification difficulty, specialist/tool availability. It recommends an execution shape and smallest capable team, persists `os_decision_records`, and exposes `assessReplan` with evidence/churn guards.
+- **Execution integration:** mission creation stores the scientific profile, decision comparison and plan version; failure records a `failure-assessment`; a capability denial can trigger one qualified reassignment; explicit replans record a `replan` decision. Approval boundaries are unchanged.
+- **Runtime:** additive migration 6 adds decision records. Opt-in `worker.ts` and `scripts/os-worker.ts` resume interrupted failed missions; `GET /runtime/status` reports honest single-process limits. The API does not auto-spawn the worker.
+- **APIs:** `GET /science/domains`, `POST /science/select`, `POST /decisions/compare`, `POST /decisions/replan-check`, `GET /missions/:id/decisions`, `GET /runtime/status`; mission detail includes `decisions`.
+- **Evidence:** new `science.test.ts` 7/7 and `scientific-e2e.test.ts` 8/8 (scenarios A–G). Structured method selection 1.00 vs keyword-only baseline 0.75 on four disambiguating fixtures. Full API suite after this workstream: **280 tests, 279 passed, 1 skipped, 0 failed**; extension suite 26/26. API typecheck and build pass.
+- **Limits:** deterministic scoring, not calibrated probability; no semantic planner, causal inference, MDP/POMDP, MCTS/A*, CP-SAT, robust optimization or formal model checker; no genuine plugin sandbox; SQLite single writer and no distributed mission lease; no auto-created specialist; no UI changes in this workstream.
+
+See `WORA_SCIENTIFIC_EXECUTION.md`, `WORA_DECISION_ENGINE.md`, `WORA_SCIENTIFIC_EVALUATION.md` and the updated scientific/algorithm/runtime docs.
