@@ -21,10 +21,28 @@ export const SECRET_PATTERNS: SecretPattern[] = [
   { id: 'slack-token', pattern: /xox[baprs]-[A-Za-z0-9-]{10,}/ },
   { id: 'google-api-key', pattern: /AIza[0-9A-Za-z_-]{35}/ },
   { id: 'stripe-secret', pattern: /sk_(?:live|test)_[0-9A-Za-z]{16,}/ },
+  { id: 'jwt', pattern: /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/ },
+  { id: 'authorization-header', pattern: /\b(?:authorization|proxy-authorization)\s*[:=]\s*(?:Bearer\s+|Basic\s+)?[A-Za-z0-9._~+/=-]{8,}/giu },
+  { id: 'cookie-header', pattern: /\b(?:set-cookie|cookie)\s*[:=]\s*[^\n\r]{4,}/giu },
+  { id: 'bearer-token', pattern: /\bBearer\s+[A-Za-z0-9._~+/=-]{12,}/gu },
+  { id: 'password-assignment', pattern: /\b(?:password|passwd|pwd|client_secret|secret)\s*[:=]\s*[^\s,;]{4,}/giu },
 ];
 
 const SECRET_ENV_NAME = /(?:^|_)(?:TOKEN|SECRET|PASSWORD|PASSWD|PRIVATE_KEY|API_KEY|APIKEY|CREDENTIAL|ACCESS_KEY|AUTH_KEY)(?:_|$)/i;
+const SECRET_FIELD_NAME = /^(?:authorization|proxy-authorization|cookie|set-cookie|password|passwd|pwd|secret|client[_-]?secret|api[_-]?key|apikey|access[_-]?token|refresh[_-]?token|id[_-]?token|auth[_-]?token|private[_-]?key|session[_-]?token|session[_-]?cookie|credentials?)$/i;
 const PLACEHOLDER = /^(?:changeme|change-me|example|placeholder|test|dummy|none|null|undefined|your[-_ ].*)$/i;
+
+function redactStructuredSecretFields(input: unknown): unknown {
+  if (Array.isArray(input)) return input.map(redactStructuredSecretFields);
+  if (!input || typeof input !== 'object') return input;
+  return Object.fromEntries(Object.entries(input as Record<string, unknown>).map(([key, value]) => {
+    if (SECRET_FIELD_NAME.test(key) && value !== null && value !== undefined && typeof value !== 'boolean') {
+      if (typeof value === 'string' && PLACEHOLDER.test(value.trim())) return [key, value];
+      return [key, `[REDACTED:field:${key}]`];
+    }
+    return [key, redactStructuredSecretFields(value)];
+  }));
+}
 
 function envSecrets(env: NodeJS.ProcessEnv | undefined): Array<{ name: string; value: string }> {
   if (!env) return [];
@@ -65,7 +83,7 @@ export function redactSecrets<T>(value: T, options: { env?: NodeJS.ProcessEnv } 
     }
     return input;
   };
-  return { value: walk(value) as T, redactions: [...redactions] };
+  return { value: walk(redactStructuredSecretFields(value)) as T, redactions: [...redactions] };
 }
 
 export function redactText(text: string): string {

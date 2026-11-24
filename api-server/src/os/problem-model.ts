@@ -8,7 +8,8 @@
  */
 import { getOsDb, newId, nowIso, parseJson } from './db.js';
 import { understandProblem, type ProblemDomain, type ProblemProfile } from './problem.js';
-import { searchMemories } from './memory.js';
+import { DEFAULT_MISSION_MEMORY_SCOPES, memoryAccessibleTo, recordMemoryRetrieval, searchMemories, type MemoryScope, type MemorySourceClass, type MemoryVerificationStatus } from './memory.js';
+import { redactSecrets } from './secrets.js';
 import type { ReasoningSummary } from './reasoning-types.js';
 import type { ProblemStructure } from './problem-structure.js';
 
@@ -30,6 +31,17 @@ export interface RetrievedEvidence extends ProblemFact {
   provenance: 'retrieved-memory';
   memoryId: string;
   score: number;
+  memoryScope?: MemoryScope;
+  memoryVerificationStatus?: MemoryVerificationStatus;
+  memorySourceClass?: MemorySourceClass;
+}
+
+export interface MemoryRetrievalSummary {
+  id: string;
+  actor: string;
+  scopes: MemoryScope[];
+  scopeIds: Partial<Record<MemoryScope, string[]>>;
+  selectedIds: string[];
 }
 
 export interface MethodPlan {
@@ -72,6 +84,7 @@ export interface UnifiedProblem {
   /** Compact reference to the evidence-grounded reasoning model, when one was built. */
   reasoning?: ReasoningSummary;
   structure?: ProblemStructure;
+  memoryRetrieval?: MemoryRetrievalSummary;
   createdAt: string;
 }
 
@@ -112,19 +125,43 @@ function parseLimits(objective: string): UnifiedProblem['limits'] {
   };
 }
 
-export function modelProblem(input: { workspaceId: string; objective: string; track?: string; includeMemory?: boolean }): UnifiedProblem {
+export function modelProblem(input: {
+  workspaceId: string;
+  objective: string;
+  track?: string;
+  includeMemory?: boolean;
+  actor?: string;
+  missionId?: string | null;
+  scopes?: MemoryScope[];
+  scopeIds?: Partial<Record<MemoryScope, string[]>>;
+  onlyVerifiedSemantic?: boolean;
+}): UnifiedProblem {
   const objective = input.objective.trim().slice(0, 4000);
   if (!objective) throw new Error('Objective is required');
   const profile = understandProblem({ objective, track: input.track });
   const facts = sentenceFacts(objective);
   const evidence: RetrievedEvidence[] = [];
+  let memoryRetrieval: MemoryRetrievalSummary | undefined;
   if (input.includeMemory !== false) {
     try {
-      for (const memory of searchMemories(input.workspaceId, objective, { limit: 3 })) {
+      const actor = input.actor ?? 'system';
+      const scopes = input.scopes ?? DEFAULT_MISSION_MEMORY_SCOPES;
+      const selected = searchMemories(input.workspaceId, objective, {
+        limit: 3, actor, scopes, scopeIds: input.scopeIds,
+        onlyVerifiedSemantic: input.onlyVerifiedSemantic ?? true,
+      });
+      memoryRetrieval = recordMemoryRetrieval({
+        workspaceId: input.workspaceId, actor, missionId: input.missionId ?? null,
+        purpose: 'problem-model', query: objective, selectedIds: selected.map((memory) => memory.id),
+        scopes, scopeIds: input.scopeIds, limit: 3,
+      });
+      for (const memory of selected) {
         evidence.push({
           id: `memory-${memory.id}`, memoryId: memory.id,
           statement: memory.content.slice(0, 500), provenance: 'retrieved-memory',
           source: `memory:${memory.id}`, confidence: null, score: memory.score,
+          memoryScope: memory.scope, memoryVerificationStatus: memory.verificationStatus,
+          memorySourceClass: memory.sourceClass,
         });
       }
     } catch { /* retrieval is optional; absence is not evidence */ }
@@ -178,6 +215,7 @@ export function modelProblem(input: { workspaceId: string; objective: string; tr
       ...(evidence.length ? ['memory:retrieved'] : []), 'assumptions:explicit',
     ],
     baseProfile: profile,
+    memoryRetrieval,
     createdAt: nowIso(),
   };
 }
@@ -199,4 +237,15 @@ export function getProblemModel(workspaceId: string, missionId: string): Unified
   const row = getOsDb().prepare('SELECT model FROM os_problem_models WHERE workspace_id = ? AND mission_id = ?')
     .get(workspaceId, missionId) as { model?: string } | undefined;
   return row ? parseJson<UnifiedProblem | null>(row.model, null) : null;
+}
+
+/** Re-authorize persisted memory evidence at read time; revocation must apply to old snapshots. */
+export function filterProblemForActor(model: UnifiedProblem, workspaceId: string, actor: string): UnifiedProblem {
+  const evidence = model.evidence
+    .filter((entry) => !entry.memoryId || memoryAccessibleTo(workspaceId, entry.memoryId, actor))
+    .map((entry) => ({ ...entry, statement: redactSecrets(entry.statement).value }));
+  const memoryRetrieval = model.memoryRetrieval
+    ? { ...model.memoryRetrieval, selectedIds: model.memoryRetrieval.selectedIds.filter((id) => memoryAccessibleTo(workspaceId, id, actor)) }
+    : undefined;
+  return { ...model, evidence, ...(memoryRetrieval ? { memoryRetrieval } : {}) };
 }

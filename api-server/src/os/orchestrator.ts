@@ -16,7 +16,7 @@ import { requiresHumanApproval, createApproval, getTaskApproval, listMissionAppr
 import { classifyAction } from './actions.js';
 import { maybeDistillPlaybook, findPlaybookFor, recordPlaybookReuse } from './playbooks.js';
 import { listAgents, getAgent, ensureSeedAgents, type AgentRecord } from './registry.js';
-import { addMemory } from './memory.js';
+import { addMemory, type MemoryScope } from './memory.js';
 import { workspacePath } from './workspace.js';
 import { resolveAndSnapshot, authorizeTool } from '../extensions/capabilities.js';
 import { listRegisteredTools, listCapabilitySnapshots, listSkillContexts } from '../extensions/store.js';
@@ -33,11 +33,11 @@ import { comparePlans, savePlanVersion, listPlanVersions, verifyPlanExecution, r
 import { compareSolutionStrategies, saveDecisionRecord, listDecisionRecords, assessReplan } from './decision.js';
 import { applyAdaptiveReplan, alternativeForTask } from './adaptive-replan.js';
 import { composeMissionPlan, saveComposition, getComposition } from './capability-composition.js';
-import { modelProblem, saveProblemModel, getProblemModel } from './problem-model.js';
+import { filterProblemForActor, modelProblem, saveProblemModel, getProblemModel } from './problem-model.js';
 import { inferProblemStructure } from './problem-structure.js';
 import { evaluateSemanticCompatibility } from './semantic-contracts.js';
 import { verifyMissionOutcome, getMissionOutcome } from './outcome-verification.js';
-import { buildDeterministicReasoning, summarizeReasoning } from './reasoning-engine.js';
+import { buildDeterministicReasoning, filterReasoningForActor, summarizeReasoning } from './reasoning-engine.js';
 import { saveReasoningModel, getReasoningModel, recordOutcomeReasoningEvidence } from './reasoning-store.js';
 import { matchCapabilities } from '../extensions/capability-intelligence.js';
 import { persistTeamPlan, resolveTaskAgent, selectReplacement, recordAgentPerformance, getTeamPlan, listSelectionDecisions } from './selection.js';
@@ -134,9 +134,9 @@ function extractUrls(objective: string): string[] {
   return (objective.match(/https?:\/\/[^\s)"'\]]+/g) ?? []).slice(0, 3);
 }
 
-export function buildPlan(objective: string, track?: string, workspaceId = 'wora-preview'): PlanTask[] {
+export function buildPlan(objective: string, track?: string, workspaceId = 'wora-preview', actor = 'system'): PlanTask[] {
   const text = objective.trim();
-  if (track === 'composite') return composeMissionPlan({ workspaceId, objective: text, track }).tasks;
+  if (track === 'composite') return composeMissionPlan({ workspaceId, objective: text, track, actor }).tasks;
   // 'generic' forces the grounded fallback pipeline (used for kickoff missions so org building never recurses).
   if (track === 'generic') {
     return [
@@ -261,7 +261,7 @@ export function buildPlan(objective: string, track?: string, workspaceId = 'wora
     const algorithmSelection = selectAlgorithm({ objective: text });
     const sample = sampleEmployeeInput();
     // A validated playbook distilled from an earlier mission outranks the bundled sample.
-    const playbook = findPlaybookFor(workspaceId, 'or.employee_schedule', text);
+    const playbook = findPlaybookFor(workspaceId, 'or.employee_schedule', text, actor);
     const playbookEmployees = playbook?.toolInput as { employees: typeof sample.employees; shifts: typeof sample.shifts } | undefined;
     const provenanceDetail = playbook
       ? `Reused validated playbook ${playbook.id} (${playbook.successRuns} successful re-solve${playbook.successRuns === 1 ? '' : 's'}) distilled from an earlier mission. Same data as before — for a fresh roster use Intelligence → الجدولة التشغيلية.`
@@ -433,25 +433,38 @@ export function buildPlan(objective: string, track?: string, workspaceId = 'wora
 }
 
 /* ─── Mission lifecycle ─────────────────────────────────── */
-export function createMission(input: { workspaceId: string; objective: string; actor?: string; track?: string; requestedBy?: string; correlationId?: string }): string {
+export function createMission(input: {
+  workspaceId: string; objective: string; actor?: string; track?: string; requestedBy?: string; correlationId?: string;
+  memoryScopes?: MemoryScope[]; memoryScopeIds?: Partial<Record<MemoryScope, string[]>>;
+}): string {
   const objective = input.objective.trim().slice(0, 4000);
   if (!objective) throw new Error('Objective is required');
+  const actor = input.actor ?? 'system';
   ensureSeedAgents(input.workspaceId);
   const db = getOsDb();
-  const composed = input.track === 'composite' ? composeMissionPlan({ workspaceId: input.workspaceId, objective, track: input.track }) : null;
-  const unified = composed?.model ?? modelProblem({ workspaceId: input.workspaceId, objective, track: input.track });
-  const reasoning = buildDeterministicReasoning({ workspaceId: input.workspaceId, objective, track: input.track, baseProblem: unified });
+  const missionId = newId('msn');
+  const composed = input.track === 'composite' ? composeMissionPlan({
+    workspaceId: input.workspaceId, objective, track: input.track, actor,
+    scopes: input.memoryScopes, scopeIds: input.memoryScopeIds,
+  }) : null;
+  const unified = composed?.model ?? modelProblem({
+    workspaceId: input.workspaceId, objective, track: input.track, actor, missionId,
+    scopes: input.memoryScopes, scopeIds: input.memoryScopeIds,
+  });
+  const reasoning = buildDeterministicReasoning({
+    workspaceId: input.workspaceId, objective, track: input.track, baseProblem: unified,
+    actor, scopes: input.memoryScopes, scopeIds: input.memoryScopeIds,
+  });
   unified.reasoning = summarizeReasoning(reasoning);
   const problem = unified.baseProfile;
-  const plan = composed?.tasks ?? buildPlan(objective, input.track, input.workspaceId);
+  const plan = composed?.tasks ?? buildPlan(objective, input.track, input.workspaceId, actor);
   const planComparison = comparePlans(plan, input.workspaceId, problem);
   const decision = compareSolutionStrategies(plan, input.workspaceId, problem);
-  const missionId = newId('msn');
   const ts = nowIso();
   db.exec('BEGIN');
   try {
     db.prepare('INSERT INTO os_missions (id, workspace_id, objective, status, requested_by, correlation_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(missionId, input.workspaceId, objective, 'planning', input.requestedBy ?? 'user', input.correlationId ?? null, ts, ts);
+      .run(missionId, input.workspaceId, objective, 'planning', input.requestedBy ?? actor, input.correlationId ?? null, ts, ts);
     const taskIds: string[] = [];
     const insertTask = db.prepare(
       `INSERT INTO os_tasks (id, mission_id, workspace_id, order_index, title, objective, specialization, agent_id, status, depends_on, acceptance, tool, tool_input, fallback_tools, input_bindings, detail, created_at, updated_at)
@@ -880,7 +893,7 @@ async function executeMissionInner(missionId: string, actor = 'orchestrator', op
       const ctx: ToolContext = {
         workspaceId: mission.workspace_id,
         actor: agent.name,
-        permissions: new Set([...profile.permissions, 'memory:read', 'memory:write']),
+        permissions: new Set(profile.permissions),
         toolAllowlist: new Set(profile.tools),
         missionId,
         taskId: task.id,
@@ -1396,7 +1409,7 @@ export function listMissions(workspaceId: string, limit = 30) {
   }))).value;
 }
 
-export function getMissionDetail(workspaceId: string, missionId: string) {
+export function getMissionDetail(workspaceId: string, missionId: string, actor?: string) {
   const db = getOsDb();
   const mission = db.prepare('SELECT * FROM os_missions WHERE workspace_id = ? AND id = ?').get(workspaceId, missionId) as
     | { id: string; workspace_id: string; objective: string; status: string; summary: string; requested_by: string; correlation_id?: string | null; artifact_id: string | null; outcome_status?: string; outcome_evidence?: string; created_at: string; updated_at: string }
@@ -1408,6 +1421,12 @@ export function getMissionDetail(workspaceId: string, missionId: string) {
   const handoffs = db.prepare('SELECT * FROM os_handoffs WHERE mission_id = ? ORDER BY created_at ASC').all(missionId) as Array<Record<string, string>>;
   const artifacts = db.prepare('SELECT id, name, kind, created_at FROM os_artifacts WHERE mission_id = ?').all(missionId) as Array<Record<string, string>>;
   const approvals = listMissionApprovals(workspaceId, missionId);
+  const rawProblemModel = getProblemModel(workspaceId, missionId);
+  const rawReasoning = getReasoningModel(workspaceId, missionId);
+  const visibleProblemModel = rawProblemModel && actor && actor !== 'system'
+    ? filterProblemForActor(rawProblemModel, workspaceId, actor) : rawProblemModel;
+  const visibleReasoning = rawReasoning && actor && actor !== 'system'
+    ? filterReasoningForActor(rawReasoning, workspaceId, actor) : rawReasoning;
   return redactSecrets({
     approvals,
     problemProfile: getProblemProfile(workspaceId, missionId),
@@ -1419,11 +1438,11 @@ export function getMissionDetail(workspaceId: string, missionId: string) {
     verifications: listVerifications(workspaceId, { missionId, limit: 100 }),
     capabilitySnapshots: listCapabilitySnapshots(workspaceId, { missionId, limit: 100 }),
     skillContexts: listSkillContexts(workspaceId, { missionId, limit: 100 }),
-    problemModel: getProblemModel(workspaceId, missionId),
+    problemModel: visibleProblemModel,
     composition: getComposition(workspaceId, missionId),
     outcomeStatus: mission.outcome_status ?? 'unverified',
     outcomeVerification: getMissionOutcome(workspaceId, missionId),
-    reasoning: getReasoningModel(workspaceId, missionId),
+    reasoning: visibleReasoning,
     id: mission.id,
     objective: mission.objective,
     status: mission.status,

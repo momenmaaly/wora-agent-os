@@ -46,6 +46,8 @@ export interface ReasoningClaim {
   supports: string[];
   contradicts: string[];
   active: boolean;
+  /** Set only for retrieved-memory claims so persisted models can be re-authorized on read. */
+  memoryId?: string;
 }
 
 export interface Hypothesis {

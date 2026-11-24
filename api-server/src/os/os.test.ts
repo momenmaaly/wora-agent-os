@@ -455,11 +455,11 @@ test('memory: owner-visibility records are hidden from other actors; workspace r
   assert.ok(deleteMemory(ws, secret.id, 'alice'));
 });
 
-test('memory: writes snapshot create/delete versions; TTL hides expired records', async () => {
+test('memory: writes create snapshots; TTL hides expired records', async () => {
   const { listMemoryVersions } = await import('./memory.js');
   const ws = 'wora-test-memver';
   const record = addMemory({ workspaceId: ws, scope: 'project', scopeId: 'p1', content: 'v1 content', actor: 'qa' });
-  const versions = listMemoryVersions(ws, record.id, 'qa');
+  const versions = listMemoryVersions(ws, record.id, 'qa') ?? [];
   assert.ok(versions.some((v) => v.action === 'create'));
   const expiring = addMemory({ workspaceId: ws, scope: 'episodic', content: 'temporary note', ttlDays: 1, actor: 'qa' });
   const db = (await import('./db.js')).getOsDb();

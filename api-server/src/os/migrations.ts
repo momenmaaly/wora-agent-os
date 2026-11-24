@@ -211,6 +211,58 @@ export const MIGRATIONS: Migration[] = [
       }
     },
   },
+  {
+    version: 13,
+    name: 'memory-security-and-trust-foundation',
+    up(db) {
+      addColumn(db, 'os_memory', 'source_class', "TEXT NOT NULL DEFAULT 'legacy'");
+      addColumn(db, 'os_memory', 'verification_status', "TEXT NOT NULL DEFAULT 'unverified'");
+      addColumn(db, 'os_memory', 'knowledge_status', "TEXT NOT NULL DEFAULT 'active'");
+      addColumn(db, 'os_memory', 'reviewed_by', 'TEXT');
+      addColumn(db, 'os_memory', 'reviewed_at', 'TEXT');
+      addColumn(db, 'os_memory', 'evidence_digest', "TEXT NOT NULL DEFAULT ''");
+      addColumn(db, 'os_memory', 'content_digest', "TEXT NOT NULL DEFAULT ''");
+      addColumn(db, 'os_lessons', 'inconclusive_count', 'INTEGER NOT NULL DEFAULT 0');
+      addColumn(db, 'os_playbooks', 'created_by', "TEXT NOT NULL DEFAULT 'system'");
+      db.exec(`CREATE TABLE IF NOT EXISTS os_lesson_applications (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        lesson_id TEXT NOT NULL REFERENCES os_lessons(id) ON DELETE CASCADE,
+        mission_id TEXT NOT NULL REFERENCES os_missions(id) ON DELETE CASCADE,
+        task_id TEXT,
+        actor TEXT NOT NULL,
+        applied_at TEXT NOT NULL,
+        source TEXT NOT NULL DEFAULT 'explicit',
+        evidence_digest TEXT NOT NULL DEFAULT '',
+        UNIQUE(workspace_id, lesson_id, mission_id, task_id)
+      )`);
+      db.exec('CREATE INDEX IF NOT EXISTS idx_os_lesson_applications_lesson ON os_lesson_applications(workspace_id, lesson_id, applied_at)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_os_lesson_applications_mission ON os_lesson_applications(workspace_id, mission_id)');
+      db.exec(`CREATE TABLE IF NOT EXISTS os_memory_retrievals (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        actor TEXT NOT NULL,
+        mission_id TEXT,
+        purpose TEXT NOT NULL,
+        query_digest TEXT NOT NULL,
+        scopes TEXT NOT NULL DEFAULT '[]',
+        scope_ids TEXT NOT NULL DEFAULT '{}',
+        selected_ids TEXT NOT NULL DEFAULT '[]',
+        limit_count INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL
+      )`);
+      db.exec('CREATE INDEX IF NOT EXISTS idx_os_memory_retrievals_ws ON os_memory_retrievals(workspace_id, created_at)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_os_memory_retrievals_mission ON os_memory_retrievals(workspace_id, mission_id, created_at)');
+      const agentRows = db.prepare('SELECT id, tools FROM os_agents').all() as Array<{ id: string; tools: string }>;
+      const updateAgent = db.prepare('UPDATE os_agents SET tools = ?, updated_at = ? WHERE id = ?');
+      for (const row of agentRows) {
+        const tools = JSON.parse(row.tools || '[]') as unknown;
+        if (!Array.isArray(tools)) continue;
+        const filtered = tools.filter((tool) => tool !== 'memory.search' && tool !== 'memory.write');
+        if (filtered.length !== tools.length) updateAgent.run(JSON.stringify(filtered), nowIso(), row.id);
+      }
+    },
+  },
 ];
 
 function tableExists(db: OsDatabase, name: string): boolean {

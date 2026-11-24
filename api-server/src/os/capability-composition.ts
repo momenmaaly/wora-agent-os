@@ -11,6 +11,7 @@ import { listRegisteredTools } from '../extensions/store.js';
 import { getTool } from './tools.js';
 import { listCapabilityCandidates, type CapabilityCandidate } from '../extensions/capability-intelligence.js';
 import { modelProblem, type UnifiedProblem } from './problem-model.js';
+import type { MemoryScope } from './memory.js';
 import { synthesizeCompositionStrategy, type CompositionStrategyDecision } from './strategy-synthesis.js';
 import { evaluateSemanticCompatibility } from './semantic-contracts.js';
 import type { PlanTask } from './orchestrator.js';
@@ -167,8 +168,14 @@ function nodeFor(candidate: CapabilityCandidate, role: CompositionRole, objectiv
   };
 }
 
-export function buildCompositionGraph(input: { workspaceId: string; objective: string; model?: UnifiedProblem }): CompositionGraph {
-  const model = input.model ?? modelProblem({ workspaceId: input.workspaceId, objective: input.objective });
+export function buildCompositionGraph(input: {
+  workspaceId: string; objective: string; model?: UnifiedProblem; actor?: string;
+  scopes?: MemoryScope[]; scopeIds?: Partial<Record<MemoryScope, string[]>>;
+}): CompositionGraph {
+  const model = input.model ?? modelProblem({
+    workspaceId: input.workspaceId, objective: input.objective, actor: input.actor,
+    scopes: input.scopes, scopeIds: input.scopeIds,
+  });
   const candidates = listCapabilityCandidates({ workspaceId: input.workspaceId, objective: input.objective });
   const usable = candidates.filter((candidate) => candidate.available && candidate.tool);
   const gaps: CompositionGap[] = [];
@@ -294,9 +301,18 @@ function planFromGraph(graph: CompositionGraph, selectedIds: string[]): PlanTask
   });
 }
 
-export function composeMissionPlan(input: { workspaceId: string; objective: string; track?: string; model?: UnifiedProblem }): ComposedMission {
-  const model = input.model ?? modelProblem({ workspaceId: input.workspaceId, objective: input.objective, track: input.track });
-  const graph = buildCompositionGraph({ workspaceId: input.workspaceId, objective: input.objective, model });
+export function composeMissionPlan(input: {
+  workspaceId: string; objective: string; track?: string; model?: UnifiedProblem; actor?: string;
+  scopes?: MemoryScope[]; scopeIds?: Partial<Record<MemoryScope, string[]>>;
+}): ComposedMission {
+  const model = input.model ?? modelProblem({
+    workspaceId: input.workspaceId, objective: input.objective, track: input.track, actor: input.actor,
+    scopes: input.scopes, scopeIds: input.scopeIds,
+  });
+  const graph = buildCompositionGraph({
+    workspaceId: input.workspaceId, objective: input.objective, model,
+    actor: input.actor, scopes: input.scopes, scopeIds: input.scopeIds,
+  });
   const strategy = synthesizeCompositionStrategy(graph, model);
   const selectedIds = strategy.selected?.nodeIds ?? [];
   let tasks = planFromGraph(graph, selectedIds);

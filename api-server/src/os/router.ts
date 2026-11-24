@@ -24,12 +24,12 @@ import { understandProblem, getProblemProfile } from './problem.js';
 import { modelProblem } from './problem-model.js';
 import { composeMissionPlan, getComposition } from './capability-composition.js';
 import { getMissionOutcome } from './outcome-verification.js';
-import { analyzeProblemReasoning, buildDeterministicReasoning } from './reasoning-engine.js';
+import { analyzeProblemReasoning, buildDeterministicReasoning, filterReasoningForActor } from './reasoning-engine.js';
 import { addReasoningEvidence, getReasoningModel, listReasoningVersions } from './reasoning-store.js';
 import { reasoningProviderStatus } from './reasoning-provider.js';
 import { listPlanVersions, replanMission } from './planning.js';
 import { previewTeam, getTeamPlan, listSelectionDecisions, performanceReport, requirementsForPlan } from './selection.js';
-import { listLessons, getLesson, collectCandidateLessons, evaluateLesson, promoteLesson, rejectLesson, revokeLesson, recordLessonOutcome, listLessonEvents } from './lessons.js';
+import { listLessons, getLesson, collectCandidateLessons, evaluateLesson, promoteLesson, rejectLesson, revokeLesson, recordLessonOutcome, listLessonEvents, recordLessonApplication, listLessonApplications } from './lessons.js';
 import { redactSecrets } from './secrets.js';
 import { runBenchmarkSuite, listBenchmarkRuns } from './benchmarks.js';
 import { listScientificDomains, scientificCatalogSummary, selectScientificMethod } from './science.js';
@@ -46,7 +46,7 @@ import {
 import {
   createMission, executeMission, getMissionDetail, listMissions, getOsState, markInterruptedMissions, pauseMission, resumeMission, cancelMission, buildPlan,
 } from './orchestrator.js';
-import { addMemory, listMemories, searchMemories, deleteMemory, listMemoryVersions, MEMORY_SCOPES, type MemoryScope } from './memory.js';
+import { addMemory, listMemories, searchMemories, deleteMemory, listMemoryVersions, listMemoryRetrievals, MemoryPolicyError, MEMORY_SCOPES, type MemoryScope } from './memory.js';
 import { getWorkspaceRole, roleRank, listWorkspaceRoles, setWorkspaceRole, removeWorkspaceRole, type WorkspaceRole } from './roles.js';
 import { getBoard, putBoard, clearBoard } from './boards.js';
 import { createTwin, getTwin, listTwins, deleteTwin, recordObservation, runScenario, type TwinDriver, type TwinKpi } from './twins.js';
@@ -181,6 +181,7 @@ export function createOsRouter(options: { production?: boolean } = {}): Router {
       { method: 'POST', pattern: /^\/settings\/execution-limits$/ },
       { method: 'POST', pattern: /^\/lessons\/[^/]+\/promote$/ },
       { method: 'POST', pattern: /^\/lessons\/[^/]+\/revoke$/ },
+      { method: 'POST', pattern: /^\/lessons\/[^/]+\/outcomes$/ },
       { method: 'POST', pattern: /^\/code-repair$/ },
       { method: 'POST', pattern: /^\/recovery$/ },
       { method: 'POST', pattern: /^\/code-repair\/inspect$/ },
@@ -287,7 +288,7 @@ export function createOsRouter(options: { production?: boolean } = {}): Router {
   }));
 
   router.get('/missions/:id/team', asyncWrap((req, res) => {
-    const detail = getMissionDetail(workspace(res), param(req, 'id'));
+    const detail = getMissionDetail(workspace(res), param(req, 'id'), actor(res));
     if (!detail) { res.status(404).json({ error: 'Mission not found' }); return; }
     res.json({ team: getTeamPlan(workspace(res), detail.id), decisions: listSelectionDecisions(workspace(res), detail.id) });
   }));
@@ -343,7 +344,7 @@ export function createOsRouter(options: { production?: boolean } = {}): Router {
   }));
 
   router.get('/missions/:id/decisions', asyncWrap((req, res) => {
-    const detail = getMissionDetail(workspace(res), param(req, 'id'));
+    const detail = getMissionDetail(workspace(res), param(req, 'id'), actor(res));
     if (!detail) { res.status(404).json({ error: 'Mission not found' }); return; }
     res.json({ decisions: listDecisionRecords(workspace(res), detail.id) });
   }));
@@ -484,21 +485,27 @@ function highRiskAgentCapabilities(permissions: readonly string[], tools: readon
   const createMissionSchema = z.object({
     objective: z.string().trim().min(3).max(4000),
     track: z.string().trim().min(1).max(40).optional(),
+    memoryScopes: z.array(z.enum(MEMORY_SCOPES)).max(8).optional(),
+    memoryScopeIds: z.record(z.string(), z.array(z.string().trim().min(1).max(120)).max(50)).optional(),
     execute: z.boolean().default(true),
   }).strict();
 
   router.post('/missions', asyncWrap(async (req, res) => {
     if (!rateLimit(workspace(res), 30, req.path)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
     const body = createMissionSchema.parse(req.body ?? {});
-    const missionId = createMission({ workspaceId: workspace(res), objective: body.objective, actor: actor(res), track: body.track, correlationId: correlation(res) });
+    const missionId = createMission({
+      workspaceId: workspace(res), objective: body.objective, actor: actor(res), track: body.track,
+      correlationId: correlation(res), memoryScopes: body.memoryScopes,
+      memoryScopeIds: body.memoryScopeIds as Partial<Record<MemoryScope, string[]>> | undefined,
+    });
     // Execute asynchronously by default; execute:false leaves the mission for a
     // durable worker or an explicit POST /missions/:id/execute.
     if (body.execute) void executeMission(missionId, actor(res)).catch((err) => logger.error({ err, missionId }, 'mission execution failed'));
-    res.status(202).json(getMissionDetail(workspace(res), missionId));
+    res.status(202).json(getMissionDetail(workspace(res), missionId, actor(res)));
   }));
 
   router.get('/missions/:id', asyncWrap((req, res) => {
-    const detail = getMissionDetail(workspace(res), param(req, 'id'));
+    const detail = getMissionDetail(workspace(res), param(req, 'id'), actor(res));
     if (!detail) { res.status(404).json({ error: 'Mission not found' }); return; }
     res.json(detail);
   }));
@@ -515,31 +522,31 @@ function highRiskAgentCapabilities(permissions: readonly string[], tools: readon
 
   router.post('/missions/:id/execute', asyncWrap(async (req, res) => {
     if (!rateLimit(workspace(res), 30, req.path)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
-    const detail = getMissionDetail(workspace(res), param(req, 'id'));
+    const detail = getMissionDetail(workspace(res), param(req, 'id'), actor(res));
     if (!detail) { res.status(404).json({ error: 'Mission not found' }); return; }
     const body = z.object({ concurrency: z.number().int().min(1).max(8).optional() }).strict().parse(req.body ?? {});
     await executeMission(detail.id, actor(res), { concurrency: body.concurrency });
-    res.json(getMissionDetail(workspace(res), detail.id));
+    res.json(getMissionDetail(workspace(res), detail.id, actor(res)));
   }));
 
   router.post('/missions/:id/tasks/:taskId/replan', asyncWrap((req, res) => {
     if (!rateLimit(workspace(res), 20, req.path)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
     const body = z.object({ reason: z.string().trim().min(3).max(500) }).strict().parse(req.body ?? {});
-    const detail = getMissionDetail(workspace(res), param(req, 'id'));
+    const detail = getMissionDetail(workspace(res), param(req, 'id'), actor(res));
     if (!detail) { res.status(404).json({ error: 'Mission not found' }); return; }
     const task = detail.tasks.find((candidate) => candidate.id === param(req, 'taskId'));
     if (!task) { res.status(404).json({ error: 'Task not found' }); return; }
     const candidate = alternativeForTask({ tool: task.tool, toolInput: task.toolInput });
     if (!candidate) { res.status(409).json({ error: 'No implemented equivalent alternative exists', code: 'NO_IMPLEMENTED_ALTERNATIVE' }); return; }
     const transition = applyAdaptiveReplan({ workspaceId: workspace(res), missionId: detail.id, taskId: task.id, reason: body.reason, actor: actor(res) });
-    res.status(transition.applied ? 200 : 409).json({ transition, mission: getMissionDetail(workspace(res), detail.id) });
+    res.status(transition.applied ? 200 : 409).json({ transition, mission: getMissionDetail(workspace(res), detail.id, actor(res)) });
   }));
 
   router.post('/missions/:id/pause', asyncWrap((req, res) => {
     if (!rateLimit(workspace(res), 30, req.path)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
     const changed = pauseMission(workspace(res), param(req, 'id'), actor(res));
     if (!changed) { res.status(404).json({ error: 'Mission not found or not pausable' }); return; }
-    res.json(getMissionDetail(workspace(res), param(req, 'id')));
+    res.json(getMissionDetail(workspace(res), param(req, 'id'), actor(res)));
   }));
 
   router.post('/missions/:id/resume', asyncWrap(async (req, res) => {
@@ -547,14 +554,14 @@ function highRiskAgentCapabilities(permissions: readonly string[], tools: readon
     const changed = resumeMission(workspace(res), param(req, 'id'), actor(res));
     if (!changed) { res.status(404).json({ error: 'Mission not found or not resumable' }); return; }
     await executeMission(param(req, 'id'), actor(res));
-    res.json(getMissionDetail(workspace(res), param(req, 'id')));
+    res.json(getMissionDetail(workspace(res), param(req, 'id'), actor(res)));
   }));
 
   router.post('/missions/:id/cancel', asyncWrap((req, res) => {
     if (!rateLimit(workspace(res), 30, req.path)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
     const changed = cancelMission(workspace(res), param(req, 'id'), actor(res));
     if (!changed) { res.status(404).json({ error: 'Mission not found or not cancellable' }); return; }
-    res.json(getMissionDetail(workspace(res), param(req, 'id')));
+    res.json(getMissionDetail(workspace(res), param(req, 'id'), actor(res)));
   }));
 
   router.get('/missions/:id/leases', asyncWrap((req, res) => {
@@ -649,10 +656,26 @@ function highRiskAgentCapabilities(permissions: readonly string[], tools: readon
     res.json(revokeLesson(workspace(res), param(req, 'id'), actor(res), body.reason));
   }));
 
+  router.get('/lessons/:id/applications', asyncWrap((req, res) => {
+    const lesson = getLesson(workspace(res), param(req, 'id'));
+    if (!lesson) { res.status(404).json({ error: 'Lesson not found' }); return; }
+    res.json(listLessonApplications(workspace(res), lesson.id));
+  }));
+
+  router.post('/lessons/:id/applications', asyncWrap((req, res) => {
+    if (!rateLimit(workspace(res), 30, req.path)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    const body = z.object({
+      missionId: z.string().trim().min(1).max(100),
+      taskId: z.string().trim().min(1).max(100).optional(),
+      source: z.string().trim().min(1).max(80).optional(),
+    }).strict().parse(req.body ?? {});
+    res.status(201).json(recordLessonApplication(workspace(res), param(req, 'id'), body, actor(res)));
+  }));
+
   router.post('/lessons/:id/outcomes', asyncWrap((req, res) => {
     if (!rateLimit(workspace(res), 30, req.path)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
     const body = z.object({
-      success: z.boolean(), missionId: z.string().trim().max(100).optional(), taskId: z.string().trim().max(100).optional(),
+      applicationId: z.string().trim().min(1).max(100),
       evidence: z.unknown().optional(),
     }).strict().parse(req.body ?? {});
     res.json(recordLessonOutcome(workspace(res), param(req, 'id'), body, actor(res)));
@@ -674,14 +697,14 @@ function highRiskAgentCapabilities(permissions: readonly string[], tools: readon
   }));
 
   router.get('/missions/:id/problem-model', asyncWrap((req, res) => {
-    const detail = getMissionDetail(workspace(res), param(req, 'id'));
+    const detail = getMissionDetail(workspace(res), param(req, 'id'), actor(res));
     if (!detail) { res.status(404).json({ error: 'Mission not found' }); return; }
     if (!detail.problemModel) { res.status(404).json({ error: 'Unified problem model not found' }); return; }
     res.json(detail.problemModel);
   }));
 
   router.get('/missions/:id/composition', asyncWrap((req, res) => {
-    const detail = getMissionDetail(workspace(res), param(req, 'id'));
+    const detail = getMissionDetail(workspace(res), param(req, 'id'), actor(res));
     if (!detail) { res.status(404).json({ error: 'Mission not found' }); return; }
     const composition = getComposition(workspace(res), detail.id);
     if (!composition) { res.status(404).json({ error: 'Capability composition not found' }); return; }
@@ -689,7 +712,7 @@ function highRiskAgentCapabilities(permissions: readonly string[], tools: readon
   }));
 
   router.get('/missions/:id/outcome', asyncWrap((req, res) => {
-    const detail = getMissionDetail(workspace(res), param(req, 'id'));
+    const detail = getMissionDetail(workspace(res), param(req, 'id'), actor(res));
     if (!detail) { res.status(404).json({ error: 'Mission not found' }); return; }
     const outcome = getMissionOutcome(workspace(res), detail.id);
     if (!outcome) { res.status(404).json({ error: 'Outcome verification not found' }); return; }
@@ -719,6 +742,8 @@ function highRiskAgentCapabilities(permissions: readonly string[], tools: readon
       objective: z.string().trim().min(3).max(4000),
       track: z.string().trim().min(1).max(40).optional(),
       useModel: z.boolean().optional(),
+      memoryScopes: z.array(z.enum(MEMORY_SCOPES)).max(8).optional(),
+      memoryScopeIds: z.record(z.string(), z.array(z.string().trim().min(1).max(120)).max(50)).optional(),
       evidence: z.array(evidenceSchema).max(20).optional(),
     }).strict().parse(req.body ?? {});
     const evidence = (body.evidence ?? []).map((item) => ({
@@ -726,28 +751,37 @@ function highRiskAgentCapabilities(permissions: readonly string[], tools: readon
       trust: item.kind === 'assumption' ? 'assumption' as const : 'unverified' as const,
     }));
     const model = body.useModel
-      ? await analyzeProblemReasoning({ workspaceId: workspace(res), objective: body.objective, track: body.track, evidence, useModel: true })
-      : buildDeterministicReasoning({ workspaceId: workspace(res), objective: body.objective, track: body.track, evidence });
+      ? await analyzeProblemReasoning({
+        workspaceId: workspace(res), objective: body.objective, track: body.track, evidence, useModel: true,
+        actor: actor(res), scopes: body.memoryScopes,
+        scopeIds: body.memoryScopeIds as Partial<Record<MemoryScope, string[]>> | undefined,
+      })
+      : buildDeterministicReasoning({
+        workspaceId: workspace(res), objective: body.objective, track: body.track, evidence,
+        actor: actor(res), scopes: body.memoryScopes,
+        scopeIds: body.memoryScopeIds as Partial<Record<MemoryScope, string[]>> | undefined,
+      });
     res.json(model);
   }));
 
   router.get('/missions/:id/reasoning', asyncWrap((req, res) => {
-    const detail = getMissionDetail(workspace(res), param(req, 'id'));
+    const detail = getMissionDetail(workspace(res), param(req, 'id'), actor(res));
     if (!detail) { res.status(404).json({ error: 'Mission not found' }); return; }
     const model = getReasoningModel(workspace(res), detail.id);
     if (!model) { res.status(404).json({ error: 'Reasoning model not found' }); return; }
-    res.json(model);
+    res.json(filterReasoningForActor(model, workspace(res), actor(res)));
   }));
 
   router.get('/missions/:id/reasoning/versions', asyncWrap((req, res) => {
-    const detail = getMissionDetail(workspace(res), param(req, 'id'));
+    const detail = getMissionDetail(workspace(res), param(req, 'id'), actor(res));
     if (!detail) { res.status(404).json({ error: 'Mission not found' }); return; }
-    res.json(listReasoningVersions(workspace(res), detail.id, 10));
+    res.json(listReasoningVersions(workspace(res), detail.id, 10)
+      .map((version) => ({ ...version, model: filterReasoningForActor(version.model, workspace(res), actor(res)) })));
   }));
 
   router.post('/missions/:id/reasoning/evidence', asyncWrap((req, res) => {
     if (!rateLimit(workspace(res), 20, req.path)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
-    const detail = getMissionDetail(workspace(res), param(req, 'id'));
+    const detail = getMissionDetail(workspace(res), param(req, 'id'), actor(res));
     if (!detail) { res.status(404).json({ error: 'Mission not found' }); return; }
     const body = z.object({
       evidence: z.array(z.object({
@@ -770,14 +804,29 @@ function highRiskAgentCapabilities(permissions: readonly string[], tools: readon
 
   router.post('/problems/analyze', asyncWrap((req, res) => {
     if (!rateLimit(workspace(res), 60, req.path)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
-    const body = z.object({ objective: z.string().trim().min(3).max(4000), track: z.string().trim().min(1).max(40).optional() }).strict().parse(req.body ?? {});
-    res.json(modelProblem({ workspaceId: workspace(res), objective: body.objective, track: body.track }));
+    const body = z.object({
+      objective: z.string().trim().min(3).max(4000), track: z.string().trim().min(1).max(40).optional(),
+      memoryScopes: z.array(z.enum(MEMORY_SCOPES)).max(8).optional(),
+      memoryScopeIds: z.record(z.string(), z.array(z.string().trim().min(1).max(120)).max(50)).optional(),
+    }).strict().parse(req.body ?? {});
+    res.json(modelProblem({
+      workspaceId: workspace(res), objective: body.objective, track: body.track, actor: actor(res),
+      scopes: body.memoryScopes, scopeIds: body.memoryScopeIds as Partial<Record<MemoryScope, string[]>> | undefined,
+    }));
   }));
 
   router.post('/problems/compose', asyncWrap((req, res) => {
     if (!rateLimit(workspace(res), 30, req.path)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
-    const body = z.object({ objective: z.string().trim().min(3).max(4000), track: z.string().trim().max(40).optional() }).strict().parse(req.body ?? {});
-    const composed = composeMissionPlan({ workspaceId: workspace(res), objective: body.objective, track: body.track ?? 'composite' });
+    const body = z.object({
+      objective: z.string().trim().min(3).max(4000), track: z.string().trim().max(40).optional(),
+      memoryScopes: z.array(z.enum(MEMORY_SCOPES)).max(8).optional(),
+      memoryScopeIds: z.record(z.string(), z.array(z.string().trim().min(1).max(120)).max(50)).optional(),
+    }).strict().parse(req.body ?? {});
+    const composed = composeMissionPlan({
+      workspaceId: workspace(res), objective: body.objective, track: body.track ?? 'composite',
+      actor: actor(res), scopes: body.memoryScopes,
+      scopeIds: body.memoryScopeIds as Partial<Record<MemoryScope, string[]>> | undefined,
+    });
     res.json({ model: composed.model, graph: composed.graph, strategy: composed.strategy, tasks: composed.tasks });
   }));
 
@@ -981,14 +1030,34 @@ function highRiskAgentCapabilities(permissions: readonly string[], tools: readon
   /* ─── Memory ─── */
   router.get('/memory', asyncWrap((req, res) => {
     const scope = typeof req.query['scope'] === 'string' ? req.query['scope'] as MemoryScope : undefined;
+    const scopeId = typeof req.query['scopeId'] === 'string' ? req.query['scopeId'].slice(0, 120) : undefined;
     const q = typeof req.query['q'] === 'string' ? req.query['q'].slice(0, 500) : undefined;
     const limit = Number(req.query['limit'] ?? 50);
-    if (q) { res.json(searchMemories(workspace(res), q, { scope, limit, actor: actor(res) })); return; }
-    res.json(listMemories(workspace(res), { scope: scope && MEMORY_SCOPES.includes(scope) ? scope : undefined, limit, actor: actor(res) }));
+    const filter = {
+      scope: scope && MEMORY_SCOPES.includes(scope) ? scope : undefined,
+      scopeId, limit, actor: actor(res),
+    };
+    if (q) { res.json(searchMemories(workspace(res), q, filter)); return; }
+    res.json(listMemories(workspace(res), filter));
+  }));
+
+  router.get('/memory/retrievals', asyncWrap((req, res) => {
+    const role = getWorkspaceRole(workspace(res), actor(res));
+    const requestedActor = typeof req.query['actor'] === 'string' ? req.query['actor'].slice(0, 200) : actor(res);
+    if (roleRank(role) < roleRank('admin') && requestedActor !== actor(res)) {
+      res.status(403).json({ error: 'Only an admin may inspect another actor\'s retrieval snapshots' });
+      return;
+    }
+    const missionId = typeof req.query['missionId'] === 'string' ? req.query['missionId'].slice(0, 100) : undefined;
+    res.json(listMemoryRetrievals(workspace(res), {
+      missionId, actor: requestedActor, limit: Number(req.query['limit'] ?? 50),
+    }));
   }));
 
   router.get('/memory/:id/versions', asyncWrap((req, res) => {
-    res.json(listMemoryVersions(workspace(res), param(req, 'id'), actor(res)));
+    const versions = listMemoryVersions(workspace(res), param(req, 'id'), actor(res));
+    if (versions === null) { res.status(404).json({ error: 'Memory record not found or not visible' }); return; }
+    res.json(versions);
   }));
 
   router.post('/memory', asyncWrap((req, res) => {
@@ -1001,7 +1070,12 @@ function highRiskAgentCapabilities(permissions: readonly string[], tools: readon
       visibility: z.enum(['workspace', 'owner']).optional(),
       ttlDays: z.number().int().min(1).max(3650).nullish(),
     }).strict().parse(req.body ?? {});
-    res.status(201).json(addMemory({ workspaceId: workspace(res), scope: body.scope, scopeId: body.scopeId, content: body.content, tags: body.tags, provenance: 'user', actor: actor(res), visibility: body.visibility, ttlDays: body.ttlDays ?? null }));
+    try {
+      res.status(201).json(addMemory({ workspaceId: workspace(res), scope: body.scope, scopeId: body.scopeId, content: body.content, tags: body.tags, provenance: 'user', actor: actor(res), visibility: body.visibility, ttlDays: body.ttlDays ?? null }));
+    } catch (error) {
+      if (error instanceof MemoryPolicyError) { res.status(422).json({ error: error.message, code: error.code }); return; }
+      throw error;
+    }
   }));
 
   router.delete('/memory/:id', asyncWrap((req, res) => {

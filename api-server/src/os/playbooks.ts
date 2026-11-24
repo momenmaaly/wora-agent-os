@@ -15,6 +15,7 @@
 import { getOsDb, newId, nowIso, parseJson, audit } from './db.js';
 import { openTaskToolInput } from '../security/task-fields.js';
 import { solveEmployeeSchedule, solveAssignment, solveLp } from './ortools.js';
+import { redactSecrets } from './secrets.js';
 
 const OR_TOOLS = new Set(['or.employee_schedule', 'or.assignment', 'or.solve_lp']);
 
@@ -22,7 +23,8 @@ export interface PlaybookRecord {
   id: string; name: string; toolId: string; keywords: string[];
   toolInput: Record<string, unknown>;
   validation: { ok: boolean; detail: string };
-  status: 'validated'; successRuns: number; reuseCount: number; createdFromMission: string | null; createdAt: string; updatedAt: string;
+  status: 'validated'; successRuns: number; reuseCount: number; createdFromMission: string | null;
+  createdBy: string; createdAt: string; updatedAt: string;
 }
 
 const tokenize = (text: string): string[] =>
@@ -40,22 +42,25 @@ const jaccard = (a: string[], b: string[]): number => {
 
 const playbookView = (row: Record<string, string | number>): PlaybookRecord => ({
   id: String(row['id']),
-  name: String(row['name']),
+  name: redactSecrets(String(row['name'])).value,
   toolId: String(row['tool_id']),
-  keywords: parseJson<string[]>(String(row['keywords']), []),
-  toolInput: parseJson<Record<string, unknown>>(String(row['tool_input']), {}),
-  validation: parseJson<{ ok: boolean; detail: string }>(String(row['validation']), { ok: false, detail: 'unknown' }),
+  keywords: redactSecrets(parseJson<string[]>(String(row['keywords']), [])).value,
+  toolInput: redactSecrets(parseJson<Record<string, unknown>>(String(row['tool_input']), {})).value,
+  validation: redactSecrets(parseJson<{ ok: boolean; detail: string }>(String(row['validation']), { ok: false, detail: 'unknown' })).value,
   status: 'validated',
   successRuns: Number(row['success_runs']),
   reuseCount: Number(row['reuse_count'] ?? 0),
   createdFromMission: (row['created_from_mission'] as string | null) ?? null,
+  createdBy: String(row['created_by'] ?? 'system'),
   createdAt: String(row['created_at']),
   updatedAt: String(row['updated_at']),
 });
 
-export function findPlaybookFor(workspaceId: string, toolId: string, objective: string): PlaybookRecord | null {
+export function findPlaybookFor(workspaceId: string, toolId: string, objective: string, actor?: string): PlaybookRecord | null {
   const keywords = tokenize(objective);
-  const rows = getOsDb().prepare('SELECT * FROM os_playbooks WHERE workspace_id = ? AND tool_id = ?').all(workspaceId, toolId) as unknown as Array<Record<string, string | number>>;
+  const rows = (actor
+    ? getOsDb().prepare('SELECT * FROM os_playbooks WHERE workspace_id = ? AND tool_id = ? AND created_by = ?').all(workspaceId, toolId, actor)
+    : getOsDb().prepare('SELECT * FROM os_playbooks WHERE workspace_id = ? AND tool_id = ?').all(workspaceId, toolId)) as unknown as Array<Record<string, string | number>>;
   let best: { row: Record<string, string | number>; score: number } | null = null;
   for (const row of rows) {
     const score = jaccard(keywords, parseJson<string[]>(String(row['keywords']), []));
@@ -111,18 +116,21 @@ async function revalidate(tool: string, input: Record<string, unknown>): Promise
 /** After a mission completes, distill validated OR runs into reusable playbooks. */
 export async function maybeDistillPlaybook(input: { workspaceId: string; missionId: string; objective: string; actor: string }): Promise<PlaybookRecord[]> {
   const db = getOsDb();
+  const mission = db.prepare('SELECT status FROM os_missions WHERE workspace_id = ? AND id = ?').get(input.workspaceId, input.missionId) as { status: string } | undefined;
+  // A completed task inside a failed mission is not a trusted playbook.
+  if (mission?.status !== 'completed') return [];
   const tasks = db.prepare("SELECT * FROM os_tasks WHERE mission_id = ? AND status = 'completed'").all(input.missionId) as Array<{ id: string; tool: string | null; tool_input: string; title: string }>;
   const distilled: PlaybookRecord[] = [];
   for (const task of tasks) {
     if (!task.tool || !OR_TOOLS.has(task.tool)) continue;
-    const toolInput = openTaskToolInput<Record<string, unknown>>(input.workspaceId, task.id, task.tool_input, {});
-    const validation = await revalidate(task.tool, toolInput);
+    const toolInput = redactSecrets(openTaskToolInput<Record<string, unknown>>(input.workspaceId, task.id, task.tool_input, {})).value;
+    const validation = redactSecrets(await revalidate(task.tool, toolInput)).value;
     if (!validation.ok) {
       audit(db, { workspaceId: input.workspaceId, actor: input.actor, action: 'playbook.rejected', subject: task.tool, detail: { reason: validation.detail, missionId: input.missionId } });
       continue;
     }
-    const keywords = tokenize(input.objective);
-    const candidates = db.prepare('SELECT * FROM os_playbooks WHERE workspace_id = ? AND tool_id = ?').all(input.workspaceId, task.tool) as unknown as Array<Record<string, string | number>>;
+    const keywords = tokenize(redactSecrets(input.objective).value);
+    const candidates = db.prepare('SELECT * FROM os_playbooks WHERE workspace_id = ? AND tool_id = ? AND created_by = ?').all(input.workspaceId, task.tool, input.actor) as unknown as Array<Record<string, string | number>>;
     let twin: Record<string, string | number> | null = null;
     for (const candidate of candidates) {
       if (jaccard(keywords, parseJson<string[]>(String(candidate['keywords']), [])) >= 0.5) { twin = candidate; break; }
@@ -135,10 +143,10 @@ export async function maybeDistillPlaybook(input: { workspaceId: string; mission
       continue;
     }
     const id = newId('pbk');
-    const name = `${task.tool} — ${input.objective.slice(0, 72)}`;
-    db.prepare(`INSERT INTO os_playbooks (id, workspace_id, name, tool_id, keywords, tool_input, validation, status, success_runs, created_from_mission, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 'validated', 1, ?, ?, ?)`)
-      .run(id, input.workspaceId, name, task.tool, JSON.stringify(keywords), JSON.stringify(toolInput).slice(0, 60_000), JSON.stringify(validation), input.missionId, nowIso(), nowIso());
+    const name = redactSecrets(`${task.tool} — ${input.objective.slice(0, 72)}`).value;
+    db.prepare(`INSERT INTO os_playbooks (id, workspace_id, name, tool_id, keywords, tool_input, validation, status, success_runs, created_from_mission, created_by, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'validated', 1, ?, ?, ?, ?)`)
+      .run(id, input.workspaceId, name, task.tool, JSON.stringify(keywords), JSON.stringify(toolInput).slice(0, 60_000), JSON.stringify(validation), input.missionId, input.actor, nowIso(), nowIso());
     audit(db, { workspaceId: input.workspaceId, actor: input.actor, action: 'playbook.distill', subject: id, detail: { missionId: input.missionId, tool: task.tool, validation: validation.detail } });
     distilled.push(playbookView(db.prepare('SELECT * FROM os_playbooks WHERE id = ?').get(id) as Record<string, string | number>));
   }

@@ -9,7 +9,8 @@
  */
 import { createHash } from 'node:crypto';
 import { nowIso } from './db.js';
-import { modelProblem, type UnifiedProblem } from './problem-model.js';
+import { filterProblemForActor, modelProblem, type UnifiedProblem } from './problem-model.js';
+import { getMemory, type MemoryScope } from './memory.js';
 import { inferProblemStructure, type ProblemStructure } from './problem-structure.js';
 import { listScientificDomains } from './science.js';
 import type {
@@ -36,7 +37,7 @@ const sentence = (text: string): string => text.trim().replace(/^[-,;:]\s*/u, ''
 function claim(input: {
   statement: string; kind: ClaimKind; provenance: ClaimProvenance;
   confidence?: number; confidenceKind?: ConfidenceKind; confidenceNote?: string;
-  evidenceIds?: string[]; supports?: string[]; contradicts?: string[]; id?: string;
+  evidenceIds?: string[]; supports?: string[]; contradicts?: string[]; id?: string; memoryId?: string;
 }): ReasoningClaim {
   const statement = sentence(input.statement);
   return {
@@ -53,6 +54,7 @@ function claim(input: {
     supports: input.supports ?? [],
     contradicts: input.contradicts ?? [],
     active: true,
+    ...(input.memoryId ? { memoryId: input.memoryId } : {}),
   };
 }
 
@@ -92,7 +94,7 @@ function initialClaims(base: UnifiedProblem, evidence: ReasoningEvidenceInput[])
     claims.push(claim({ statement: fact.statement, kind: 'user-fact', provenance: provenance('objective', fact.id, 'objective', 'unverified'), confidence: 1, confidenceKind: 'deterministic', confidenceNote: 'Explicit user statement.' }));
   }
   for (const item of base.evidence) {
-    claims.push(claim({ statement: item.statement, kind: 'retrieved-evidence', provenance: provenance('retrieved-memory', item.memoryId, item.source, 'unverified'), confidence: 0.35, confidenceKind: 'none', confidenceNote: 'Retrieved memory; relevance is not truth.', evidenceIds: [item.id] }));
+    claims.push(claim({ statement: item.statement, kind: 'retrieved-evidence', provenance: provenance('retrieved-memory', item.memoryId, item.source, 'unverified'), confidence: 0.35, confidenceKind: 'none', confidenceNote: 'Retrieved memory; relevance is not truth.', evidenceIds: [item.id], memoryId: item.memoryId }));
   }
   for (const item of base.assumptions) {
     claims.push(claim({ statement: item.statement, kind: 'assumption', provenance: provenance('deterministic-rule', item.id, 'deterministic-rules', 'assumption'), confidence: 0.5, confidenceKind: 'heuristic' }));
@@ -489,12 +491,19 @@ export interface AnalyzeReasoningInput {
   evidence?: ReasoningEvidenceInput[];
   baseProblem?: UnifiedProblem;
   includeMemory?: boolean;
+  actor?: string;
+  scopes?: MemoryScope[];
+  scopeIds?: Partial<Record<MemoryScope, string[]>>;
   useModel?: boolean;
   signal?: AbortSignal;
 }
 
 export function buildDeterministicReasoning(input: AnalyzeReasoningInput): ReasoningModel {
-  const base = input.baseProblem ?? modelProblem({ workspaceId: input.workspaceId ?? '', objective: input.objective, track: input.track, includeMemory: input.includeMemory });
+  const base = input.baseProblem ?? modelProblem({
+    workspaceId: input.workspaceId ?? '', objective: input.objective, track: input.track,
+    includeMemory: input.includeMemory, actor: input.actor, missionId: input.missionId,
+    scopes: input.scopes, scopeIds: input.scopeIds,
+  });
   const structure = inferProblemStructure(base.objective, base, input.evidence ?? []);
   base.structure = structure;
   const problemType = problemTypeOf(base.objective, base, structure);
@@ -653,5 +662,22 @@ export function reasoningModeNotice(): string {
   return status.configured
     ? 'Optional reasoning provider configured; deterministic checks remain authoritative.'
     : 'Deterministic reasoning only; no external model provider is configured.';
+}
+
+/** Remove memory-derived claims the current actor may no longer read. */
+export function filterReasoningForActor(model: ReasoningModel, workspaceId: string, actor: string): ReasoningModel {
+  const removedClaimIds = new Set<string>();
+  const claims = model.claims.filter((claim) => {
+    if (claim.provenance.kind !== 'retrieved-memory') return true;
+    const memoryId = claim.memoryId ?? claim.provenance.sourceId;
+    const allowed = Boolean(memoryId) && getMemory(workspaceId, memoryId, actor) !== null;
+    if (!allowed) removedClaimIds.add(claim.id);
+    return allowed;
+  });
+  const hypotheses = model.hypotheses.filter((hypothesis) => !removedClaimIds.has(hypothesis.claimId));
+  return {
+    ...model, claims, hypotheses,
+    baseProblem: model.baseProblem ? filterProblemForActor(model.baseProblem, workspaceId, actor) : null,
+  };
 }
 
