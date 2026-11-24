@@ -117,7 +117,7 @@ Sample benchmark (25 runs, in-memory SQLite, development container; timings are 
 ```json
 {
   "runs": 25,
-  "selectionLatencyMs": 80.51,
+  "selectionLatencyMs": 91.11,
   "baseline": {"accuracy": 0, "expectedVerifiedSuccessRate": 0, "teamSize": 1, "reassignmentAvailable": false},
   "dynamic": {"accuracy": 1, "expectedVerifiedSuccessRate": 1, "teamSize": 1, "reassignmentAvailable": true, "selectedAgent": "Evidence Analyst"},
   "unnecessaryAgents": 0
