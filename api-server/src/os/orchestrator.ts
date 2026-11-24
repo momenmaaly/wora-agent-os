@@ -485,7 +485,9 @@ export async function executeMission(missionId: string, actor = 'orchestrator', 
       // capability was revoked after planning. Execution still re-resolves the
       // profile and refuses the tool; this is not a permission bypass.
       const persisted = getAgent(mission.workspace_id, task.agent_id);
-      if (persisted?.status === 'active') agent = persisted;
+      const persistedCandidate = selection.decision.candidates.find((candidate) => candidate.agentId === task.agent_id);
+      const revokedCapability = persistedCandidate?.rejectionReasons.some((reason) => /missing (tool|permission)/iu.test(reason));
+      if (persisted?.status === 'active' && revokedCapability) agent = persisted;
     }
     if (!agent) {
       db.prepare('UPDATE os_tasks SET status = ?, detail = ?, updated_at = ? WHERE id = ?')
