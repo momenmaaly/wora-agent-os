@@ -5,13 +5,18 @@
  * that rejects private, loopback, link-local, reserved and metadata addresses,
  * and the validated address is the one Node connects to. Redirects are followed
  * manually and revalidated one by one. No credentials, non-HTTP schemes or
- * non-web ports are accepted.
+ * non-web ports are accepted by default.
+ *
+ * The response body is streamed and capped after decompression. Plugin and MCP
+ * callers disable redirects so credentials are never forwarded to a new origin.
  */
 import { lookup as dnsLookup } from 'node:dns';
 import type { LookupAddress } from 'node:dns';
 import { request as httpRequest, type IncomingMessage, type RequestOptions } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { isIP, type LookupFunction } from 'node:net';
+import { createBrotliDecompress, createGunzip, createInflate } from 'node:zlib';
+import type { Readable } from 'node:stream';
 
 export type SafeFetchErrorCode =
   | 'INVALID_URL'
@@ -24,8 +29,11 @@ export type SafeFetchErrorCode =
   | 'REDIRECT_LIMIT'
   | 'REDIRECT_LOOP'
   | 'REDIRECT_DOWNGRADE'
+  | 'REDIRECT_DISABLED'
+  | 'UNSUPPORTED_ENCODING'
   | 'RESPONSE_TOO_LARGE'
   | 'TIMEOUT'
+  | 'ABORTED'
   | 'REQUEST_FAILED';
 
 export class SafeFetchError extends Error {
@@ -40,12 +48,18 @@ export interface SafeFetchOptions {
   maxBytes?: number;
   maxRedirects?: number;
   headers?: Record<string, string>;
+  method?: string;
+  body?: string | Buffer;
+  allowRedirects?: boolean;
+  allowedPorts?: ReadonlySet<string>;
+  signal?: AbortSignal;
 }
 
 export interface SafeFetchResult {
   url: string;
   status: number;
   contentType: string;
+  headers: Record<string, string | string[] | undefined>;
   body: Buffer;
 }
 
@@ -55,6 +69,7 @@ const MAX_BYTES = 512 * 1024;
 const DEFAULT_TIMEOUT_MS = 8_000;
 const ALLOWED_PORTS = new Set(['', '80', '443']);
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+const SENSITIVE_HEADERS = new Set(['authorization', 'cookie', 'proxy-authorization']);
 
 const BLOCKED_HOST_SUFFIXES = [
   '.localhost',
@@ -75,6 +90,11 @@ const BLOCKED_HOSTS = new Set([
   'instance-data',
   'instance-data.ec2.internal',
 ]);
+
+/** Test-only loopback allowance. Never enable this in a production environment. */
+function allowPrivateForTests(): boolean {
+  return process.env['NODE_ENV'] === 'test' && process.env['WORA_ALLOW_PRIVATE_OUTBOUND_FOR_TESTS'] === '1';
+}
 
 function normalizeHost(hostname: string): string {
   let host = hostname.trim().toLowerCase();
@@ -216,7 +236,7 @@ export function isBlockedHostname(hostname: string): boolean {
   return false;
 }
 
-export function assertSafeUrl(raw: string): URL {
+export function assertSafeUrl(raw: string, allowedPorts: ReadonlySet<string> = ALLOWED_PORTS): URL {
   if (!raw || raw.length > MAX_URL_LENGTH) throw new SafeFetchError('INVALID_URL', 'URL is empty or too long');
   let url: URL;
   try {
@@ -230,51 +250,66 @@ export function assertSafeUrl(raw: string): URL {
   if (url.username || url.password) {
     throw new SafeFetchError('UNSAFE_CREDENTIALS', 'URLs with embedded credentials are not allowed');
   }
-  if (!ALLOWED_PORTS.has(url.port)) {
-    throw new SafeFetchError('UNSAFE_PORT', 'Only ports 80 and 443 are allowed');
+  if (!allowedPorts.has(url.port)) {
+    throw new SafeFetchError('UNSAFE_PORT', 'Only approved ports are allowed');
   }
   const host = normalizeHost(url.hostname);
-  if (isBlockedHostname(host)) {
+  if (!allowPrivateForTests() && isBlockedHostname(host)) {
     throw new SafeFetchError('BLOCKED_HOST', `Destination host ${host} is not allowed`);
   }
   return url;
 }
 
 /** Validate a redirect target against the original scheme and the same URL policy. */
-export function resolveRedirectTarget(current: URL, location: string): URL {
+export function resolveRedirectTarget(current: URL, location: string, allowedPorts: ReadonlySet<string> = ALLOWED_PORTS): URL {
   let next: URL;
   try {
     next = new URL(location, current);
   } catch {
     throw new SafeFetchError('INVALID_URL', 'Redirect target is not a valid URL');
   }
-  assertSafeUrl(next.toString());
+  assertSafeUrl(next.toString(), allowedPorts);
   if (current.protocol === 'https:' && next.protocol !== 'https:') {
     throw new SafeFetchError('REDIRECT_DOWNGRADE', 'HTTPS to HTTP redirects are not allowed');
   }
   return next;
 }
 
+type Resolver = (hostname: string, options: { all: true; verbatim: true }, callback: (error: NodeJS.ErrnoException | null, addresses: LookupAddress[]) => void) => void;
+
+/** Validate a resolver result. Exported so tests can exercise a rebinding sequence. */
+export function validateResolvedAddresses(addresses: LookupAddress[], allowPrivate = false): LookupAddress[] {
+  if (addresses.length === 0) throw new SafeFetchError('NO_ADDRESS', 'Destination hostname has no addresses');
+  if (!allowPrivate) {
+    const blocked = addresses.find((entry) => isBlockedAddress(entry.address));
+    if (blocked) throw new SafeFetchError('BLOCKED_ADDRESS', 'Destination resolves to a blocked address');
+  }
+  return addresses;
+}
+
 /** DNS lookup callback that validates every resolved address and pins the chosen one. */
-export const safeLookup: LookupFunction = (hostname, options, callback) => {
+export function safeLookupWithResolver(
+  hostname: string,
+  options: { all?: boolean },
+  callback: (error: NodeJS.ErrnoException | SafeFetchError | null, address: string | LookupAddress[], family?: number) => void,
+  resolver: Resolver = dnsLookup as unknown as Resolver,
+  allowPrivate = allowPrivateForTests(),
+): void {
   const host = normalizeHost(hostname);
-  if (isBlockedHostname(host)) {
+  if (!allowPrivate && isBlockedHostname(host)) {
     callback(new SafeFetchError('BLOCKED_HOST', `Destination host ${host} is not allowed`), '');
     return;
   }
-  dnsLookup(host, { all: true, verbatim: true }, (error, addresses) => {
+  resolver(host, { all: true, verbatim: true }, (error, addresses) => {
     if (error) {
       callback(new SafeFetchError('NO_ADDRESS', 'Destination hostname could not be resolved'), '');
       return;
     }
-    const resolved = (Array.isArray(addresses) ? addresses : []) as LookupAddress[];
-    if (resolved.length === 0) {
-      callback(new SafeFetchError('NO_ADDRESS', 'Destination hostname has no addresses'), '');
-      return;
-    }
-    const blocked = resolved.find((entry) => isBlockedAddress(entry.address));
-    if (blocked) {
-      callback(new SafeFetchError('BLOCKED_ADDRESS', 'Destination resolves to a blocked address'), '');
+    let resolved: LookupAddress[];
+    try {
+      resolved = validateResolvedAddresses(addresses, allowPrivate);
+    } catch (validationError) {
+      callback(validationError as SafeFetchError, '');
       return;
     }
     if (options.all) {
@@ -288,45 +323,62 @@ export const safeLookup: LookupFunction = (hostname, options, callback) => {
     }
     callback(null, chosen.address, chosen.family);
   });
+}
+
+export const safeLookup: LookupFunction = (hostname, options, callback) => {
+  safeLookupWithResolver(hostname, options, callback);
 };
 
 function requestOnce(url: URL, options: Required<Pick<SafeFetchOptions, 'timeoutMs' | 'maxBytes'>> & SafeFetchOptions): Promise<{ result: SafeFetchResult; location: string | null }> {
   return new Promise((resolve, reject) => {
     const host = normalizeHost(url.hostname);
+    const method = options.method ?? 'GET';
+    const body = options.body;
+    const headers: Record<string, string> = {
+      accept: 'text/html,text/plain,application/json',
+      'user-agent': 'WORA-OS/1.0 (+authorized-research)',
+      connection: 'close',
+      ...(options.headers ?? {}),
+    };
+    if (body !== undefined && !Object.keys(headers).some((key) => key.toLowerCase() === 'content-length')) {
+      headers['content-length'] = String(Buffer.byteLength(body));
+    }
     const requestOptions: RequestOptions = {
       protocol: url.protocol,
       hostname: host,
       port: url.port || undefined,
       path: `${url.pathname}${url.search}`,
-      method: 'GET',
-      headers: {
-        accept: 'text/html,text/plain,application/json',
-        'user-agent': 'WORA-OS/1.0 (+authorized-research)',
-        connection: 'close',
-        ...(options.headers ?? {}),
-      },
-      lookup: safeLookup,
+      method,
+      headers,
+      lookup: (hostname, lookupOptions, callback) => safeLookupWithResolver(hostname, lookupOptions, callback),
       agent: false,
       ...(isIP(host) === 0 ? { servername: host } : {}),
     };
     let settled = false;
     let timer: NodeJS.Timeout | null = null;
+    let abortListener: (() => void) | null = null;
     const clearTimer = () => {
       if (timer) {
         clearTimeout(timer);
         timer = null;
       }
     };
+    const clearAbort = () => {
+      if (abortListener && options.signal) options.signal.removeEventListener('abort', abortListener);
+      abortListener = null;
+    };
     const fail = (error: Error) => {
       if (settled) return;
       settled = true;
       clearTimer();
+      clearAbort();
       reject(error);
     };
     const done = (value: { result: SafeFetchResult; location: string | null }) => {
       if (settled) return;
       settled = true;
       clearTimer();
+      clearAbort();
       resolve(value);
     };
     const transport = url.protocol === 'https:' ? httpsRequest : httpRequest;
@@ -336,34 +388,53 @@ function requestOnce(url: URL, options: Required<Pick<SafeFetchOptions, 'timeout
       if (REDIRECT_STATUSES.has(status)) {
         response.resume();
         done({
-          result: { url: url.toString(), status, contentType: '', body: Buffer.alloc(0) },
+          result: {
+            url: url.toString(), status, contentType: '',
+            headers: response.headers, body: Buffer.alloc(0),
+          },
           location,
         });
         return;
       }
+
+      const encoding = String(response.headers['content-encoding'] ?? '').trim().toLowerCase();
+      let stream: Readable = response;
+      if (encoding === 'gzip' || encoding === 'x-gzip') stream = response.pipe(createGunzip());
+      else if (encoding === 'deflate') stream = response.pipe(createInflate());
+      else if (encoding === 'br') stream = response.pipe(createBrotliDecompress());
+      else if (encoding && encoding !== 'identity') {
+        response.destroy();
+        fail(new SafeFetchError('UNSUPPORTED_ENCODING', `Unsupported content-encoding ${encoding}`));
+        return;
+      }
+
       const chunks: Buffer[] = [];
       let total = 0;
-      response.on('data', (chunk: Buffer) => {
+      stream.on('data', (chunk: Buffer) => {
         total += chunk.length;
         if (total > options.maxBytes) {
+          fail(new SafeFetchError('RESPONSE_TOO_LARGE', 'Response exceeds the size limit'));
+          stream.destroy();
           response.destroy();
           request.destroy();
-          fail(new SafeFetchError('RESPONSE_TOO_LARGE', 'Response exceeds the size limit'));
           return;
         }
         chunks.push(chunk);
       });
-      response.on('end', () => {
+      stream.on('end', () => {
         done({
           result: {
             url: url.toString(),
             status,
             contentType: String(response.headers['content-type'] ?? ''),
+            headers: response.headers,
             body: Buffer.concat(chunks),
           },
           location: null,
         });
       });
+      stream.on('error', () => fail(new SafeFetchError('REQUEST_FAILED', 'Response stream failed')));
+      response.on('aborted', () => fail(new SafeFetchError('REQUEST_FAILED', 'Response was aborted')));
       response.on('error', () => fail(new SafeFetchError('REQUEST_FAILED', 'Response stream failed')));
     });
     request.on('error', () => fail(new SafeFetchError('REQUEST_FAILED', 'Outbound request failed')));
@@ -372,8 +443,25 @@ function requestOnce(url: URL, options: Required<Pick<SafeFetchOptions, 'timeout
       fail(new SafeFetchError('TIMEOUT', 'Outbound request timed out'));
     }, options.timeoutMs);
     timer.unref();
-    request.end();
+    if (options.signal) {
+      if (options.signal.aborted) {
+        request.destroy();
+        fail(new SafeFetchError('ABORTED', 'Outbound request was aborted'));
+        return;
+      }
+      abortListener = () => {
+        request.destroy();
+        fail(new SafeFetchError('ABORTED', 'Outbound request was aborted'));
+      };
+      options.signal.addEventListener('abort', abortListener, { once: true });
+    }
+    request.end(body);
   });
+}
+
+function stripSensitiveHeaders(headers: Record<string, string> | undefined): Record<string, string> | undefined {
+  if (!headers) return headers;
+  return Object.fromEntries(Object.entries(headers).filter(([key]) => !SENSITIVE_HEADERS.has(key.toLowerCase())));
 }
 
 /** Fetch a URL with SSRF validation, manual redirects and a hard byte cap. */
@@ -381,15 +469,23 @@ export async function safeFetch(url: string, options: SafeFetchOptions = {}): Pr
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxBytes = options.maxBytes ?? MAX_BYTES;
   const maxRedirects = options.maxRedirects ?? MAX_REDIRECTS;
-  let current = assertSafeUrl(url);
+  const allowRedirects = options.allowRedirects !== false;
+  const allowedPorts = options.allowedPorts ?? ALLOWED_PORTS;
+  let current = assertSafeUrl(url, allowedPorts);
+  let currentOptions = options;
   const visited = new Set<string>();
   for (let redirect = 0; redirect <= maxRedirects; redirect += 1) {
     if (visited.has(current.toString())) throw new SafeFetchError('REDIRECT_LOOP', 'Redirect loop detected');
     visited.add(current.toString());
-    const { result, location } = await requestOnce(current, { ...options, timeoutMs, maxBytes });
+    const { result, location } = await requestOnce(current, { ...currentOptions, timeoutMs, maxBytes });
     if (!REDIRECT_STATUSES.has(result.status)) return result;
+    if (!allowRedirects) throw new SafeFetchError('REDIRECT_DISABLED', 'Redirects are disabled for this request');
     if (!location) throw new SafeFetchError('INVALID_URL', 'Redirect response has no Location header');
-    current = resolveRedirectTarget(current, location);
+    const next = resolveRedirectTarget(current, location, allowedPorts);
+    if (next.origin !== current.origin) {
+      currentOptions = { ...currentOptions, headers: stripSensitiveHeaders(currentOptions.headers) };
+    }
+    current = next;
   }
   throw new SafeFetchError('REDIRECT_LIMIT', 'Too many redirects');
 }

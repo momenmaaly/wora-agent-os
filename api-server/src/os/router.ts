@@ -32,13 +32,14 @@ import { buildOrganization, listOrganizations } from './orgs.js';
 import { solveAssignment, solveEmployeeSchedule, solveLp } from './ortools.js';
 import { sampleEmployeeInput } from './orchestrator.js';
 import {
-  getAutonomyPolicy, setAutonomyPolicy, listApprovals, decideApproval,
+  getApproval, getAutonomyPolicy, setAutonomyPolicy, listApprovals, decideApproval,
   requestDevicePairing, redeemDevicePairing, revokeDevice, listDevices, deviceHeartbeat, findDeviceById,
 } from './governance.js';
 import { logger } from '../lib/logger.js';
 import { createExtensionsRouter } from '../extensions/router.js';
 import { ensureWorkspaceExtensions } from '../extensions/index.js';
 import { executeForAgent } from '../extensions/capabilities.js';
+import { permissionSensitivity } from '../extensions/manifest.js';
 
 const AUTH_SECRET = sanitizeEnv(process.env['AUTH_SECRET']);
 const ADMIN_API_KEY = sanitizeEnv(process.env['ADMIN_API_KEY']);
@@ -213,6 +214,16 @@ export function createOsRouter(options: { production?: boolean } = {}): Router {
     res.json(listAgents(workspace(res), filter));
   }));
 
+
+function highRiskAgentCapabilities(permissions: readonly string[], tools: readonly string[], workspaceId: string): string[] {
+  const sensitivePermissions = permissions.filter((permission) => {
+    const sensitivity = permissionSensitivity(permission);
+    return sensitivity === 'high' || sensitivity === 'unknown';
+  });
+  const highRiskTools = tools.filter((tool) => getTool(tool, workspaceId)?.risk === 'high');
+  return [...sensitivePermissions.map((permission) => `permission:${permission}`), ...highRiskTools.map((tool) => `tool:${tool}`)];
+}
+
   const createAgentSchema = z.object({
     name: z.string().trim().min(1).max(80),
     role: z.string().trim().min(1).max(500),
@@ -227,6 +238,14 @@ export function createOsRouter(options: { production?: boolean } = {}): Router {
   router.post('/agents', asyncWrap((req, res) => {
     if (!rateLimit(workspace(res))) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
     const body = createAgentSchema.parse(req.body ?? {});
+    const spec = SPECIALIZATIONS.find((entry) => entry.id === body.specialization);
+    const requestedPermissions = body.permissions ?? spec?.permissions ?? [];
+    const requestedTools = body.tools ?? spec?.tools ?? [];
+    const sensitive = highRiskAgentCapabilities(requestedPermissions, requestedTools, workspace(res));
+    if (sensitive.length && roleRank(roleOf(res)) < roleRank('admin')) {
+      res.status(403).json({ error: 'High-risk agent capabilities require an admin', code: 'HIGH_RISK_CAPABILITY_REQUIRES_ADMIN', capabilities: sensitive });
+      return;
+    }
     const agent = createAgent({ ...body, workspaceId: workspace(res), actor: actor(res), source: 'user' });
     res.status(201).json(agent);
   }));
@@ -257,6 +276,11 @@ export function createOsRouter(options: { production?: boolean } = {}): Router {
   router.patch('/agents/:id', asyncWrap((req, res) => {
     if (!rateLimit(workspace(res))) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
     const body = updateAgentSchema.parse(req.body ?? {});
+    const sensitive = highRiskAgentCapabilities(body.permissions ?? [], body.tools ?? [], workspace(res));
+    if (sensitive.length && roleRank(roleOf(res)) < roleRank('admin')) {
+      res.status(403).json({ error: 'High-risk agent capabilities require an admin', code: 'HIGH_RISK_CAPABILITY_REQUIRES_ADMIN', capabilities: sensitive });
+      return;
+    }
     const agent = updateAgent(workspace(res), param(req, 'id'), body, actor(res));
     if (!agent) { res.status(404).json({ error: 'Agent not found' }); return; }
     res.json(agent);
@@ -338,12 +362,18 @@ export function createOsRouter(options: { production?: boolean } = {}): Router {
       note: z.string().trim().max(500).optional().default(''),
     }).strict().parse(req.body ?? {});
     try {
-      const approval = decideApproval(workspace(res), param(req, 'id'), body.decision, body.note, actor(res));
-      // Approving the gated action automatically resumes the waiting mission.
-      if (approval.status === 'approved' && approval.missionId) {
-        void executeMission(approval.missionId, actor(res)).catch((err) => logger.error({ err, missionId: approval.missionId }, 'mission resume after approval failed'));
+      const approval = getApproval(workspace(res), param(req, 'id'));
+      if (!approval) { res.status(404).json({ error: 'Approval not found' }); return; }
+      if (approval.risk === 'high' && roleRank(roleOf(res)) < roleRank('admin')) {
+        res.status(403).json({ error: 'High-risk approvals require an admin', code: 'HIGH_RISK_APPROVAL_REQUIRES_ADMIN' });
+        return;
       }
-      res.status(200).json(approval);
+      const decided = decideApproval(workspace(res), param(req, 'id'), body.decision, body.note, actor(res));
+      // Approving the gated action automatically resumes the waiting mission.
+      if (decided.status === 'approved' && decided.missionId) {
+        void executeMission(decided.missionId, actor(res)).catch((err) => logger.error({ err, missionId: decided.missionId }, 'mission resume after approval failed'));
+      }
+      res.status(200).json(decided);
     } catch (err) {
       res.status(400).json({ error: err instanceof Error ? err.message : 'تعذر تسجيل القرار' });
     }
@@ -458,7 +488,7 @@ export function createOsRouter(options: { production?: boolean } = {}): Router {
       seed: z.number().int().default(42),
       items: z.array(z.object({ name: z.string().min(1).max(120), optimistic: z.number().finite(), likely: z.number().finite(), pessimistic: z.number().finite() })).min(1).max(100),
     }).strict().parse(req.body ?? {});
-    const result = await runTool('sim.monte_carlo', body, { workspaceId: workspace(res), actor: actor(res), permissions: new Set(['*']) });
+    const result = await runTool('sim.monte_carlo', body, { workspaceId: workspace(res), actor: actor(res), permissions: new Set<string>() });
     res.status(result.ok ? 200 : 422).json(result);
   }));
 
@@ -468,7 +498,7 @@ export function createOsRouter(options: { production?: boolean } = {}): Router {
       criteria: z.array(z.object({ id: z.string().min(1).max(60), label: z.string().min(1).max(120), weight: z.number().finite().positive() })).min(1).max(30),
       alternatives: z.array(z.object({ name: z.string().min(1).max(120), scores: z.record(z.string(), z.number().finite().min(0).max(10)) })).min(2).max(50),
     }).strict().parse(req.body ?? {});
-    const result = await runTool('decision.weighted_matrix', body, { workspaceId: workspace(res), actor: actor(res), permissions: new Set(['*']) });
+    const result = await runTool('decision.weighted_matrix', body, { workspaceId: workspace(res), actor: actor(res), permissions: new Set<string>() });
     res.status(result.ok ? 200 : 422).json(result);
   }));
 

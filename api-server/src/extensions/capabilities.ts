@@ -59,6 +59,8 @@ export interface CapabilityProfile {
   workspaceId: string;
   agentId: string;
   agentName: string;
+  agentStatus: AgentRecord['status'];
+  active: boolean;
   specialization: string;
   role: string;
   model: AgentRecord['model'];
@@ -93,6 +95,7 @@ function appliesToAgent(installation: InstallationRecord, agentId: string, polic
 export function resolveCapabilities(workspaceId: string, agentId: string, options: { actor?: string } = {}): CapabilityProfile {
   const agent = getAgent(workspaceId, agentId);
   if (!agent) throw new Error(`Agent ${agentId} not found`);
+  const active = agent.status === 'active';
   const policy = getAgentPolicy(workspaceId, agentId);
   const deniedPermissions = new Set(policy.deniedPermissions);
   const basePermissions = [...new Set([...agent.permissions, ...policy.extraPermissions])]
@@ -193,7 +196,7 @@ export function resolveCapabilities(workspaceId: string, agentId: string, option
   const permissions = [...new Set([...basePermissions, ...skills.flatMap((skill) => skill.permissions), ...plugins.flatMap((plugin) => plugin.permissions)])]
     .filter((permission) => !deniedPermissions.has(permission));
   const profile: Omit<CapabilityProfile, 'digest'> = {
-    workspaceId, agentId, agentName: agent.name, specialization: agent.specialization, role: agent.role,
+    workspaceId, agentId, agentName: agent.name, agentStatus: agent.status, active, specialization: agent.specialization, role: agent.role,
     model: agent.model, limits: agent.limits, permissions, tools, skills, plugins, blocked, conflicts,
     autoLoad: {
       skills: skills.filter((skill) => skill.autoLoad).map((skill) => `${skill.key}@${skill.version}`),
@@ -203,7 +206,7 @@ export function resolveCapabilities(workspaceId: string, agentId: string, option
     resolvedAt: new Date().toISOString(),
   };
   const digest = createHash('sha256').update(JSON.stringify({
-    agentId, permissions: [...permissions].sort(), tools: [...tools].sort(),
+    agentId, agentStatus: agent.status, active, permissions: [...permissions].sort(), tools: [...tools].sort(),
     skills: skills.map((skill) => `${skill.key}@${skill.version}:${skill.instructionDigest}`).sort(),
     plugins: plugins.map((plugin) => `${plugin.key}@${plugin.version}:${plugin.tools.join(',')}`).sort(),
     blocked: blocked.map((entry) => `${entry.key}:${entry.reason}`).sort(),
@@ -219,6 +222,8 @@ export function resolveAndSnapshot(workspaceId: string, agentId: string, options
   const stored = {
     agentId: profile.agentId,
     agentName: profile.agentName,
+    agentStatus: profile.agentStatus,
+    active: profile.active,
     specialization: profile.specialization,
     model: profile.model,
     limits: profile.limits,
@@ -273,9 +278,26 @@ export async function executeForAgent(input: {
   workspaceId: string; agentId: string; toolId: string; toolInput: unknown;
   actor?: string; missionId?: string; taskId?: string;
 }) {
+  const agent = getAgent(input.workspaceId, input.agentId);
+  if (!agent) {
+    return { ok: false as const, tool: input.toolId, error: `Agent ${input.agentId} not found`, code: 'AGENT_NOT_FOUND', durationMs: 0 };
+  }
+  if (agent.status !== 'active') {
+    extensionAudit(input.workspaceId, input.actor ?? agent.name, 'extension.capability.denied', input.toolId, {
+      agentId: input.agentId, reason: `agent is ${agent.status}`, code: 'AGENT_INACTIVE',
+    });
+    return { ok: false as const, tool: input.toolId, error: `Agent ${input.agentId} is ${agent.status}`, code: 'AGENT_INACTIVE', durationMs: 0 };
+  }
   const profile = resolveAndSnapshot(input.workspaceId, input.agentId, {
     missionId: input.missionId, taskId: input.taskId, actor: input.actor,
   });
+  const definition = getTool(input.toolId, input.workspaceId);
+  if (definition?.risk === 'high') {
+    extensionAudit(input.workspaceId, input.actor ?? profile.agentName, 'extension.capability.denied', input.toolId, {
+      agentId: input.agentId, reason: 'high-risk tool requires orchestrator approval', code: 'HIGH_RISK_APPROVAL_REQUIRED',
+    });
+    return { ok: false as const, tool: input.toolId, error: 'High-risk tools require an approved orchestrator task', code: 'HIGH_RISK_APPROVAL_REQUIRED', durationMs: 0, profile };
+  }
   const decision = authorizeTool(input.workspaceId, profile, input.toolId);
   if (!decision.allowed) {
     extensionAudit(input.workspaceId, input.actor ?? profile.agentName, 'extension.capability.denied', input.toolId, {

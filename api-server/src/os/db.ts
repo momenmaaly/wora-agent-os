@@ -289,7 +289,8 @@ CREATE TABLE IF NOT EXISTS os_runtime_leases (
   pid INTEGER NOT NULL,
   acquired_at TEXT NOT NULL,
   heartbeat_at TEXT NOT NULL,
-  expires_at INTEGER NOT NULL
+  expires_at INTEGER NOT NULL,
+  epoch INTEGER NOT NULL DEFAULT 0
 );
 `;
 
@@ -298,6 +299,7 @@ function migrate(db: OsDatabase): void {
   const has = (table: string, column: string) =>
     (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).some((c) => c.name === column);
   if (!has('os_playbooks', 'reuse_count')) db.exec('ALTER TABLE os_playbooks ADD COLUMN reuse_count INTEGER NOT NULL DEFAULT 0');
+  if (!has('os_runtime_leases', 'epoch')) db.exec('ALTER TABLE os_runtime_leases ADD COLUMN epoch INTEGER NOT NULL DEFAULT 0');
   if (!has('os_memory', 'visibility')) db.exec("ALTER TABLE os_memory ADD COLUMN visibility TEXT NOT NULL DEFAULT 'workspace'");
   if (!has('os_memory', 'owner_id')) db.exec("ALTER TABLE os_memory ADD COLUMN owner_id TEXT NOT NULL DEFAULT ''");
   if (!has('os_memory', 'expires_at')) db.exec('ALTER TABLE os_memory ADD COLUMN expires_at TEXT');
@@ -323,7 +325,8 @@ CREATE TABLE IF NOT EXISTS os_runtime_leases (
   pid INTEGER NOT NULL,
   acquired_at TEXT NOT NULL,
   heartbeat_at TEXT NOT NULL,
-  expires_at INTEGER NOT NULL
+  expires_at INTEGER NOT NULL,
+  epoch INTEGER NOT NULL DEFAULT 0
 );
 `;
 
@@ -332,6 +335,8 @@ let writerLeaseOwner: string | null = null;
 let writerLeaseDb: OsDatabase | null = null;
 let writerLeaseTimer: NodeJS.Timeout | null = null;
 let leaseExitHookRegistered = false;
+let writerLeaseLost = false;
+let writerLeaseEpoch: number | null = null;
 
 export interface WriterLeaseOptions {
   ownerId?: string;
@@ -346,10 +351,18 @@ interface WriterLeaseRow {
   hostname: string;
   pid: number;
   expires_at: number;
+  epoch: number;
 }
 
 export function ensureWriterLeaseTable(db: OsDatabase): void {
+  // Bootstrap table creation can race with another process. Let SQLite wait
+  // briefly instead of failing before the lease transaction is attempted.
+  db.exec('PRAGMA busy_timeout = 5000;');
   db.exec(WRITER_LEASE_SCHEMA);
+  const columns = db.prepare('PRAGMA table_info(os_runtime_leases)').all() as Array<{ name: string }>;
+  if (!columns.some((column) => column.name === 'epoch')) {
+    db.exec('ALTER TABLE os_runtime_leases ADD COLUMN epoch INTEGER NOT NULL DEFAULT 0');
+  }
 }
 
 /**
@@ -364,30 +377,78 @@ export function acquireWriterLease(db: OsDatabase, options: WriterLeaseOptions =
   const pid = options.pid ?? process.pid;
   const now = options.now ?? Date.now();
   const ttlMs = options.ttlMs ?? WRITER_LEASE_TTL_MS;
-  const row = db.prepare('SELECT owner_id, hostname, pid, expires_at FROM os_runtime_leases WHERE id = ?').get(WRITER_LEASE_ID) as WriterLeaseRow | undefined;
-  if (row && row.owner_id !== owner && row.expires_at > now) {
-    throw new Error(
-      `SQLite writer lease is held by ${row.hostname}:${row.pid} until ${new Date(row.expires_at).toISOString()}; ` +
-      'run a single API replica with this database, or migrate to PostgreSQL before scaling out',
-    );
+  // SELECT + conditional upsert must be one write transaction. Without
+  // BEGIN IMMEDIATE two processes can both observe an empty/expired lease and
+  // then overwrite each other's ownership.
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const row = db.prepare('SELECT owner_id, hostname, pid, expires_at, epoch FROM os_runtime_leases WHERE id = ?').get(WRITER_LEASE_ID) as WriterLeaseRow | undefined;
+    if (row && row.owner_id !== owner && row.expires_at > now) {
+      throw new Error(
+        `SQLite writer lease is held by ${row.hostname}:${row.pid} until ${new Date(row.expires_at).toISOString()}; ` +
+        'run a single API replica with this database, or migrate to PostgreSQL before scaling out',
+      );
+    }
+    const result = db.prepare(
+      'INSERT INTO os_runtime_leases (id, owner_id, hostname, pid, acquired_at, heartbeat_at, expires_at, epoch) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, 1) ' +
+      'ON CONFLICT(id) DO UPDATE SET owner_id = excluded.owner_id, hostname = excluded.hostname, pid = excluded.pid, ' +
+      'acquired_at = excluded.acquired_at, heartbeat_at = excluded.heartbeat_at, expires_at = excluded.expires_at, ' +
+      'epoch = os_runtime_leases.epoch + 1 ' +
+      'WHERE os_runtime_leases.owner_id = excluded.owner_id OR os_runtime_leases.expires_at <= ?',
+    ).run(WRITER_LEASE_ID, owner, host, pid, new Date(now).toISOString(), new Date(now).toISOString(), now + ttlMs, now);
+    if (Number(result.changes) !== 1) {
+      throw new Error('SQLite writer lease was acquired by another process');
+    }
+    db.exec('COMMIT');
+    return owner;
+  } catch (error) {
+    try { db.exec('ROLLBACK'); } catch { /* transaction already closed */ }
+    throw error;
   }
-  db.prepare(
-    'INSERT INTO os_runtime_leases (id, owner_id, hostname, pid, acquired_at, heartbeat_at, expires_at) ' +
-    'VALUES (?, ?, ?, ?, ?, ?, ?) ' +
-    'ON CONFLICT(id) DO UPDATE SET owner_id = excluded.owner_id, hostname = excluded.hostname, pid = excluded.pid, ' +
-    'acquired_at = excluded.acquired_at, heartbeat_at = excluded.heartbeat_at, expires_at = excluded.expires_at',
-  ).run(WRITER_LEASE_ID, owner, host, pid, new Date(now).toISOString(), new Date(now).toISOString(), now + ttlMs);
-  return owner;
 }
 
-export function renewWriterLease(db: OsDatabase, ownerId: string, now = Date.now(), ttlMs = WRITER_LEASE_TTL_MS): boolean {
-  const result = db.prepare('UPDATE os_runtime_leases SET heartbeat_at = ?, expires_at = ? WHERE id = ? AND owner_id = ?')
-    .run(new Date(now).toISOString(), now + ttlMs, WRITER_LEASE_ID, ownerId);
+export function renewWriterLease(db: OsDatabase, ownerId: string, now = Date.now(), ttlMs = WRITER_LEASE_TTL_MS, epoch?: number): boolean {
+  const result = epoch === undefined
+    ? db.prepare('UPDATE os_runtime_leases SET heartbeat_at = ?, expires_at = ? WHERE id = ? AND owner_id = ? AND expires_at > ?')
+      .run(new Date(now).toISOString(), now + ttlMs, WRITER_LEASE_ID, ownerId, now)
+    : db.prepare('UPDATE os_runtime_leases SET heartbeat_at = ?, expires_at = ? WHERE id = ? AND owner_id = ? AND expires_at > ? AND epoch = ?')
+      .run(new Date(now).toISOString(), now + ttlMs, WRITER_LEASE_ID, ownerId, now, epoch);
   return Number(result.changes) === 1;
 }
 
-export function releaseWriterLease(db: OsDatabase, ownerId: string): void {
-  try { db.prepare('DELETE FROM os_runtime_leases WHERE id = ? AND owner_id = ?').run(WRITER_LEASE_ID, ownerId); } catch { /* best effort */ }
+export function releaseWriterLease(db: OsDatabase, ownerId: string, epoch?: number): void {
+  try {
+    if (epoch === undefined) db.prepare('DELETE FROM os_runtime_leases WHERE id = ? AND owner_id = ?').run(WRITER_LEASE_ID, ownerId);
+    else db.prepare('DELETE FROM os_runtime_leases WHERE id = ? AND owner_id = ? AND epoch = ?').run(WRITER_LEASE_ID, ownerId, epoch);
+  } catch { /* best effort */ }
+}
+
+function stopWriterLease(db: OsDatabase): void {
+  if (writerLeaseTimer) {
+    clearInterval(writerLeaseTimer);
+    writerLeaseTimer = null;
+  }
+  if (writerLeaseDb === db && writerLeaseOwner) releaseWriterLease(db, writerLeaseOwner, writerLeaseEpoch ?? undefined);
+  writerLeaseDb = null;
+  writerLeaseOwner = null;
+  writerLeaseEpoch = null;
+}
+
+function loseWriterLease(db: OsDatabase): void {
+  writerLeaseLost = true;
+  stopWriterLease(db);
+  if (instance === db) instance = null;
+  try { db.close(); } catch { /* best effort */ }
+}
+
+function assertWriterLease(db: OsDatabase): void {
+  if (db !== writerLeaseDb || !writerLeaseOwner || writerLeaseEpoch === null) return;
+  const row = db.prepare('SELECT owner_id, epoch FROM os_runtime_leases WHERE id = ?').get(WRITER_LEASE_ID) as { owner_id: string; epoch: number } | undefined;
+  if (!row || row.owner_id !== writerLeaseOwner || Number(row.epoch) !== writerLeaseEpoch) {
+    loseWriterLease(db);
+    throw new Error('SQLite writer lease was lost; restart the API process before writing');
+  }
 }
 
 function startWriterLease(db: OsDatabase): void {
@@ -395,9 +456,13 @@ function startWriterLease(db: OsDatabase): void {
   const owner = acquireWriterLease(db);
   writerLeaseOwner = owner;
   writerLeaseDb = db;
+  const lease = db.prepare('SELECT epoch FROM os_runtime_leases WHERE id = ? AND owner_id = ?').get(WRITER_LEASE_ID, owner) as { epoch: number } | undefined;
+  writerLeaseEpoch = lease ? Number(lease.epoch) : null;
   writerLeaseTimer = setInterval(() => {
     if (writerLeaseDb !== db || !writerLeaseOwner) return;
-    try { renewWriterLease(db, writerLeaseOwner); } catch { /* the next boot will fail closed */ }
+    let renewed = false;
+    try { renewed = renewWriterLease(db, writerLeaseOwner, Date.now(), WRITER_LEASE_TTL_MS, writerLeaseEpoch ?? undefined); } catch { renewed = false; }
+    if (!renewed) loseWriterLease(db);
   }, WRITER_LEASE_HEARTBEAT_MS);
   writerLeaseTimer.unref();
   if (!leaseExitHookRegistered) {
@@ -409,17 +474,32 @@ function startWriterLease(db: OsDatabase): void {
 }
 
 export function getOsDb(): OsDatabase {
-  if (instance) return instance;
+  if (instance) {
+    assertWriterLease(instance);
+    return instance;
+  }
+  if (writerLeaseLost) throw new Error('SQLite writer lease was lost; restart the API process before writing');
   const target = process.env['WORA_OS_DB']?.trim() || path.join(process.cwd(), 'data', 'wora-os.db');
   if (target !== ':memory:') mkdirSync(path.dirname(target), { recursive: true });
   const db = new DatabaseSync(target);
-  db.exec('PRAGMA journal_mode = WAL;');
-  db.exec('PRAGMA foreign_keys = ON;');
-  db.exec(SCHEMA);
-  migrate(db);
-  if (target !== ':memory:') startWriterLease(db);
-  instance = db;
-  return db;
+  try {
+    // Take the lease before application schema/migration writes. The lease
+    // table itself is the only bootstrap write and is idempotent.
+    if (target !== ':memory:') {
+      ensureWriterLeaseTable(db);
+      startWriterLease(db);
+    }
+    db.exec('PRAGMA journal_mode = WAL;');
+    db.exec('PRAGMA foreign_keys = ON;');
+    db.exec(SCHEMA);
+    migrate(db);
+    instance = db;
+    return db;
+  } catch (error) {
+    stopWriterLease(db);
+    try { db.close(); } catch { /* best effort */ }
+    throw error;
+  }
 }
 
 /** Reset the singleton (tests only). */
@@ -431,6 +511,8 @@ export function resetOsDbForTests(): void {
   if (writerLeaseDb && writerLeaseOwner) releaseWriterLease(writerLeaseDb, writerLeaseOwner);
   writerLeaseDb = null;
   writerLeaseOwner = null;
+  writerLeaseEpoch = null;
+  writerLeaseLost = false;
   if (instance) {
     try { instance.close(); } catch { /* ignore */ }
     instance = null;

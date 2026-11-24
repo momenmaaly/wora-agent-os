@@ -24,7 +24,7 @@ import {
   upsertPackage, extensionAudit,
   type InstallationRecord, type PackageRecord,
 } from './store.js';
-import { MarketplaceError, previewMarketplace, registerMarketplace, syncMarketplace } from './marketplace.js';
+import { MarketplaceError, normalizePath, normalizeRef, previewMarketplace, registerMarketplace, syncMarketplace } from './marketplace.js';
 import {
   ResolverError, applyInstallPlan, buildInstallPlan, nextVersion, planToView, uninstallPackage,
 } from './resolver.js';
@@ -194,6 +194,10 @@ export function createExtensionsRouter(): Router {
     return true;
   }
 
+  function isAdmin(res: Response): boolean {
+    return roleRank(role(res)) >= roleRank('admin');
+  }
+
   function mutationAllowed(res: Response, limit = 90): boolean {
     if (!allowRequest(workspace(res), limit)) {
       res.status(429).json({ error: 'Rate limit exceeded', code: 'RATE_LIMITED' });
@@ -294,8 +298,11 @@ export function createExtensionsRouter(): Router {
     if (!marketplace) { res.status(404).json({ error: 'Marketplace not found' }); return; }
     if (marketplace.provider === 'builtin') { res.status(409).json({ error: 'The official catalog is read-only' }); return; }
     const body = marketplaceSchema.partial().parse(req.body ?? {});
+    const refType = body.refType ?? marketplace.refType;
+    const ref = body.ref !== undefined ? normalizeRef(body.ref, refType) : body.refType ? normalizeRef(marketplace.ref, refType) : undefined;
+    const path = body.path !== undefined ? normalizePath(body.path) : undefined;
     const updated = updateMarketplace(ws, marketplace.id, {
-      name: body.name, ref: body.ref, refType: body.refType, path: body.path, scope: body.scope,
+      name: body.name, ref, refType: body.refType, path, scope: body.scope,
       scopeId: body.scopeId, autoLoad: body.autoLoad, trust: body.trust,
       status: body.autoLoad === false ? marketplace.status : undefined,
     }, actor(res));
@@ -373,6 +380,10 @@ export function createExtensionsRouter(): Router {
     if (pkg.status === 'revoked') { res.status(409).json({ error: 'This package has been revoked', code: 'PACKAGE_REVOKED' }); return; }
     const plan = buildInstallPlan({ workspaceId: ws, packageId: pkg.id, version: body.version, scope: body.scope, scopeId: body.scopeId ?? '' });
     if (!plan.canInstall) { res.status(422).json({ error: 'Installation plan has unresolved problems', plan: planToView(plan) }); return; }
+    if (plan.requiresApproval && !isAdmin(res)) {
+      res.status(403).json({ error: 'High-risk plugin installation requires an admin', code: 'HIGH_RISK_PLUGIN_REQUIRES_ADMIN', plan: planToView(plan) });
+      return;
+    }
     const installation = applyInstallPlan({
       workspaceId: ws, plan, actor: actor(res), approvePermissions: body.approvePermissions ?? false, autoLoad: body.autoLoad,
     });
@@ -438,6 +449,10 @@ export function createExtensionsRouter(): Router {
     if (!pkg || pkg.status === 'revoked' || pkg.status === 'missing') { res.status(409).json({ error: 'Package is revoked or missing', code: 'PACKAGE_REVOKED' }); return; }
     const plan = buildInstallPlan({ workspaceId: ws, packageId: pkg.id, version: installation.version, scope: installation.scope, scopeId: installation.scopeId });
     if (!plan.canInstall) { res.status(409).json({ error: 'Dependencies are no longer satisfiable', plan: planToView(plan) }); return; }
+    if (plan.requiresApproval && !isAdmin(res)) {
+      res.status(403).json({ error: 'Enabling a high-risk plugin requires an admin', code: 'HIGH_RISK_PLUGIN_REQUIRES_ADMIN', plan: planToView(plan) });
+      return;
+    }
     if (plan.missingSecrets.length) {
       res.status(409).json({ error: `Missing secret(s): ${plan.missingSecrets.join(', ')}`, code: 'SECRETS_REQUIRED', secrets: plan.missingSecrets });
       return;
@@ -472,6 +487,10 @@ export function createExtensionsRouter(): Router {
     if (!target) { res.status(409).json({ error: 'No newer version is available', code: 'NO_UPDATE' }); return; }
     const plan = buildInstallPlan({ workspaceId: ws, packageId: pkg.id, version: target, scope: installation.scope, scopeId: installation.scopeId, targetInstallationId: installation.id });
     if (!plan.canInstall) { res.status(422).json({ error: 'Update plan has unresolved problems', plan: planToView(plan) }); return; }
+    if (plan.requiresApproval && !isAdmin(res)) {
+      res.status(403).json({ error: 'Updating to a high-risk plugin version requires an admin', code: 'HIGH_RISK_PLUGIN_REQUIRES_ADMIN', plan: planToView(plan) });
+      return;
+    }
     if (plan.requiresApproval && !body.approvePermissions) {
       res.status(409).json({ error: 'The new version requests sensitive permissions and needs approval', code: 'APPROVAL_REQUIRED', plan: planToView(plan) });
       return;
@@ -496,6 +515,10 @@ export function createExtensionsRouter(): Router {
       scope: installation.scope, scopeId: installation.scopeId, targetInstallationId: installation.id, allowDowngrade: true,
     });
     if (!plan.canInstall) { res.status(422).json({ error: 'Rollback plan has unresolved problems', plan: planToView(plan) }); return; }
+    if (plan.requiresApproval && !isAdmin(res)) {
+      res.status(403).json({ error: 'Rolling back to a high-risk plugin version requires an admin', code: 'HIGH_RISK_PLUGIN_REQUIRES_ADMIN', plan: planToView(plan) });
+      return;
+    }
     if (plan.requiresApproval && !body.approvePermissions) {
       res.status(409).json({ error: 'The target version requests sensitive permissions and needs approval', code: 'APPROVAL_REQUIRED', plan: planToView(plan) });
       return;
@@ -566,7 +589,8 @@ export function createExtensionsRouter(): Router {
       return;
     }
     const result = await executeForAgent({ workspaceId: ws, agentId, toolId, toolInput: body.input ?? {}, actor: actor(res) });
-    res.status(result.ok ? 200 : 422).json(result);
+    const deniedByPolicy = result.code === 'AGENT_INACTIVE' || result.code === 'HIGH_RISK_APPROVAL_REQUIRED' || result.code === 'AGENT_NOT_FOUND';
+    res.status(result.ok ? 200 : deniedByPolicy ? 403 : 422).json(result);
   }));
 
   /* ─── Tools & MCP diagnostics ─── */
@@ -695,7 +719,11 @@ export function createExtensionsRouter(): Router {
     }
     if (error instanceof ResolverError) { res.status(error.status).json({ error: error.message, code: error.code }); return; }
     if (error instanceof MarketplaceError) { res.status(error.code === 'NO_PACKAGES' ? 422 : 400).json({ error: error.message, code: error.code }); return; }
-    if (error instanceof PluginRuntimeError) { res.status(422).json({ error: error.message, code: error.code }); return; }
+    if (error instanceof PluginRuntimeError) {
+      const status = error.code === 'INSTALLATION_NOT_ACTIVE' ? 409 : 422;
+      res.status(status).json({ error: error.message, code: error.code });
+      return;
+    }
     if (error instanceof Error && /not found/iu.test(error.message)) { res.status(404).json({ error: error.message }); return; }
     logger.error({ err: error }, 'extensions router error');
     res.status(500).json({ error: 'Internal extensions error' });

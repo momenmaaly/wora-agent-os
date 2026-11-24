@@ -5,11 +5,11 @@
  * output is evidence, not a claim.
  */
 import path from 'node:path';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { closeSync, mkdirSync, writeFileSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { z } from 'zod';
-import { resolveInWorkspace, workspacePath } from './workspace.js';
+import { openWorkspaceFile, resolveInWorkspace, workspacePath } from './workspace.js';
 import type { ToolDefinition } from './tools.js';
 
 const execFileAsync = promisify(execFile);
@@ -212,7 +212,8 @@ export const scaffoldWebappTool: ToolDefinition = {
     for (const [rel, content] of Object.entries(APP_FILES)) {
       const target = path.join(appDir, rel);
       mkdirSync(path.dirname(target), { recursive: true });
-      writeFileSync(target, content, 'utf8');
+      const opened = openWorkspaceFile(ctx.workspaceId, path.relative(workspacePath(ctx.workspaceId), target), 'write');
+      try { writeFileSync(opened.fd, content, 'utf8'); } finally { closeSync(opened.fd); }
     }
     const written = Object.keys(APP_FILES).map((rel) => path.join('apps', input.name.replace(/\s+/g, '-').toLowerCase(), rel));
 

@@ -8,7 +8,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, symlinkSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, symlinkSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
@@ -21,6 +21,8 @@ process.env['WORA_EXT_BUNDLED_DIR'] = path.join(TMP, 'bundled');
 process.env['WORA_EXTENSIONS_LOCAL_ROOTS'] = TMP;
 process.env['AUTH_SECRET'] = 'test-secret-0123456789abcdef0123456789abcdef';
 process.env['NODE_ENV'] = 'test';
+process.env['WORA_ALLOW_PRIVATE_OUTBOUND_FOR_TESTS'] = '1';
+process.env['WORA_MCP_STDIO_MODE'] = 'official';
 mkdirSync(process.env['WORA_WORKSPACE']!, { recursive: true });
 
 const { validateManifest, satisfies, permissionSensitivity } = await import('./manifest.js');
@@ -38,6 +40,7 @@ const { initExtensions } = await import('./index.js');
 const { createAgent, listAgents } = await import('../os/registry.js');
 const { createMission, executeMission, getMissionDetail } = await import('../os/orchestrator.js');
 const { issueSessionToken } = await import('../lib/session.js');
+const { setWorkspaceRole } = await import('../os/roles.js');
 const { createOsRouter } = await import('../os/router.js');
 const { getOsDb } = await import('../os/db.js');
 const express = (await import('express')).default;
@@ -114,6 +117,24 @@ function httpPlugin(overrides: Record<string, unknown> = {}) {
     health: { type: 'http', timeout_ms: 3_000 },
     security: { risk_level: 'low', network: true, data_access: [] },
     ...overrides,
+  };
+}
+
+function stdioProbePlugin(marker: string) {
+  return {
+    ...httpPlugin({
+      id: 'test.stdio-probe',
+      name: 'Stdio Probe',
+      description: 'A test-only stdio plugin that writes a marker if it is ever spawned.',
+    }),
+    type: 'mcp',
+    entrypoint: { transport: 'stdio', command: 'node', args: [marker], env: [] },
+    health: { type: 'mcp', timeout_ms: 1_000 },
+    security: { risk_level: 'low', network: false, data_access: ['none'] },
+    tools: [{
+      id: 'probe', name: 'Probe', description: 'Test probe tool.', input_schema: { type: 'object', properties: {} },
+      permissions: [], timeout_ms: 1_000, risk: 'low',
+    }],
   };
 }
 
@@ -425,6 +446,69 @@ test('mcp: the bundled reference server is discovered and executed through an ag
   assert.ok(auditRow.c >= 1);
 });
 
+test('mcp: health checks never spawn pending, disabled, revoked or untrusted servers', async () => {
+  const ws = 'wora-ext-health-guard';
+  const catalog = seedBuiltinCatalog(ws);
+  const agent = createAgent({ workspaceId: ws, name: 'Health Guard', role: 'Generalist', specialization: 'generalist', actor: 'tester' });
+  const echo = store.findPackageByKey(ws, 'plugin', 'wora.echo-mcp')!;
+  const marker = path.join(TMP, 'stdio-probe-marker');
+  const probe = validateManifest('plugin', stdioProbePlugin(marker), 'community');
+  assert.equal(probe.ok, true, JSON.stringify(probe.errors));
+  store.upsertPackage({
+    workspaceId: ws, marketplaceId: catalog.marketplaceId, kind: 'plugin', manifest: probe.manifest!,
+    sourcePath: 'bundled/plugins/test.stdio-probe/plugin.json', sourceSha: 'test', trust: 'community',
+  });
+  const probePkg = store.findPackageByKey(ws, 'plugin', 'test.stdio-probe')!;
+  const probePlan = buildInstallPlan({ workspaceId: ws, packageId: probePkg.id, scope: 'agent', scopeId: agent.id });
+  const pending = applyInstallPlan({ workspaceId: ws, plan: probePlan, actor: 'tester', approvePermissions: false });
+  syncInstallationResources(ws, pending.id);
+  await assert.rejects(checkInstallationHealth(ws, pending.id, 'tester'), /Health checks require an installed/);
+  assert.equal(existsSync(marker), false, 'a pending installation must not start its process');
+
+  const approved = store.updateInstallation(ws, pending.id, { permissionsApproved: true, status: 'installed', enabled: true }, 'tester')!;
+  syncInstallationResources(ws, approved.id);
+  const previousMode = process.env['WORA_MCP_STDIO_MODE'];
+  process.env['WORA_MCP_STDIO_MODE'] = 'disabled';
+  try {
+    const disabledHealth = await checkInstallationHealth(ws, approved.id, 'tester');
+    assert.equal(disabledHealth.ok, false);
+    assert.match(disabledHealth.error ?? '', /MCP_STDIO_DISABLED/);
+    assert.equal(existsSync(marker), false, 'stdio must stay disabled by default');
+  } finally {
+    if (previousMode === undefined) delete process.env['WORA_MCP_STDIO_MODE'];
+    else process.env['WORA_MCP_STDIO_MODE'] = previousMode;
+  }
+
+  store.updateInstallation(ws, approved.id, { enabled: false, status: 'disabled' }, 'tester');
+  await assert.rejects(checkInstallationHealth(ws, approved.id, 'tester'), /Health checks require an installed/);
+  store.updateInstallation(ws, approved.id, { enabled: true, status: 'installed' }, 'tester');
+  store.setPackageStatus(ws, probePkg.id, 'revoked');
+  await assert.rejects(checkInstallationHealth(ws, approved.id, 'tester'), /Health checks require an installed/);
+  store.setPackageStatus(ws, probePkg.id, 'available');
+  uninstallPackage(ws, approved.id, 'tester');
+  await assert.rejects(checkInstallationHealth(ws, approved.id, 'tester'), /Health checks require an installed/);
+  assert.equal(existsSync(marker), false, 'no rejected state may spawn the plugin');
+
+  // The official echo server is trusted code, but a community stdio server is not.
+  const echoPlan = buildInstallPlan({ workspaceId: ws, packageId: echo.id, scope: 'agent', scopeId: agent.id });
+  const echoInstall = applyInstallPlan({ workspaceId: ws, plan: echoPlan, actor: 'tester', approvePermissions: true });
+  syncInstallationResources(ws, echoInstall.id);
+  store.upsertPackage({
+    workspaceId: ws, marketplaceId: catalog.marketplaceId, kind: 'plugin', manifest: store.getVersion(ws, echo.id, echoInstall.version)!.manifest,
+    sourcePath: 'bundled/plugins/wora.echo-mcp/plugin.json', sourceSha: 'test', trust: 'community',
+  });
+  const previousOfficial = process.env['WORA_MCP_STDIO_MODE'];
+  process.env['WORA_MCP_STDIO_MODE'] = 'official';
+  try {
+    const untrustedHealth = await checkInstallationHealth(ws, echoInstall.id, 'tester');
+    assert.equal(untrustedHealth.ok, false);
+    assert.match(untrustedHealth.error ?? '', /MCP_STDIO_UNTRUSTED/);
+  } finally {
+    if (previousOfficial === undefined) delete process.env['WORA_MCP_STDIO_MODE'];
+    else process.env['WORA_MCP_STDIO_MODE'] = previousOfficial;
+  }
+});
+
 test('mcp: invalid tool input is rejected before any plugin process runs', async () => {
   const ws = 'wora-ext-mcp-invalid';
   seedBuiltinCatalog(ws);
@@ -452,6 +536,25 @@ test('plugin: an HTTP integration executes with a timeout and returns the real s
   const result = await executeForAgent({ workspaceId: ws, agentId: agent.id, toolId: 'test.http-plugin.echo', toolInput: { text: 'over-http' }, actor: 'tester' });
   assert.equal(result.ok, true, result.error ?? '');
   assert.equal((result.output as { body?: { text?: string } }).body?.text, 'over-http');
+});
+
+test('plugin: HTTP tools use the hardened outbound policy', async () => {
+  const ws = 'wora-ext-http-ssrf';
+  await registerMarketplace({ workspaceId: ws, name: 'HTTP SSRF market', url: `file://${MARKET}`, ref: 'main', actor: 'tester' });
+  const agent = createAgent({ workspaceId: ws, name: 'HTTP SSRF Agent', role: 'Generalist', specialization: 'generalist', actor: 'tester' });
+  const plugin = store.findPackageByKey(ws, 'plugin', 'test.http-plugin')!;
+  const plan = buildInstallPlan({ workspaceId: ws, packageId: plugin.id, scope: 'agent', scopeId: agent.id });
+  const installation = applyInstallPlan({ workspaceId: ws, plan, actor: 'tester', approvePermissions: true });
+  syncInstallationResources(ws, installation.id);
+  const previous = process.env['WORA_ALLOW_PRIVATE_OUTBOUND_FOR_TESTS'];
+  delete process.env['WORA_ALLOW_PRIVATE_OUTBOUND_FOR_TESTS'];
+  try {
+    const result = await executeForAgent({ workspaceId: ws, agentId: agent.id, toolId: 'test.http-plugin.echo', toolInput: { text: 'blocked' }, actor: 'tester' });
+    assert.equal(result.ok, false);
+    assert.match(result.error ?? '', /BLOCKED_HOST|blocked address|not allowed/);
+  } finally {
+    if (previous !== undefined) process.env['WORA_ALLOW_PRIVATE_OUTBOUND_FOR_TESTS'] = previous;
+  }
 });
 
 test('plugin: a tool cannot be executed without the agent capability profile', async () => {
@@ -559,12 +662,28 @@ test('api: every extension route enforces authorization server-side', { timeout:
     assert.equal((await call('member', `/agents/${agent.id}/policy`, { method: 'PUT', body: JSON.stringify({ extraPermissions: ['host.exec'] }) })).status, 403);
     assert.equal((await call('member', `/agents/${agent.id}/policy`, { method: 'PUT', body: JSON.stringify({ deniedTools: ['x'] }) })).status, 200);
 
+    const echoPackage = (await call('admin', '/packages?kind=plugin&q=echo')).body as unknown as Array<{ id: string; key: string }>;
+    const echo = echoPackage.find((pkg) => pkg.key === 'wora.echo-mcp');
+    assert.ok(echo);
+    const memberInstall = await call('member', `/packages/${echo.id}/install`, {
+      method: 'POST', body: JSON.stringify({ scope: 'instance', approvePermissions: true }),
+    });
+    assert.equal(memberInstall.status, 403, JSON.stringify(memberInstall.body));
+    assert.equal(memberInstall.body['code'], 'HIGH_RISK_PLUGIN_REQUIRES_ADMIN');
+
     const created = await call('admin', '/marketplaces', { method: 'POST', body: JSON.stringify({ url: `file://${MARKET}`, name: 'Admin market', credential: 'private-repo-token-value' }) });
     assert.equal(created.status, 201, JSON.stringify(created.body));
     assert.equal(JSON.stringify(created.body).includes('private-repo-token-value'), false);
     const marketplaces = await call('admin', '/marketplaces');
     assert.equal(JSON.stringify(marketplaces.body).includes('private-repo-token-value'), false);
     assert.ok((marketplaces.body as unknown as Array<{ secretConfigured: boolean }>).some((entry) => entry.secretConfigured));
+    const marketId = ((created.body['marketplace'] as { id: string }).id);
+    const badRef = await call('admin', `/marketplaces/${marketId}`, { method: 'PATCH', body: JSON.stringify({ ref: '--upload-pack=echo PWN' }) });
+    assert.equal(badRef.status, 400, JSON.stringify(badRef.body));
+    const outsideFile = await call('admin', '/marketplaces', { method: 'POST', body: JSON.stringify({ url: 'file:///etc', name: 'Outside' }) });
+    assert.equal(outsideFile.status, 400, JSON.stringify(outsideFile.body));
+    const privateGit = await call('admin', '/marketplaces', { method: 'POST', body: JSON.stringify({ url: 'https://127.0.0.1/repo.git', name: 'Private' }) });
+    assert.equal(privateGit.status, 400, JSON.stringify(privateGit.body));
 
     const secret = await call('admin', '/secrets', { method: 'POST', body: JSON.stringify({ name: 'ADMIN_TOKEN', value: 'admin-secret-value' }) });
     assert.equal(secret.status, 201);
@@ -689,6 +808,24 @@ test('api: install → assign → enable → execute → mission → disable →
     const highRisk = await api('/tools/host.exec/execute', { method: 'POST', body: JSON.stringify({ agentId: qaAgent.id, input: { command: 'node', args: ['--test', 'x'] } }) });
     assert.equal(highRisk.status, 403);
 
+    // The extension execution route must enforce the same high-risk boundary.
+    const extensionHighRisk = await api(`/extensions/agents/${qaAgent.id}/tools/host.exec/execute`, {
+      method: 'POST', body: JSON.stringify({ input: { command: 'node', args: ['--test', 'x'] } }),
+    });
+    assert.equal(extensionHighRisk.status, 403, JSON.stringify(extensionHighRisk.body));
+    assert.equal(extensionHighRisk.body['code'], 'HIGH_RISK_APPROVAL_REQUIRED');
+
+    // A paused agent must not execute anything through the extension route.
+    const paused = await api(`/agents/${diagnosticsAgent.id}`, { method: 'PATCH', body: JSON.stringify({ status: 'paused' }) });
+    assert.equal(paused.status, 200, JSON.stringify(paused.body));
+    const inactive = await api(`/extensions/agents/${diagnosticsAgent.id}/tools/system.diagnostics/execute`, {
+      method: 'POST', body: JSON.stringify({ input: {} }),
+    });
+    assert.equal(inactive.status, 403, JSON.stringify(inactive.body));
+    assert.equal(inactive.body['code'], 'AGENT_INACTIVE');
+    const resumed = await api(`/agents/${diagnosticsAgent.id}`, { method: 'PATCH', body: JSON.stringify({ status: 'active' }) });
+    assert.equal(resumed.status, 200, JSON.stringify(resumed.body));
+
     // A mission uses the same tool under the resolved profile.
     const mission = await api('/missions', { method: 'POST', body: JSON.stringify({ objective: 'run tool wora.echo-mcp.echo with {"text":"mission-http"}' }) });
     assert.equal(mission.status, 202, JSON.stringify(mission.body));
@@ -720,6 +857,48 @@ test('api: install → assign → enable → execute → mission → disable →
     assert.equal(removed.status, 204);
     const afterRemoval = await api(`/extensions/agents/${generalist.id}/capabilities`);
     assert.equal(((afterRemoval.body['profile'] as { plugins: unknown[] }).plugins).length, 0);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test('api: member cannot grant high-risk agent capabilities', { timeout: 30_000 }, async () => {
+  const ws = 'wora-memberuser';
+  seedBuiltinCatalog(ws);
+  setWorkspaceRole(ws, 'memberuser', 'member', 'bootstrap');
+  const token = issueSessionToken('memberuser', SECRET, 60);
+  const app = express();
+  app.use('/api/os', createOsRouter({ production: true }));
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise<void>((resolve) => server.once('listening', () => resolve()));
+  const address = server.address();
+  const port = typeof address === 'object' && address ? address.port : 0;
+  const call = async (route: string, init: RequestInit = {}) => {
+    const response = await fetch(`http://127.0.0.1:${port}/api/os${route}`, {
+      ...init,
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}`, ...(init.headers ?? {}) },
+    });
+    const text = await response.text();
+    let body: unknown = text;
+    try { body = JSON.parse(text) as unknown; } catch { /* text */ }
+    return { status: response.status, body: body as Record<string, unknown> };
+  };
+  try {
+    const highRiskCreate = await call('/agents', {
+      method: 'POST', body: JSON.stringify({ name: 'Member QA', role: 'QA', specialization: 'qa_engineer' }),
+    });
+    assert.equal(highRiskCreate.status, 403, JSON.stringify(highRiskCreate.body));
+    assert.equal(highRiskCreate.body['code'], 'HIGH_RISK_CAPABILITY_REQUIRES_ADMIN');
+    const lowRiskCreate = await call('/agents', {
+      method: 'POST', body: JSON.stringify({ name: 'Member Generalist', role: 'Generalist', specialization: 'generalist' }),
+    });
+    assert.equal(lowRiskCreate.status, 201, JSON.stringify(lowRiskCreate.body));
+    const agentId = String(lowRiskCreate.body['id']);
+    const highRiskPatch = await call(`/agents/${agentId}`, {
+      method: 'PATCH', body: JSON.stringify({ permissions: ['host:exec'], tools: ['host.exec'] }),
+    });
+    assert.equal(highRiskPatch.status, 403, JSON.stringify(highRiskPatch.body));
+    assert.equal(highRiskPatch.body['code'], 'HIGH_RISK_CAPABILITY_REQUIRES_ADMIN');
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }

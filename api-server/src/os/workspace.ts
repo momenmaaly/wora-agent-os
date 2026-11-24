@@ -3,7 +3,7 @@
  * Everything WORA writes to disk lives under WORA_WORKSPACE/<workspaceId>.
  */
 import path from 'node:path';
-import { existsSync, lstatSync, mkdirSync, realpathSync } from 'node:fs';
+import { closeSync, constants, existsSync, lstatSync, mkdirSync, openSync, realpathSync } from 'node:fs';
 
 export function workspaceRoot(): string {
   return process.env['WORA_WORKSPACE']?.trim() || path.join(process.cwd(), 'data', 'workspace');
@@ -74,4 +74,36 @@ export function resolveInWorkspace(workspaceId: string, relative: string): strin
     return realTarget;
   }
   return canonical;
+}
+
+
+/**
+ * Open a workspace file without following a final-component symlink and verify
+ * the opened descriptor still resolves inside the workspace. This closes the
+ * final-component race between resolveInWorkspace() and readFileSync/writeFileSync.
+ * Ancestor directory swaps remain a local-filesystem risk; the descriptor check
+ * detects them before data is returned or written.
+ */
+export function openWorkspaceFile(
+  workspaceId: string,
+  relative: string,
+  access: 'read' | 'write' = 'read',
+  mode = 0o600,
+): { fd: number; path: string } {
+  const root = realpathSync(workspacePath(workspaceId));
+  const target = resolveInWorkspace(workspaceId, relative);
+  const flags = access === 'read'
+    ? constants.O_RDONLY | constants.O_NOFOLLOW
+    : constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW;
+  const fd = openSync(target, flags, mode);
+  try {
+    const openedPath = process.platform === 'linux'
+      ? realpathSync(`/proc/self/fd/${fd}`)
+      : realpathSync(target);
+    assertInside(root, openedPath);
+    return { fd, path: openedPath };
+  } catch (error) {
+    closeSync(fd);
+    throw error;
+  }
 }

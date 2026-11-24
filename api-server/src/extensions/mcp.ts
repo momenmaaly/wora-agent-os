@@ -10,6 +10,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { safeFetch } from '../lib/safe-fetch.js';
 
 export interface McpToolDescriptor {
   name: string;
@@ -24,11 +25,13 @@ export interface McpOptions {
   url?: string | null;
   env?: Record<string, string>;
   timeoutMs?: number;
+  trust?: 'official' | 'verified' | 'community' | 'untrusted';
+  signal?: AbortSignal;
 }
 
 export class McpError extends Error {
   constructor(readonly code: string, message: string) {
-    super(message);
+    super(`${code}: ${message}`);
     this.name = 'McpError';
   }
 }
@@ -43,14 +46,35 @@ interface JsonRpcResponse {
   error?: { code?: number; message?: string };
 }
 
-function withDeadline<T>(promise: Promise<T>, milliseconds: number, label: string): Promise<T> {
+function withDeadline<T>(promise: Promise<T>, milliseconds: number, label: string, signal?: AbortSignal): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
+  let abortListener: (() => void) | null = null;
   return Promise.race([
     promise,
     new Promise<never>((_, reject) => {
       timer = setTimeout(() => reject(new McpError('MCP_TIMEOUT', `${label} timed out after ${milliseconds}ms`)), milliseconds);
+      if (signal) {
+        if (signal.aborted) reject(new McpError('MCP_ABORTED', `${label} was aborted`));
+        else {
+          abortListener = () => reject(new McpError('MCP_ABORTED', `${label} was aborted`));
+          signal.addEventListener('abort', abortListener, { once: true });
+        }
+      }
     }),
-  ]).finally(() => { if (timer) clearTimeout(timer); });
+  ]).finally(() => {
+    if (timer) clearTimeout(timer);
+    if (signal && abortListener) signal.removeEventListener('abort', abortListener);
+  });
+}
+
+/**
+ * Stdio MCP is trusted-code only until a verified sandbox runner exists.
+ * `official` allows the bundled WORA catalog; community code is never spawned
+ * on the API host. Set this explicitly in a test environment when exercising
+ * the bundled echo server; production defaults to `disabled`.
+ */
+function stdioMode(): 'disabled' | 'official' {
+  return process.env['WORA_MCP_STDIO_MODE']?.trim().toLowerCase() === 'official' ? 'official' : 'disabled';
 }
 
 export class McpSession {
@@ -61,18 +85,31 @@ export class McpSession {
   private home: string | null = null;
   private sessionId: string | null = null;
   private closed = false;
+  private abortListener: (() => void) | null = null;
 
   private constructor(private readonly options: McpOptions) {}
 
   static async open(options: McpOptions): Promise<McpSession> {
+    if (options.signal?.aborted) throw new McpError('MCP_ABORTED', 'MCP session was aborted before start');
     const session = new McpSession(options);
-    if (options.transport === 'stdio') session.startStdio();
-    await session.initialize();
-    return session;
+    if (options.signal) {
+      session.abortListener = () => session.close();
+      options.signal.addEventListener('abort', session.abortListener, { once: true });
+    }
+    try {
+      if (options.transport === 'stdio') session.startStdio();
+      await session.initialize();
+      return session;
+    } catch (error) {
+      session.close();
+      throw error;
+    }
   }
 
   private startStdio(): void {
     const command = this.options.command ?? '';
+    if (stdioMode() !== 'official') throw new McpError('MCP_STDIO_DISABLED', 'Stdio MCP execution is disabled; no verified sandbox runner is configured');
+    if (this.options.trust !== 'official') throw new McpError('MCP_STDIO_UNTRUSTED', 'Only official bundled MCP servers may run as stdio on the API host');
     if (!/^(?:node|npx|python3|uvx|deno)$/u.test(command)) throw new McpError('MCP_COMMAND_DENIED', 'MCP command is not allowed');
     this.home = mkdtempSync(path.join(os.tmpdir(), 'wora-mcp-home-'));
     const env: NodeJS.ProcessEnv = {
@@ -88,6 +125,7 @@ export class McpSession {
       shell: false,
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
+      detached: process.platform !== 'win32',
     });
     this.child.stdout.setEncoding('utf8');
     this.child.stdout.on('data', (chunk: string) => this.onData(chunk));
@@ -169,21 +207,24 @@ export class McpSession {
     const token = this.options.env?.['MCP_HTTP_TOKEN'];
     if (token) headers['authorization'] = `Bearer ${token}`;
     if (this.sessionId) headers['mcp-session-id'] = this.sessionId;
-    const response = await withDeadline(fetch(this.options.url, {
+    const url = new URL(this.options.url);
+    const result = await withDeadline(safeFetch(this.options.url, {
       method: 'POST',
       headers,
       body: JSON.stringify({ jsonrpc: '2.0', id, method, params }),
-      redirect: 'error',
-      signal: AbortSignal.timeout(timeout),
-    }), timeout + 500, method);
-    const sessionHeader = response.headers.get('mcp-session-id');
-    if (sessionHeader) this.sessionId = sessionHeader;
-    if (!response.ok) {
-      await response.body?.cancel();
-      throw new McpError('MCP_HTTP_ERROR', `MCP server responded with HTTP ${response.status}`);
+      timeoutMs: timeout,
+      maxBytes: MAX_MESSAGE_BYTES,
+      allowRedirects: false,
+      allowedPorts: new Set(['', url.port, url.port || (url.protocol === 'https:' ? '443' : '80')]),
+      signal: this.options.signal,
+    }), timeout + 500, method, this.options.signal);
+    const sessionHeader = result.headers['mcp-session-id'];
+    if (typeof sessionHeader === 'string') this.sessionId = sessionHeader;
+    if (result.status < 200 || result.status >= 300) {
+      throw new McpError('MCP_HTTP_ERROR', `MCP server responded with HTTP ${result.status}`);
     }
-    const contentType = response.headers.get('content-type') ?? '';
-    const text = await response.text();
+    const contentType = result.contentType;
+    const text = result.body.toString('utf8');
     if (text.length > MAX_MESSAGE_BYTES) throw new McpError('MCP_MESSAGE_TOO_LARGE', 'MCP server produced an oversized response');
     const payload = contentType.includes('text/event-stream')
       ? text.split(/\r?\n/u).filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trim()).filter(Boolean)
@@ -216,13 +257,21 @@ export class McpSession {
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    if (this.abortListener && this.options.signal) this.options.signal.removeEventListener('abort', this.abortListener);
+    this.abortListener = null;
     this.failAll(new McpError('MCP_CLOSED', 'MCP session closed'));
     const child = this.child;
     this.child = null;
     if (child) {
       try { child.stdin.end(); } catch { /* already closed */ }
-      try { child.kill('SIGTERM'); } catch { /* already exited */ }
-      const timer = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* already exited */ } }, 1_000);
+      const signalGroup = (signal: NodeJS.Signals) => {
+        try {
+          if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, signal);
+          else child.kill(signal);
+        } catch { /* already exited */ }
+      };
+      signalGroup('SIGTERM');
+      const timer = setTimeout(() => signalGroup('SIGKILL'), 1_000);
       timer.unref?.();
     }
     if (this.home) {

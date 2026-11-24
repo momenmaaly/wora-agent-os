@@ -67,6 +67,11 @@ export function createApproval(input: {
   return approvalView(db.prepare('SELECT * FROM os_approvals WHERE id = ?').get(id) as Record<string, string>);
 }
 
+export function getApproval(workspaceId: string, approvalId: string): ApprovalRecord | null {
+  const row = getOsDb().prepare('SELECT * FROM os_approvals WHERE workspace_id = ? AND id = ?').get(workspaceId, approvalId) as Record<string, string> | undefined;
+  return row ? approvalView(row) : null;
+}
+
 /** Latest approval for a task (any status). */
 export function getTaskApproval(workspaceId: string, taskId: string): ApprovalRecord | null {
   const row = getOsDb().prepare('SELECT * FROM os_approvals WHERE workspace_id = ? AND task_id = ? ORDER BY created_at DESC LIMIT 1').get(workspaceId, taskId) as Record<string, string> | undefined;
@@ -93,6 +98,7 @@ export function decideApproval(workspaceId: string, approvalId: string, decision
   const row = db.prepare('SELECT * FROM os_approvals WHERE workspace_id = ? AND id = ?').get(workspaceId, approvalId) as Record<string, string> | undefined;
   if (!row) throw new Error('Approval not found');
   if (row['status'] !== 'pending') throw new Error('Approval already decided');
+  if (row['requested_by'] === actor) throw new Error('The requester cannot approve or deny their own high-risk request');
   db.prepare('UPDATE os_approvals SET status = ?, decision_note = ?, decided_by = ?, decided_at = ? WHERE id = ?')
     .run(decision, note.slice(0, 500), actor, nowIso(), approvalId);
   audit(db, { workspaceId, actor, action: decision === 'approved' ? 'approval.approve' : 'approval.deny', subject: approvalId, detail: { note: note.slice(0, 300), toolId: row['tool_id'] ?? null, missionId: row['mission_id'] ?? null } });

@@ -10,11 +10,11 @@
 import { z } from 'zod';
 import os from 'node:os';
 import path from 'node:path';
-import { mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { getOsDb, audit, newId, nowIso } from './db.js';
-import { resolveInWorkspace, workspacePath } from './workspace.js';
+import { openWorkspaceFile, resolveInWorkspace, workspacePath } from './workspace.js';
 import { safeFetch } from '../lib/safe-fetch.js';
 import { solveAssignment, solveEmployeeSchedule, solveLp } from './ortools.js';
 
@@ -28,6 +28,8 @@ export interface ToolContext {
   permissions: Set<string>;
   /** When present, the tool must be explicitly enabled for the executing agent. */
   toolAllowlist?: ReadonlySet<string>;
+  /** Aborted by runTool on timeout; plugin and network tools must honor it. */
+  signal?: AbortSignal;
   missionId?: string;
   taskId?: string;
 }
@@ -55,6 +57,7 @@ export interface ToolResult {
   ok: boolean;
   output?: unknown;
   error?: string;
+  code?: string;
   durationMs: number;
   tool: string;
 }
@@ -150,11 +153,12 @@ const workspaceReadTool: ToolDefinition = {
   environment: 'host',
   timeoutMs: 5_000,
   execute(input: z.infer<typeof workspaceReadSchema>, ctx) {
-    const target = resolveInWorkspace(ctx.workspaceId, input.path);
     const cap = input.maxBytes ?? 200_000;
-    const raw = readFileSync(target);
+    const opened = openWorkspaceFile(ctx.workspaceId, input.path, 'read');
+    let raw: Buffer;
+    try { raw = readFileSync(opened.fd); } finally { closeSync(opened.fd); }
     const truncated = raw.byteLength > cap;
-    return { path: path.relative(workspacePath(ctx.workspaceId), target), bytes: raw.byteLength, truncated, content: raw.subarray(0, cap).toString('utf8') };
+    return { path: path.relative(workspacePath(ctx.workspaceId), opened.path), bytes: raw.byteLength, truncated, content: raw.subarray(0, cap).toString('utf8') };
   },
 };
 
@@ -787,10 +791,17 @@ export async function runTool(id: string, rawInput: unknown, ctx: ToolContext): 
     return { ok: false, tool: id, error: `Invalid input for ${id}: ${parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')}`, durationMs: Date.now() - started };
   }
   let timer: NodeJS.Timeout | undefined;
+  const controller = new AbortController();
+  const executionCtx: ToolContext = { ...ctx, signal: controller.signal };
   try {
     const output = await Promise.race([
-      Promise.resolve(tool.execute(parsed.data, ctx)),
-      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`Tool ${id} timed out after ${tool.timeoutMs}ms`)), tool.timeoutMs); }),
+      Promise.resolve(tool.execute(parsed.data, executionCtx)),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          controller.abort();
+          reject(new Error(`Tool ${id} timed out after ${tool.timeoutMs}ms`));
+        }, tool.timeoutMs);
+      }),
     ]);
     const durationMs = Date.now() - started;
     audit(getOsDb(), { workspaceId: ctx.workspaceId, actor: ctx.actor, action: 'tool.execute', subject: id, detail: { ok: true, durationMs, missionId: ctx.missionId ?? null, taskId: ctx.taskId ?? null } });

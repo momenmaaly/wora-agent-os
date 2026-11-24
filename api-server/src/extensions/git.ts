@@ -9,10 +9,13 @@
  */
 import { execFile } from 'node:child_process';
 import { mkdtempSync, readFileSync, readdirSync, lstatSync, realpathSync, rmSync } from 'node:fs';
+import { lookup as dnsLookup } from 'node:dns/promises';
+import { fileURLToPath } from 'node:url';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { MAX_MANIFEST_BYTES, MAX_INSTRUCTIONS_CHARS, type PackageKind } from './manifest.js';
+import { assertSafeUrl, validateResolvedAddresses } from '../lib/safe-fetch.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -72,6 +75,18 @@ function assertLocalRoot(target: string): void {
   const allowed = allowedLocalRoots();
   if (!allowed.some((root) => resolved === root || resolved.startsWith(root + path.sep))) {
     throw new MarketplaceError('LOCAL_ROOT_DENIED', 'Local marketplace paths must be inside WORA_EXTENSIONS_LOCAL_ROOTS');
+  }
+}
+
+async function assertPublicGitDestination(url: string): Promise<void> {
+  try {
+    assertSafeUrl(url);
+    const parsed = new URL(url);
+    const host = parsed.hostname.replace(/^\[|\]$/gu, '');
+    const addresses = await dnsLookup(host, { all: true, verbatim: true });
+    validateResolvedAddresses(addresses);
+  } catch (error) {
+    throw new MarketplaceError('INVALID_REPOSITORY', error instanceof Error ? error.message : 'Git destination is not allowed');
   }
 }
 
@@ -169,9 +184,18 @@ export async function fetchGitRepository(options: FetchOptions): Promise<Reposit
   const home = mkdtempSync(path.join(os.tmpdir(), 'wora-git-home-'));
   const log: string[] = [];
   try {
+    if (options.url.startsWith('file://')) {
+      let local: string;
+      try { local = fileURLToPath(options.url); } catch { throw new MarketplaceError('INVALID_REPOSITORY', 'Invalid file:// repository URL'); }
+      assertLocalRoot(local);
+    } else {
+      await assertPublicGitDestination(options.url);
+    }
     const env: NodeJS.ProcessEnv = {
-      ...process.env,
+      PATH: process.env['PATH'] ?? '/usr/local/bin:/usr/bin:/bin',
       HOME: home,
+      TMPDIR: os.tmpdir(),
+      LANG: process.env['LANG'] ?? 'C.UTF-8',
       GIT_CONFIG_NOSYSTEM: '1',
       GIT_TERMINAL_PROMPT: '0',
       GIT_ASKPASS: '/bin/echo',
@@ -179,7 +203,10 @@ export async function fetchGitRepository(options: FetchOptions): Promise<Reposit
     };
     await runGit(['init', '--quiet'], { cwd: dir, env, timeoutMs });
     await runGit(['remote', 'add', 'origin', options.url], { cwd: dir, env, timeoutMs });
-    const ref = options.refType === 'branch' ? options.ref : options.ref;
+    const ref = options.ref;
+    if (!ref || ref.startsWith('-') || /[\s~^:?*[\\]/u.test(ref) || ref.includes('..')) {
+      throw new MarketplaceError('INVALID_REF', 'Repository ref contains forbidden characters');
+    }
     log.push(`fetch ${options.refType} ${ref}`);
     await runGit(['fetch', '--depth', '1', '--no-tags', 'origin', ref], { cwd: dir, env, timeoutMs });
     await runGit(['checkout', '--quiet', 'FETCH_HEAD'], { cwd: dir, env, timeoutMs });

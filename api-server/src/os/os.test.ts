@@ -4,7 +4,7 @@
  */
 import { test, before } from 'node:test';
 import assert from 'node:assert/strict';
-import { rmSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, readFileSync, rmSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
@@ -15,7 +15,7 @@ mkdirSync(TEST_WORKSPACE, { recursive: true });
 
 const { solveAssignment, solveLp, solveEmployeeSchedule } = await import('./ortools.js');
 const { runTool, listTools } = await import('./tools.js');
-const { resolveInWorkspace, workspacePath } = await import('./workspace.js');
+const { openWorkspaceFile, resolveInWorkspace, workspacePath } = await import('./workspace.js');
 const { createAgent, listAgents, pickAgent, deleteAgent } = await import('./registry.js');
 const { addMemory, searchMemories, listMemories, deleteMemory } = await import('./memory.js');
 const { createMission, executeMission, getMissionDetail, getOsState, sampleEmployeeInput } = await import('./orchestrator.js');
@@ -115,6 +115,29 @@ test('workspace: traversal and symlink escapes are rejected', () => {
     rmSync(path.join(root, 'escape-dir'), { force: true });
     rmSync(path.join(root, 'escape-file'), { force: true });
     rmSync(path.join(root, 'broken-link'), { force: true });
+  }
+});
+
+test('workspace: descriptor-verified opens reject final symlinks and support safe writes', () => {
+  const ws = 'wora-open-test';
+  const root = workspacePath(ws);
+  const outside = path.join(os.tmpdir(), `wora-open-outside-${process.pid}`);
+  mkdirSync(root, { recursive: true });
+  mkdirSync(outside, { recursive: true });
+  try {
+    const write = openWorkspaceFile(ws, 'safe.txt', 'write');
+    writeFileSync(write.fd, 'safe-content', 'utf8');
+    closeSync(write.fd);
+    const read = openWorkspaceFile(ws, 'safe.txt', 'read');
+    try { assert.equal(readFileSync(read.fd, 'utf8'), 'safe-content'); } finally { closeSync(read.fd); }
+
+    writeFileSync(path.join(outside, 'secret.txt'), 'outside');
+    symlinkSync(path.join(outside, 'secret.txt'), path.join(root, 'final-link'), 'file');
+    assert.throws(() => openWorkspaceFile(ws, 'final-link', 'read'), /ELOOP|symbolic link|escapes/);
+    assert.throws(() => openWorkspaceFile(ws, 'final-link', 'write'), /ELOOP|symbolic link|escapes/);
+  } finally {
+    rmSync(outside, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
   }
 });
 
@@ -274,6 +297,16 @@ test('mission: a denied high-risk step fails loudly and never executes', { timeo
   const qa = after.tasks.find((t) => t.tool === 'host.exec')!;
   assert.equal(qa.status, 'failed');
   assert.match(qa.detail, /test denial/);
+});
+
+test('governance: a requester cannot approve their own high-risk request', async () => {
+  const { createApproval, decideApproval } = await import('./governance.js');
+  const approval = createApproval({
+    workspaceId: WS, actionSummary: 'self approval test', risk: 'high', requestedBy: 'self-requester',
+  });
+  assert.throws(() => decideApproval(WS, approval.id, 'approved', 'self', 'self-requester'), /cannot approve/);
+  const decided = decideApproval(WS, approval.id, 'approved', 'independent', 'independent-reviewer');
+  assert.equal(decided.status, 'approved');
 });
 
 /* ─── Governance: autonomy policy + revocable devices ─── */

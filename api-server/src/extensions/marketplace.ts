@@ -47,15 +47,16 @@ export interface DiscoveredPackage {
 
 const SAFE_PATH = /^(?:[A-Za-z0-9._-]+\/)*[A-Za-z0-9._-]*$/u;
 
-function normalizeRef(ref: string | undefined, refType: 'branch' | 'tag' | 'commit'): string {
+export function normalizeRef(ref: string | undefined, refType: 'branch' | 'tag' | 'commit'): string {
   const value = (ref ?? 'main').trim();
   if (!value || value.length > 200) throw new MarketplaceError('INVALID_REF', 'Repository ref is empty or too long');
+  if (value.startsWith('-')) throw new MarketplaceError('INVALID_REF', 'Repository refs may not begin with a dash');
   if (refType === 'commit' && !/^[a-f0-9]{7,64}$/iu.test(value)) throw new MarketplaceError('INVALID_REF', 'Pinned commits must be hexadecimal SHAs');
   if (/[\s~^:?*[\\]/u.test(value) || value.includes('..')) throw new MarketplaceError('INVALID_REF', 'Repository ref contains forbidden characters');
   return value;
 }
 
-function normalizePath(value: string | undefined): string {
+export function normalizePath(value: string | undefined): string {
   const path = (value ?? '').trim().replace(/^\/+|\/+$/gu, '');
   if (!path) return '';
   if (path.length > 200 || !SAFE_PATH.test(path) || path.split('/').includes('..')) {

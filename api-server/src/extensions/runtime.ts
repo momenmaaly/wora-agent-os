@@ -15,6 +15,7 @@ import {
 import { revealSecret } from './secrets.js';
 import { callMcpTool, probeMcp, type McpOptions } from './mcp.js';
 import { validateAgainstSchema } from './json-schema.js';
+import { safeFetch } from '../lib/safe-fetch.js';
 import type { PluginToolDefinition, ToolContext } from '../os/tools.js';
 import { logger } from '../lib/logger.js';
 
@@ -50,7 +51,13 @@ function pluginEnv(workspaceId: string, manifest: PluginManifest): Record<string
   return env;
 }
 
-function mcpOptions(workspaceId: string, manifest: PluginManifest, timeoutMs: number): McpOptions {
+function mcpOptions(
+  workspaceId: string,
+  manifest: PluginManifest,
+  timeoutMs: number,
+  trust: 'official' | 'verified' | 'community' | 'untrusted' = 'community',
+  signal?: AbortSignal,
+): McpOptions {
   const env = pluginEnv(workspaceId, manifest);
   if (manifest.entrypoint.transport === 'http') {
     const token = Object.values(env)[0];
@@ -59,6 +66,8 @@ function mcpOptions(workspaceId: string, manifest: PluginManifest, timeoutMs: nu
       url: manifest.entrypoint.url ?? null,
       env: token ? { MCP_HTTP_TOKEN: token } : {},
       timeoutMs,
+      trust,
+      signal,
     };
   }
   return {
@@ -67,6 +76,8 @@ function mcpOptions(workspaceId: string, manifest: PluginManifest, timeoutMs: nu
     args: manifest.entrypoint.args,
     env,
     timeoutMs,
+    trust,
+    signal,
   };
 }
 
@@ -137,13 +148,19 @@ export async function checkInstallationHealth(workspaceId: string, installationI
   if (!installation) throw new PluginRuntimeError('INSTALLATION_NOT_FOUND', 'Installation not found');
   const pkg = getPackage(workspaceId, installation.packageId);
   if (!pkg || pkg.kind !== 'plugin') throw new PluginRuntimeError('NOT_A_PLUGIN', 'Installation is not a plugin');
+  if (
+    installation.status !== 'installed' || !installation.enabled || !installation.permissionsApproved
+    || pkg.status === 'revoked' || pkg.status === 'missing'
+  ) {
+    throw new PluginRuntimeError('INSTALLATION_NOT_ACTIVE', 'Health checks require an installed, enabled, approved and non-revoked plugin');
+  }
   const manifest = manifestFor(workspaceId, installation);
   if (!manifest) throw new PluginRuntimeError('MANIFEST_INVALID', 'Stored manifest no longer validates');
   if (manifest.type !== 'mcp') {
     return { ok: true, skipped: true, reason: 'HTTP integrations are checked when a tool is called', tools: [], latencyMs: 0, error: null };
   }
   const server = getMcpServerForInstallation(workspaceId, installationId);
-  const probe = await probeMcp(mcpOptions(workspaceId, manifest, manifest.health.timeout_ms));
+  const probe = await probeMcp(mcpOptions(workspaceId, manifest, manifest.health.timeout_ms, pkg.trust));
   if (server) {
     setMcpHealth(workspaceId, server.id, {
       status: probe.ok ? 'ready' : 'error', health: probe.ok ? 'healthy' : 'error',
@@ -204,7 +221,7 @@ export function pluginToolDefinitions(workspaceId: string): PluginToolDefinition
   });
 }
 
-async function callHttpTool(workspaceId: string, manifest: PluginManifest, tool: RegisteredTool, input: unknown, timeoutMs: number): Promise<unknown> {
+async function callHttpTool(workspaceId: string, manifest: PluginManifest, tool: RegisteredTool, input: unknown, timeoutMs: number, signal?: AbortSignal): Promise<unknown> {
   const base = manifest.entrypoint.url;
   if (!base) throw new PluginRuntimeError('PLUGIN_NO_URL', 'HTTP integration has no base URL');
   const declaration = manifest.tools.find((entry) => entry.id === tool.toolKey);
@@ -230,13 +247,19 @@ async function callHttpTool(workspaceId: string, manifest: PluginManifest, tool:
     if (serialized.length > MAX_HTTP_BODY) throw new PluginRuntimeError('PLUGIN_INPUT_TOO_LARGE', 'Tool input exceeds the plugin limit');
     body = serialized;
   }
-  const response = await fetch(target, {
-    method, headers, body, redirect: 'error',
-    signal: AbortSignal.timeout(timeoutMs),
+  const response = await safeFetch(target.toString(), {
+    method,
+    headers,
+    body,
+    timeoutMs,
+    maxBytes: MAX_HTTP_RESPONSE,
+    allowRedirects: false,
+    allowedPorts: new Set(['', baseUrl.port, baseUrl.port || (baseUrl.protocol === 'https:' ? '443' : '80')]),
+    signal,
   });
-  const text = (await response.text()).slice(0, MAX_HTTP_RESPONSE);
-  if (!response.ok) throw new PluginRuntimeError('PLUGIN_HTTP_ERROR', `Plugin responded with HTTP ${response.status}`);
-  const contentType = response.headers.get('content-type') ?? '';
+  const text = response.body.toString('utf8');
+  if (response.status < 200 || response.status >= 300) throw new PluginRuntimeError('PLUGIN_HTTP_ERROR', `Plugin responded with HTTP ${response.status}`);
+  const contentType = response.contentType;
   if (contentType.includes('application/json')) {
     try { return JSON.parse(text) as unknown; } catch { return { raw: text }; }
   }
@@ -274,9 +297,9 @@ export async function executePluginTool(workspaceId: string, toolId: string, inp
   try {
     let output: unknown;
     if (tool.executionMode === 'http-api') {
-      output = await callHttpTool(workspaceId, manifest, tool, input, timeoutMs);
+      output = await callHttpTool(workspaceId, manifest, tool, input, timeoutMs, ctx.signal);
     } else {
-      const result = await callMcpTool(mcpOptions(workspaceId, manifest, timeoutMs), tool.toolKey, input);
+      const result = await callMcpTool(mcpOptions(workspaceId, manifest, timeoutMs, pkg.trust, ctx.signal), tool.toolKey, input);
       const envelope = result as { isError?: unknown; content?: unknown } | null;
       if (envelope?.isError === true) {
         const message = Array.isArray(envelope.content)
