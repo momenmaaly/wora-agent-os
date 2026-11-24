@@ -198,6 +198,9 @@
 .os-approval.compact { margin-top: 0; }
 .os-approval-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .os-approval p { margin: 0; font-size: 13px; }
+.os-approval-review { display: grid; grid-template-columns: max-content 1fr; gap: 4px 10px; margin: 0; font-size: 12px; }
+.os-approval-review dt { color: var(--text-muted); font-weight: 600; }
+.os-approval-review dd { margin: 0; overflow-wrap: anywhere; }
 .os-approval-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .os-risk-chip { font-size: 11px; font-weight: 700; letter-spacing: .04em; padding: 2px 8px; border-radius: 999px; background: var(--gold); color: #241a05; }
 .button.ghost.danger { border-color: color-mix(in srgb, var(--red, #c0392b) 55%, var(--line)); color: var(--red, #c0392b); }

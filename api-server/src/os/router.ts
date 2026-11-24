@@ -11,6 +11,7 @@
 import express, { Router, type Request, type Response, type NextFunction } from 'express';
 import { z, ZodError } from 'zod';
 import { verifySessionToken, safeEqual } from '../lib/session.js';
+import { isSessionActive } from '../lib/session-store.js';
 import { isProductionEnv, sanitizeEnv } from '../lib/config.js';
 import { getOsDb, parseJson } from './db.js';
 import { getAiUsageSummary } from './usage.js';
@@ -25,6 +26,9 @@ import { listLessons, getLesson, collectCandidateLessons, evaluateLesson, promot
 import { redactSecrets } from './secrets.js';
 import { listScientificDomains, runBenchmarkSuite, listBenchmarkRuns } from './benchmarks.js';
 import { classifyAction } from './actions.js';
+import { repairRepository, inspectRepository } from './code-repair.js';
+import { recoveryReport, recoverWorkspace } from './recovery.js';
+import { migrationStatus } from './migrations.js';
 import { SPECIALIZATIONS } from './specializations.js';
 import {
   createAgent, listAgents, getAgent, updateAgent, deleteAgent, ensureSeedAgents,
@@ -45,6 +49,7 @@ import {
   requestDevicePairing, redeemDevicePairing, revokeDevice, listDevices, deviceHeartbeat, findDeviceById,
 } from './governance.js';
 import { logger } from '../lib/logger.js';
+import { metricsPrometheus, metricsSnapshot, newCorrelationId } from '../lib/observability.js';
 import { createExtensionsRouter } from '../extensions/router.js';
 import { ensureWorkspaceExtensions } from '../extensions/index.js';
 import { executeForAgent } from '../extensions/capabilities.js';
@@ -63,6 +68,17 @@ function resolveWorkspace(req: Request, res: Response, production: boolean): str
   if (AUTH_SECRET) {
     const verified = bearer ? verifySessionToken(bearer, AUTH_SECRET, production) : null;
     if (verified) {
+      if (verified.sessionId) {
+        try {
+          if (!isSessionActive(verified.sessionId, verified.userId)) {
+            res.status(401).json({ code: 'SESSION_REVOKED' });
+            return null;
+          }
+        } catch {
+          res.status(503).json({ code: 'SESSION_STORE_UNAVAILABLE' });
+          return null;
+        }
+      }
       res.locals['actor'] = verified.userId;
       return `wora-${verified.userId}`.slice(0, 120);
     }
@@ -102,7 +118,14 @@ export function createOsRouter(options: { production?: boolean } = {}): Router {
   const production = options.production ?? isProductionEnv(process.env);
   const router = Router();
   router.use(express.json({ limit: '512kb' }));
-  router.use((req, res, next) => { res.setHeader('Cache-Control', 'no-store'); next(); });
+  router.use((req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const supplied = req.header('x-correlation-id');
+    const correlationId = supplied && /^[A-Za-z0-9._:-]{8,120}$/u.test(supplied) ? supplied : newCorrelationId();
+    res.locals['correlationId'] = correlationId;
+    res.setHeader('X-Correlation-Id', correlationId);
+    next();
+  });
 
   // Workspace scope for every route
   /* The device agent holds no web session: the one-time pairing code and the
@@ -147,6 +170,9 @@ export function createOsRouter(options: { production?: boolean } = {}): Router {
       { method: 'POST', pattern: /^\/settings\/execution-limits$/ },
       { method: 'POST', pattern: /^\/lessons\/[^/]+\/promote$/ },
       { method: 'POST', pattern: /^\/lessons\/[^/]+\/revoke$/ },
+      { method: 'POST', pattern: /^\/code-repair$/ },
+      { method: 'POST', pattern: /^\/recovery$/ },
+      { method: 'POST', pattern: /^\/code-repair\/inspect$/ },
       { method: 'POST', pattern: /^\/devices\/pair$/ },
       { method: 'POST', pattern: /^\/devices\/[^/]+\/revoke$/ },
       { method: 'DELETE', pattern: /^\/agents\/[^/]+$/ },
@@ -162,6 +188,7 @@ export function createOsRouter(options: { production?: boolean } = {}): Router {
 
   const workspace = (res: Response) => res.locals['workspaceId'] as string;
   const actor = (res: Response) => (res.locals['actor'] as string) ?? 'user';
+  const correlation = (res: Response) => (res.locals['correlationId'] as string) ?? undefined;
   const roleOf = (res: Response) => (res.locals['role'] as WorkspaceRole) ?? 'viewer';
 
   // Interrupted-mission recovery runs once per process boot (idempotent).
@@ -172,6 +199,44 @@ export function createOsRouter(options: { production?: boolean } = {}): Router {
     if (err instanceof Error && err.message.includes('SQLite writer lease')) throw err;
     logger.warn({ err }, 'interrupted-mission recovery failed');
   }
+
+  /* ─── Code repair, recovery and observability ──────── */
+  const codeRepairSchema = z.object({
+    repoPath: z.string().min(1).max(500), defect: z.string().min(1).max(4_000),
+    patch: z.string().min(1).max(256_000), testPath: z.string().min(1).max(500),
+    regressionPath: z.string().min(1).max(500).optional(),
+  }).strict();
+  router.post('/code-repair', asyncWrap(async (req, res) => {
+    if (!rateLimit(workspace(res), 10, req.path)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    const body = codeRepairSchema.parse(req.body ?? {});
+    const result = await repairRepository({ workspaceId: workspace(res), actor: actor(res), ...body });
+    res.status(result.ok ? 200 : 422).json(result);
+  }));
+  router.post('/code-repair/inspect', asyncWrap(async (req, res) => {
+    if (!rateLimit(workspace(res), 30, req.path)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    const body = z.object({ repoPath: z.string().min(1).max(500) }).strict().parse(req.body ?? {});
+    res.json(inspectRepository(workspace(res), body.repoPath));
+  }));
+  router.get('/recovery', asyncWrap((_req, res) => {
+    res.json(recoveryReport(workspace(res)));
+  }));
+  router.post('/recovery', asyncWrap((req, res) => {
+    if (roleRank(roleOf(res)) < roleRank('admin')) { res.status(403).json({ error: 'Admin role required' }); return; }
+    if (!rateLimit(workspace(res), 5, req.path)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    res.json(recoverWorkspace(workspace(res)));
+  }));
+  router.get('/migrations', asyncWrap((_req, res) => {
+    if (roleRank(roleOf(res)) < roleRank('admin')) { res.status(403).json({ error: 'Admin role required' }); return; }
+    res.json(migrationStatus(getOsDb()));
+  }));
+  router.get('/metrics', asyncWrap((_req, res) => {
+    if (roleRank(roleOf(res)) < roleRank('admin')) { res.status(403).json({ error: 'Admin role required' }); return; }
+    res.json(metricsSnapshot());
+  }));
+  router.get('/metrics/prometheus', asyncWrap((_req, res) => {
+    if (roleRank(roleOf(res)) < roleRank('admin')) { res.status(403).json({ error: 'Admin role required' }); return; }
+    res.type('text/plain; version=0.0.4').send(metricsPrometheus());
+  }));
 
   router.get('/state', asyncWrap((_req, res) => {
     res.json(getOsState(workspace(res)));
@@ -350,7 +415,7 @@ function highRiskAgentCapabilities(permissions: readonly string[], tools: readon
   router.post('/missions', asyncWrap(async (req, res) => {
     if (!rateLimit(workspace(res), 30, req.path)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
     const body = createMissionSchema.parse(req.body ?? {});
-    const missionId = createMission({ workspaceId: workspace(res), objective: body.objective, actor: actor(res), track: body.track });
+    const missionId = createMission({ workspaceId: workspace(res), objective: body.objective, actor: actor(res), track: body.track, correlationId: correlation(res) });
     // Execute asynchronously; the client polls GET /missions/:id for lifecycle updates.
     void executeMission(missionId, actor(res)).catch((err) => logger.error({ err, missionId }, 'mission execution failed'));
     res.status(202).json(getMissionDetail(workspace(res), missionId));

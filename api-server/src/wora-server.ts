@@ -42,7 +42,9 @@ import { AgentRuntimeStore } from './store/AgentRuntimeStore.js';
 import { EXAMPLE_ZONES, VALID_ZONE_IDS } from './zones.js';
 import { logger } from './lib/logger.js';
 import { safeEqual, verifySessionToken } from './lib/session.js';
+import { isSessionActive, revokeSession } from './lib/session-store.js';
 import { configuredOrigins, isProductionEnv, productionConfigProblems, sanitizeEnv } from './lib/config.js';
+import { isAllowedOrigin, isCrossSiteBrowserMutation } from './lib/http-security.js';
 import { generateStudioPack, resolveStudioBrain } from './studio/drafts.js';
 import { createStudioRouter } from './studio/router.js';
 import { createOsRouter } from './os/router.js';
@@ -92,8 +94,7 @@ const AGENT_CACHE_TTL_MS    = 30_000;
 const allowedOrigins = new Set(configuredOrigins(process.env['ALLOWED_ORIGINS']));
 function allowOrigin(origin?: string) {
   // Non-browser requests still have to present a signed session for workspace access.
-  return !origin || allowedOrigins.has(origin) || (!IS_PRODUCTION && !allowedOrigins.size
-    && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin));
+  return isAllowedOrigin(origin, allowedOrigins, { production: IS_PRODUCTION, allowLocalhost: !allowedOrigins.size });
 }
 
 function buildCorsOptions(): CorsOptions {
@@ -152,6 +153,17 @@ function requireRoomAccess(req: Request, res: Response, next: NextFunction): voi
   if (!verified || roomId !== `wora-${verified.userId}`) {
     res.status(403).json({ error: 'Forbidden' });
     return;
+  }
+  if (verified.sessionId) {
+    try {
+      if (!isSessionActive(verified.sessionId, verified.userId)) {
+        res.status(401).json({ code: 'SESSION_REVOKED' });
+        return;
+      }
+    } catch {
+      res.status(503).json({ code: 'SESSION_STORE_UNAVAILABLE' });
+      return;
+    }
   }
   next();
 }
@@ -458,7 +470,14 @@ export async function bootWoraServer(app: Express, port = DEFAULT_PORT) {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('X-Frame-Options', 'DENY');
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    res.setHeader('Vary', 'Origin');
     if (!allowOrigin(_req.get('Origin'))) { res.status(403).json({ code: 'CORS_ORIGIN_DENIED' }); return; }
+    // Bearer sessions are not cookie-authenticated, but reject browser-marked
+    // cross-site mutations as defense in depth against future cookie use.
+    if (isCrossSiteBrowserMutation(_req.method, _req.get('Sec-Fetch-Site'))) {
+      res.status(403).json({ code: 'CSRF_ORIGIN_DENIED' });
+      return;
+    }
     next();
   });
   app.use(cors(corsOptions));
@@ -586,6 +605,11 @@ export async function bootWoraServer(app: Express, port = DEFAULT_PORT) {
         next(new Error('AUTH_INVALID'));
         return;
       }
+      if (verified.sessionId && !isSessionActive(verified.sessionId, verified.userId)) {
+        next(new Error('SESSION_REVOKED'));
+        return;
+      }
+      socket.data['sessionId']   = verified.sessionId;
       socket.data['userId']      = verified.userId;
       socket.data['displayName'] = verified.displayName ?? 'User';
       socket.data['sessionExpiresAt'] = verified.expiresAt;
@@ -616,7 +640,12 @@ export async function bootWoraServer(app: Express, port = DEFAULT_PORT) {
   app.use('/api/studio', createStudioRouter(studioSecret && studioBrain ? {
     authenticate(authorization) {
       const token = authorization?.match(/^Bearer\s+(\S+)$/i)?.[1];
-      return token ? verifySessionToken(token, studioSecret, true)?.userId ?? null : null;
+      const session = token ? verifySessionToken(token, studioSecret, true) : null;
+      if (!session) return null;
+      if (session.sessionId) {
+        try { if (!isSessionActive(session.sessionId, session.userId)) return null; } catch { return null; }
+      }
+      return session.userId;
     },
     async consumeQuota(userId, signal) {
       if (!await rateLimiter.allow('studio-user', userId, 4, 60_000, signal)) return 60;
@@ -639,7 +668,11 @@ export async function bootWoraServer(app: Express, port = DEFAULT_PORT) {
     available: () => Boolean(AUTH_SECRET && isMongoReady()),
     authenticate(token) {
       const session = AUTH_SECRET && verifySessionToken(token, AUTH_SECRET, true);
-      return session ? { userId: session.userId, roomId: `wora-${session.userId}` } : null;
+      if (!session) return null;
+      if (session.sessionId) {
+        try { if (!isSessionActive(session.sessionId, session.userId)) return null; } catch { return null; }
+      }
+      return { userId: session.userId, roomId: `wora-${session.userId}` };
     },
     async hasAgent(_roomId, agentId) {
       return Boolean(await AgentModel.exists({ agentId, status: 'active' }).maxTimeMS(2_500));
@@ -700,7 +733,25 @@ export async function bootWoraServer(app: Express, port = DEFAULT_PORT) {
     if (!token) { res.status(401).json({ code: 'AUTH_REQUIRED' }); return; }
     const session = verifySessionToken(token, AUTH_SECRET, true);
     if (!session) { res.status(401).json({ code: 'AUTH_INVALID' }); return; }
-    res.json({ userId: session.userId, expiresAt: session.expiresAt });
+    if (session.sessionId && !isSessionActive(session.sessionId, session.userId)) {
+      res.status(401).json({ code: 'SESSION_REVOKED' }); return;
+    }
+    res.json({ userId: session.userId, expiresAt: session.expiresAt, sessionId: session.sessionId ?? null });
+  });
+
+  app.post('/api/session/revoke', (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!AUTH_SECRET) { res.status(404).json({ code: 'AUTH_UNAVAILABLE' }); return; }
+    const token = req.header('authorization')?.match(/^Bearer\s+(\S+)$/i)?.[1];
+    const session = token ? verifySessionToken(token, AUTH_SECRET, true) : null;
+    if (!session) { res.status(401).json({ code: 'AUTH_INVALID' }); return; }
+    if (!session.sessionId) { res.status(400).json({ code: 'SESSION_NOT_MANAGED' }); return; }
+    try {
+      const revoked = revokeSession(session.sessionId, session.userId);
+      res.status(revoked ? 204 : 409).end();
+    } catch {
+      res.status(503).json({ code: 'SESSION_STORE_UNAVAILABLE' });
+    }
   });
 
   app.get('/api/agents', async (_req: Request, res: Response) => {
@@ -1145,7 +1196,9 @@ export async function bootWoraServer(app: Express, port = DEFAULT_PORT) {
 
     function hasLiveSession() {
       const token = socket.handshake.auth?.['token'];
-      return Boolean(AUTH_SECRET && typeof token === 'string' && verifySessionToken(token.trim(), AUTH_SECRET, true)?.userId === userId);
+      const session = typeof token === 'string' ? verifySessionToken(token.trim(), AUTH_SECRET ?? '', true) : null;
+      if (!session || session.userId !== userId) return false;
+      return !session.sessionId || isSessionActive(session.sessionId, userId);
     }
 
     // Only authenticated, metered users with a configured agent may start a text reply.

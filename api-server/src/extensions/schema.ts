@@ -182,6 +182,10 @@ CREATE TABLE IF NOT EXISTS ext_secrets (
   ciphertext TEXT NOT NULL,
   iv TEXT NOT NULL,
   tag TEXT NOT NULL,
+  key_id TEXT,
+  format TEXT NOT NULL DEFAULT 'legacy-aes-gcm',
+  version INTEGER NOT NULL DEFAULT 1,
+  aad TEXT NOT NULL DEFAULT '',
   created_by TEXT NOT NULL DEFAULT 'user',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
@@ -215,9 +219,22 @@ CREATE INDEX IF NOT EXISTS idx_ext_snapshots_agent ON ext_capability_snapshots(w
 
 let ready = false;
 
+function addSecretColumns(db: ReturnType<typeof getOsDb>): void {
+  const columns = (db.prepare('PRAGMA table_info(ext_secrets)').all() as Array<{ name: string }>).map((column) => column.name);
+  const add = (name: string, ddl: string) => {
+    if (!columns.includes(name)) db.exec(`ALTER TABLE ext_secrets ADD COLUMN ${ddl}`);
+  };
+  add('key_id', 'key_id TEXT');
+  add('format', "format TEXT NOT NULL DEFAULT 'legacy-aes-gcm'");
+  add('version', 'version INTEGER NOT NULL DEFAULT 1');
+  add('aad', "aad TEXT NOT NULL DEFAULT ''");
+}
+
 export function ensureExtensionSchema(): void {
   if (ready) return;
-  getOsDb().exec(EXTENSION_SCHEMA);
+  const db = getOsDb();
+  db.exec(EXTENSION_SCHEMA);
+  addSecretColumns(db);
   ready = true;
 }
 

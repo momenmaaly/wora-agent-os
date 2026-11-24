@@ -35,7 +35,7 @@ import {
 import {
   authorizeTool, executeForAgent, resolveAndSnapshot, resolveCapabilities,
 } from './capabilities.js';
-import { deleteSecret, listSecrets, putSecret } from './secrets.js';
+import { deleteSecret, listSecrets, migrateLegacySecrets, putSecret, rotateSecrets, secretKeyStatus } from './secrets.js';
 import { builtinSkillCount, BUILTIN_MARKETPLACE_URL } from './builtin.js';
 import { logger } from '../lib/logger.js';
 
@@ -683,6 +683,25 @@ export function createExtensionsRouter(): Router {
     const body = secretSchema.parse(req.body ?? {});
     const secret = putSecret({ workspaceId: workspace(res), name: body.name, value: body.value, purpose: body.purpose, actor: actor(res) });
     res.status(201).json(secret);
+  }));
+
+  router.get('/secrets/key-status', asyncWrap((_req, res) => {
+    if (denied(res, 'admin')) return;
+    res.json(secretKeyStatus());
+  }));
+
+  router.post('/secrets/rotate', asyncWrap((req, res) => {
+    if (denied(res, 'admin')) return;
+    if (!mutationAllowed(res, 20)) return;
+    const body = z.strictObject({
+      toKeyId: z.string().trim().regex(/^[A-Za-z0-9._-]{1,40}$/u).optional(),
+      dryRun: z.boolean().optional(),
+      migrateLegacy: z.boolean().optional(),
+    }).parse(req.body ?? {});
+    const result = body.migrateLegacy
+      ? migrateLegacySecrets({ workspaceId: workspace(res), actor: actor(res), dryRun: body.dryRun })
+      : rotateSecrets({ workspaceId: workspace(res), toKeyId: body.toKeyId, actor: actor(res), dryRun: body.dryRun });
+    res.json(result);
   }));
 
   router.delete('/secrets/:name', asyncWrap((req, res) => {

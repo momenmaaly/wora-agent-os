@@ -13,6 +13,7 @@
  * listed for operators and referenced as advisory context. Recorded honestly.
  */
 import { getOsDb, newId, nowIso, parseJson, audit } from './db.js';
+import { openTaskToolInput } from '../security/task-fields.js';
 import { solveEmployeeSchedule, solveAssignment, solveLp } from './ortools.js';
 
 const OR_TOOLS = new Set(['or.employee_schedule', 'or.assignment', 'or.solve_lp']);
@@ -114,7 +115,7 @@ export async function maybeDistillPlaybook(input: { workspaceId: string; mission
   const distilled: PlaybookRecord[] = [];
   for (const task of tasks) {
     if (!task.tool || !OR_TOOLS.has(task.tool)) continue;
-    const toolInput = parseJson<Record<string, unknown>>(task.tool_input, {});
+    const toolInput = openTaskToolInput<Record<string, unknown>>(input.workspaceId, task.id, task.tool_input, {});
     const validation = await revalidate(task.tool, toolInput);
     if (!validation.ok) {
       audit(db, { workspaceId: input.workspaceId, actor: input.actor, action: 'playbook.rejected', subject: task.tool, detail: { reason: validation.detail, missionId: input.missionId } });

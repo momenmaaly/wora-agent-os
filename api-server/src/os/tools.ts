@@ -7,6 +7,7 @@
  * the outside world ONLY through this registry. Results are structured;
  * errors are normalized; every execution is auditable.
  */
+import { repairRepository } from './code-repair.js';
 import { z } from 'zod';
 import os from 'node:os';
 import path from 'node:path';
@@ -40,6 +41,7 @@ export interface ToolContext {
   actionClass?: 'A' | 'B' | 'C';
   /** Set only after a class C approval was consumed by the orchestrator. */
   approvedAction?: { approvalId: string; payloadDigest: string; scope: string };
+  correlationId?: string;
 }
 
 export interface ToolDefinition {
@@ -791,8 +793,41 @@ const actionClassifyTool: ToolDefinition = {
   },
 };
 
+
+/* ─── code.repair ──────────────────────────────────────── */
+const codeRepairSchema = z.object({
+  repoPath: z.string().min(1).max(500),
+  defect: z.string().min(1).max(4_000),
+  patch: z.string().min(1).max(256_000),
+  testPath: z.string().min(1).max(500),
+  regressionPath: z.string().min(1).max(500).optional(),
+}).strict();
+
+const codeRepairTool: ToolDefinition = {
+  id: 'code.repair',
+  name: 'Repair Repository Defect',
+  description: 'Copies a workspace repository to a temporary directory, reproduces a failing Node test, applies a bounded unified diff, runs targeted and regression tests, verifies the diff, and never edits the source repository.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      repoPath: { type: 'string' }, defect: { type: 'string' }, patch: { type: 'string' },
+      testPath: { type: 'string' }, regressionPath: { type: 'string' },
+    },
+    required: ['repoPath', 'defect', 'patch', 'testPath'], additionalProperties: false,
+  },
+  schema: codeRepairSchema,
+  permission: 'workspace:write',
+  risk: 'medium',
+  environment: 'host',
+  timeoutMs: 120_000,
+  execute(input: z.infer<typeof codeRepairSchema>, ctx) {
+    return repairRepository({ workspaceId: ctx.workspaceId, actor: ctx.actor, ...input });
+  },
+};
+
 /* ─── Registry ─────────────────────────────────────────── */
 import { scaffoldWebappTool, hostExecTool } from './scaffold.js';
+import { incrementMetric, observeDuration } from '../lib/observability.js';
 
 /* ─── Plugin tool provider (extensions) ────────────────── */
 export interface PluginToolDefinition {
@@ -860,6 +895,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   securityScanTool,
   scaffoldWebappTool,
   hostExecTool,
+  codeRepairTool,
   orgBuildTool,
   agentsCreateTool,
   algorithmSelectTool,
@@ -890,7 +926,8 @@ export async function runTool(id: string, rawInput: unknown, ctx: ToolContext): 
   const tool = getTool(id, ctx.workspaceId);
   if (!tool) return { ok: false, tool: id, error: `Unknown tool "${id}"`, durationMs: 0 };
   if (ctx.toolAllowlist && !ctx.toolAllowlist.has(id)) {
-    audit(getOsDb(), { workspaceId: ctx.workspaceId, actor: ctx.actor, action: 'tool.denied', subject: id, detail: { reason: 'not_enabled_for_agent', missionId: ctx.missionId ?? null, taskId: ctx.taskId ?? null } });
+    incrementMetric('wora_tool_denied_total', { tool: id, reason: 'not_enabled_for_agent' });
+    audit(getOsDb(), { workspaceId: ctx.workspaceId, actor: ctx.actor, action: 'tool.denied', subject: id, detail: { reason: 'not_enabled_for_agent', missionId: ctx.missionId ?? null, taskId: ctx.taskId ?? null, correlationId: ctx.correlationId ?? null } });
     return { ok: false, tool: id, error: `Tool "${id}" is not enabled for this agent`, durationMs: Date.now() - started };
   }
   if (tool.permission && !ctx.permissions.has(tool.permission) && !ctx.permissions.has('*')) {
@@ -898,7 +935,8 @@ export async function runTool(id: string, rawInput: unknown, ctx: ToolContext): 
   }
   const missing = (tool.permissions ?? []).filter((permission) => !ctx.permissions.has(permission) && !ctx.permissions.has('*'));
   if (missing.length) {
-    audit(getOsDb(), { workspaceId: ctx.workspaceId, actor: ctx.actor, action: 'tool.denied', subject: id, detail: { missing } });
+    incrementMetric('wora_tool_denied_total', { tool: id, reason: 'missing_permission' });
+    audit(getOsDb(), { workspaceId: ctx.workspaceId, actor: ctx.actor, action: 'tool.denied', subject: id, detail: { missing, correlationId: ctx.correlationId ?? null } });
     return { ok: false, tool: id, error: `Missing permission(s) for ${id}: ${missing.join(', ')}`, durationMs: Date.now() - started };
   }
   const parsed = tool.schema.safeParse(rawInput ?? {});
@@ -950,12 +988,16 @@ export async function runTool(id: string, rawInput: unknown, ctx: ToolContext): 
       }),
     ]);
     const durationMs = Date.now() - started;
-    audit(getOsDb(), { workspaceId: ctx.workspaceId, actor: ctx.actor, action: 'tool.execute', subject: id, detail: { ok: true, durationMs, missionId: ctx.missionId ?? null, taskId: ctx.taskId ?? null } });
+    incrementMetric('wora_tool_executions_total', { tool: id, outcome: 'ok' });
+    observeDuration('wora_tool_duration_ms', durationMs, { tool: id });
+    audit(getOsDb(), { workspaceId: ctx.workspaceId, actor: ctx.actor, action: 'tool.execute', subject: id, detail: { ok: true, durationMs, missionId: ctx.missionId ?? null, taskId: ctx.taskId ?? null, correlationId: ctx.correlationId ?? null } });
     return { ok: true, output, tool: id, durationMs };
   } catch (err) {
     const durationMs = Date.now() - started;
     const message = err instanceof Error ? err.message : String(err);
-    audit(getOsDb(), { workspaceId: ctx.workspaceId, actor: ctx.actor, action: 'tool.execute', subject: id, detail: { ok: false, error: message.slice(0, 500), durationMs, missionId: ctx.missionId ?? null, taskId: ctx.taskId ?? null } });
+    incrementMetric('wora_tool_executions_total', { tool: id, outcome: 'error' });
+    observeDuration('wora_tool_duration_ms', durationMs, { tool: id });
+    audit(getOsDb(), { workspaceId: ctx.workspaceId, actor: ctx.actor, action: 'tool.execute', subject: id, detail: { ok: false, error: message.slice(0, 500), durationMs, missionId: ctx.missionId ?? null, taskId: ctx.taskId ?? null, correlationId: ctx.correlationId ?? null } });
     return { ok: false, tool: id, error: message, durationMs };
   } finally {
     if (timer) clearTimeout(timer);

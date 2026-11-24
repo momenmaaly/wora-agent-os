@@ -286,3 +286,22 @@ Limitations: preview auth only in browser E2E; one Chromium version; SQLite sing
 3. Add approval quorum/delegation and an expiry sweeper.
 4. Add lesson post-promotion regression monitoring tied to later failed missions.
 5. Add signed artifact verification and an external verifier adapter.
+
+
+## 4q. Workstream 14 — security architecture and autonomous engineering
+
+**Status:** implemented and measured. Full design and threat model: `WORA_SECURITY_ARCHITECTURE.md`.
+
+- **Secret keyring:** deployment-supplied 32-byte keys with key ids; AES-256-GCM field encryption with AAD; explicit dry-run migration and rotation; legacy rows remain readable and fail closed when a key is missing.
+- **Approval integrity:** generated target/consequences/resource-impact review, review digest, encrypted approval payload, integrity checks at consumption, and UI display of the review.
+- **Sessions:** durable session registry with revocation; API and Socket.IO reject revoked sessions; cross-site mutations rejected in addition to the origin allowlist.
+- **Plugin isolation:** stdio MCP launched through `prlimit` resource limits; health exposes enforced limits and states that filesystem/network isolation is not provided.
+- **Code repair:** test-first, bounded, temporary-copy workflow with protected branch/path checks, targeted and regression tests, independent diff verification, and guaranteed rollback by discard.
+- **Migrations:** versioned, transactional, idempotent registry; additive rollback strategy is documented as backup restore, not data deletion.
+- **Recovery:** workspace-scoped report and recovery operation for interrupted missions, expired leases, started checkpoints and pending approvals.
+- **Observability:** correlation ids, tool counters/timings, admin-only JSON/Prometheus metrics, log redaction.
+- **CI:** GitHub Actions workflow runs API typecheck/tests/build and client typecheck/tests/build. Browser E2E still requires a Chromium host.
+- **Evidence:** full API suite **246 tests, 245 passed, 1 skipped, 0 failed**; extension suite 26/26; client unit suite 50/50; new security tests 36/36 across ten files. Client typecheck and production build pass.
+- **Defects fixed:** `migrate` was unversioned; approval payloads and task inputs were plaintext; extension secret rotation did not exist; session revocation did not exist; stdio MCP had no OS resource ceiling; no code-repair path existed.
+
+Limitations: no user namespaces/real sandbox in this environment; additive migrations require backup rollback; legacy sid-less tokens cannot be revoked; metrics are in-process; code repair produces a patch but does not apply it to the source.

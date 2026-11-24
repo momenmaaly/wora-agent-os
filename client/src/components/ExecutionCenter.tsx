@@ -97,6 +97,11 @@ function PendingApproval({ approval, onDecide }: { approval: ApprovalRecord; onD
         <span className="os-risk-chip">{approval.toolId ?? approval.kind} · {approval.risk === 'high' ? 'خطورة عالية' : approval.risk}</span>
       </div>
       <p dir="auto">{approval.actionSummary}</p>
+      <dl className="os-approval-review">
+        {approval.target && <><dt>الهدف</dt><dd dir="auto">{approval.target}</dd></>}
+        {approval.consequences && <><dt>الأثر</dt><dd dir="auto">{approval.consequences}</dd></>}
+        {approval.resourceImpact && <><dt>الموارد</dt><dd dir="auto">{approval.resourceImpact}</dd></>}
+      </dl>
       <div className="os-detail-meta">
         {approval.actionClass && <span className="os-risk-chip">فئة {approval.actionClass}</span>}
         {approval.amountUsd != null && <span className="os-risk-chip">مبلغ {approval.amountUsd} USD</span>}
@@ -104,6 +109,7 @@ function PendingApproval({ approval, onDecide }: { approval: ApprovalRecord; onD
       </div>
       {approval.scope && <small className="subtle mono" dir="ltr">{approval.scope}</small>}
       {approval.payloadDigest && <small className="subtle mono" dir="ltr">digest: {approval.payloadDigest.slice(0, 24)}…</small>}
+      {approval.reviewDigest && <small className="subtle mono" dir="ltr">review: {approval.reviewDigest.slice(0, 24)}…</small>}
       <details>
         <summary>الحمولة الدقيقة (المعتمدة عند الموافقة)</summary>
         <pre className="os-pre">{JSON.stringify(approval.toolInput, null, 2).slice(0, 2500)}</pre>

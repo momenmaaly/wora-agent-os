@@ -98,23 +98,23 @@ test('budgets fail closed by default and can be raised explicitly', () => {
   const { missionId, taskId } = taskFixture();
   assert.equal(getActionBudget(WS).maxAmountUsd, 0);
   assert.throws(() => createApproval({
-    workspaceId: WS, missionId, taskId, toolId: 'host.exec', actionSummary: 'Spend', risk: 'high',
-    toolInput: { amountUsd: 5 }, requestedBy: 'agent',
+    workspaceId: WS, missionId, taskId, toolId: 'test.action', actionSummary: 'Spend', risk: 'high',
+    toolDescription: 'Test action', toolInput: { target: 'test', amountUsd: 5 }, requestedBy: 'agent',
   }), /action budget/);
 
   setActionBudget(WS, { maxAmountUsd: 100, maxApprovalsPerMission: 1 }, 'admin');
   const allowed = createApproval({
-    workspaceId: WS, missionId, taskId, toolId: 'host.exec', actionSummary: 'Spend 50', risk: 'high',
-    toolInput: { amountUsd: 50 }, requestedBy: 'agent',
+    workspaceId: WS, missionId, taskId, toolId: 'test.action', actionSummary: 'Spend 50', risk: 'high',
+    toolDescription: 'Test action', toolInput: { target: 'test', amountUsd: 50 }, requestedBy: 'agent',
   });
   assert.equal(allowed.amountUsd, 50);
   assert.throws(() => createApproval({
-    workspaceId: WS, missionId, taskId, toolId: 'host.exec', actionSummary: 'Spend 101', risk: 'high',
-    toolInput: { amountUsd: 101 }, requestedBy: 'agent',
+    workspaceId: WS, missionId, taskId, toolId: 'test.action', actionSummary: 'Spend 101', risk: 'high',
+    toolDescription: 'Test action', toolInput: { target: 'test', amountUsd: 101 }, requestedBy: 'agent',
   }), /action budget/);
   assert.throws(() => createApproval({
-    workspaceId: WS, missionId, taskId, toolId: 'host.exec', actionSummary: 'Second approval', risk: 'high',
-    toolInput: {}, requestedBy: 'agent',
+    workspaceId: WS, missionId, taskId, toolId: 'test.action', actionSummary: 'Second approval', risk: 'high',
+    toolDescription: 'Test action', toolInput: { target: 'test' }, requestedBy: 'agent',
   }), /approval budget/);
 });
 
@@ -149,20 +149,20 @@ test('canonical digests ignore key order and reject a caller-supplied mismatch',
   assert.equal(payloadDigest({ b: 2, a: { d: 4, c: 3 } }), payloadDigest({ a: { c: 3, d: 4 }, b: 2 }));
   assert.notEqual(payloadDigest({ a: 1 }), payloadDigest({ a: 2 }));
   assert.throws(() => createApproval({
-    workspaceId: WS, actionSummary: 'Mismatch', risk: 'high', toolInput: { a: 1 }, payloadDigest: payloadDigest({ a: 2 }), requestedBy: 'agent',
+    workspaceId: WS, actionSummary: 'Mismatch', risk: 'high', toolDescription: 'Test action', toolInput: { target: 'test', a: 1 }, payloadDigest: payloadDigest({ target: 'test', a: 2 }), requestedBy: 'agent',
   }), /payload digest/);
 });
 
 test('a decision is single-use and a lowered budget blocks an already-approved amount', () => {
   setActionBudget(WS, { maxAmountUsd: 100, maxApprovalsPerMission: 5 }, 'admin');
   const approval = createApproval({
-    workspaceId: WS, actionSummary: 'Spend 50', risk: 'high', toolInput: { amountUsd: 50 }, requestedBy: 'agent',
+    workspaceId: WS, actionSummary: 'Spend 50', risk: 'high', toolDescription: 'Test action', toolInput: { target: 'test', amountUsd: 50 }, requestedBy: 'agent',
   });
   decideApproval(WS, approval.id, 'approved', 'ok', 'reviewer');
   assert.throws(() => decideApproval(WS, approval.id, 'denied', 'late', 'reviewer'), /already decided/);
   setActionBudget(WS, { maxAmountUsd: 0 }, 'admin');
   assert.throws(() => consumeApproval(WS, approval.id, {
-    payload: { amountUsd: 50 }, scope: approval.scope, actionClass: 'C', actor: 'agent',
+    payload: { target: 'test', amountUsd: 50 }, scope: approval.scope, actionClass: 'C', actor: 'agent',
   }), /current workspace action budget/);
   assert.equal(getApproval(WS, approval.id)!.consumedAt, null);
   setActionBudget(WS, { maxAmountUsd: 100 }, 'admin');

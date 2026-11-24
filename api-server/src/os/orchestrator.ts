@@ -26,6 +26,7 @@ import { claimTask, heartbeatTask, releaseTaskLease, checkpointTask, latestTaskC
 import { understandProblem, saveProblemProfile, getProblemProfile } from './problem.js';
 import { verifyIndependently } from './independent-verification.js';
 import { redactSecrets } from './secrets.js';
+import { openTaskToolInput, sealTaskToolInput } from '../security/task-fields.js';
 import { collectCandidateLessons } from './lessons.js';
 import { comparePlans, savePlanVersion, listPlanVersions, verifyPlanExecution } from './planning.js';
 import { logger } from '../lib/logger.js';
@@ -327,7 +328,7 @@ export function buildPlan(objective: string, track?: string, workspaceId = 'wora
 }
 
 /* ─── Mission lifecycle ─────────────────────────────────── */
-export function createMission(input: { workspaceId: string; objective: string; actor?: string; track?: string; requestedBy?: string }): string {
+export function createMission(input: { workspaceId: string; objective: string; actor?: string; track?: string; requestedBy?: string; correlationId?: string }): string {
   const objective = input.objective.trim().slice(0, 4000);
   if (!objective) throw new Error('Objective is required');
   ensureSeedAgents(input.workspaceId);
@@ -339,8 +340,8 @@ export function createMission(input: { workspaceId: string; objective: string; a
   const ts = nowIso();
   db.exec('BEGIN');
   try {
-    db.prepare('INSERT INTO os_missions (id, workspace_id, objective, status, requested_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      .run(missionId, input.workspaceId, objective, 'planning', input.requestedBy ?? 'user', ts, ts);
+    db.prepare('INSERT INTO os_missions (id, workspace_id, objective, status, requested_by, correlation_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(missionId, input.workspaceId, objective, 'planning', input.requestedBy ?? 'user', input.correlationId ?? null, ts, ts);
     const taskIds: string[] = [];
     const insertTask = db.prepare(
       `INSERT INTO os_tasks (id, mission_id, workspace_id, order_index, title, objective, specialization, status, depends_on, acceptance, tool, tool_input, detail, created_at, updated_at)
@@ -349,7 +350,7 @@ export function createMission(input: { workspaceId: string; objective: string; a
     for (const [index, task] of plan.entries()) {
       const taskId = newId('tsk');
       taskIds.push(taskId);
-      insertTask.run(taskId, missionId, input.workspaceId, index, task.title, task.objective, task.specialization, JSON.stringify(task.dependsOn), JSON.stringify(task.acceptance), task.tool, JSON.stringify(task.toolInput), task.detail, ts, ts);
+      insertTask.run(taskId, missionId, input.workspaceId, index, task.title, task.objective, task.specialization, JSON.stringify(task.dependsOn), JSON.stringify(task.acceptance), task.tool, sealTaskToolInput(input.workspaceId, taskId, task.toolInput), task.detail, ts, ts);
     }
     // Store resolved dependency ids
     const updateDeps = db.prepare('UPDATE os_tasks SET depends_on = ? WHERE id = ?');
@@ -415,7 +416,7 @@ const digest = (value: unknown, cap = 6000): string => {
 
 export async function executeMission(missionId: string, actor = 'orchestrator', options: { workerId?: string; leaseTtlMs?: number; maxAttempts?: number; concurrency?: number; workerMode?: boolean } = {}): Promise<void> {
   const db = getOsDb();
-  const mission = db.prepare('SELECT * FROM os_missions WHERE id = ?').get(missionId) as { id: string; workspace_id: string; objective: string; status: string } | undefined;
+  const mission = db.prepare('SELECT * FROM os_missions WHERE id = ?').get(missionId) as { id: string; workspace_id: string; objective: string; status: string; correlation_id?: string | null } | undefined;
   if (!mission) throw new Error(`Mission ${missionId} not found`);
   // Completed, paused and cancelled missions never run. Failed/awaiting missions
   // re-enter: completed tasks are skipped and the failed/blocked ones retry.
@@ -479,7 +480,7 @@ export async function executeMission(missionId: string, actor = 'orchestrator', 
        scope and expiry, and fail closed on uncertainty. High-risk actions
        always require approval; autopilot cannot bypass class C. */
     const toolDef = task.tool ? getTool(task.tool) : null;
-    const taskInput = parseJson<Record<string, unknown>>(task.tool_input, {});
+    const taskInput = openTaskToolInput<Record<string, unknown>>(mission.workspace_id, task.id, task.tool_input, {});
     const scope = toolDef ? actionScope(missionId, task.id, toolDef.id) : actionScope(missionId, task.id, null);
     const amountUsd = extractAmount(taskInput);
     const actionClass = toolDef
@@ -505,6 +506,8 @@ export async function executeMission(missionId: string, actor = 'orchestrator', 
             taskId: task.id,
             toolId: toolDef.id,
             actionSummary: `${agent.name} يطلب تنفيذ ${toolDef.id} من نوع "${task.title}" قبل المتابعة`,
+            toolDescription: toolDef.description,
+            toolPermissions: [toolDef.permission, ...(toolDef.permissions ?? [])].filter((permission): permission is string => Boolean(permission)),
             risk: toolDef.risk,
             toolInput: taskInput,
             requestedBy: agent.name,
@@ -612,6 +615,7 @@ export async function executeMission(missionId: string, actor = 'orchestrator', 
         taskId: task.id,
         actionClass: actionClass?.class,
         approvedAction,
+        correlationId: mission.correlation_id ?? undefined,
       };
       const toolInput = taskInput;
       const result = task.tool
@@ -691,7 +695,7 @@ export async function executeMission(missionId: string, actor = 'orchestrator', 
     const contract = {
       taskId: task.id,
       objective: task.objective,
-      inputContext: { tool: task.tool, toolInput: parseJson(task.tool_input, {}), mission: missionId },
+      inputContext: { tool: task.tool, toolInput: openTaskToolInput(mission.workspace_id, task.id, task.tool_input, {}), mission: missionId },
       workPerformed: reviewPassed
         ? `${agent.name} executed ${task.tool} and passed review after ${attempt - 1 || 1} attempt(s).`
         : `${agent.name} executed ${task.tool}; review rejected the output: ${lastIssues.join('; ')}`,
@@ -837,10 +841,12 @@ function finalizeMission(missionId: string, actor: string): void {
  * tasks honestly so operators can resume via POST /missions/:id/execute
  * (re-entry is idempotent: completed tasks are skipped).
  */
-export function markInterruptedMissions(): number {
+export function markInterruptedMissions(workspaceId?: string): number {
   const db = getOsDb();
   recoverExpiredTaskLeases();
-  const stale = db.prepare("SELECT id, workspace_id FROM os_missions WHERE status IN ('running', 'planning')").all() as Array<{ id: string; workspace_id: string }>;
+  const stale = (workspaceId
+    ? db.prepare("SELECT id, workspace_id FROM os_missions WHERE workspace_id = ? AND status IN ('running', 'planning')").all(workspaceId)
+    : db.prepare("SELECT id, workspace_id FROM os_missions WHERE status IN ('running', 'planning')").all()) as Array<{ id: string; workspace_id: string }>;
   for (const mission of stale) {
     clearMissionLeases(mission.workspace_id, mission.id);
     db.prepare("UPDATE os_tasks SET status = 'blocked', detail = 'interrupted_by_restart — resume the mission to re-execute this task', updated_at = ? WHERE mission_id = ? AND status IN ('running', 'assigned', 'reviewing', 'planned', 'created')")
@@ -897,7 +903,7 @@ const taskView = (row: TaskRow) => ({
   dependsOn: parseJson<string[]>(row.depends_on, []),
   acceptance: parseJson<string[]>(row.acceptance, []),
   tool: row.tool,
-  toolInput: parseJson(row.tool_input, {}),
+  toolInput: openTaskToolInput(String(row.workspace_id), String(row.id), row.tool_input, {}),
   detail: row.detail,
   createdAt: row.created_at,
   updatedAt: row.updated_at,
@@ -907,14 +913,14 @@ export function listMissions(workspaceId: string, limit = 30) {
   const db = getOsDb();
   const missions = db.prepare('SELECT * FROM os_missions WHERE workspace_id = ? ORDER BY created_at DESC LIMIT ?').all(workspaceId, Math.min(limit, 100)) as Array<Record<string, string>>;
   return redactSecrets(missions.map((m) => ({
-    id: m['id'], objective: m['objective'], status: m['status'], summary: m['summary'], requestedBy: m['requested_by'], artifactId: m['artifact_id'], createdAt: m['created_at'], updatedAt: m['updated_at'],
+    id: m['id'], objective: m['objective'], status: m['status'], summary: m['summary'], requestedBy: m['requested_by'], correlationId: m['correlation_id'] ?? null, artifactId: m['artifact_id'], createdAt: m['created_at'], updatedAt: m['updated_at'],
   }))).value;
 }
 
 export function getMissionDetail(workspaceId: string, missionId: string) {
   const db = getOsDb();
   const mission = db.prepare('SELECT * FROM os_missions WHERE workspace_id = ? AND id = ?').get(workspaceId, missionId) as
-    | { id: string; workspace_id: string; objective: string; status: string; summary: string; requested_by: string; artifact_id: string | null; created_at: string; updated_at: string }
+    | { id: string; workspace_id: string; objective: string; status: string; summary: string; requested_by: string; correlation_id?: string | null; artifact_id: string | null; created_at: string; updated_at: string }
     | undefined;
   if (!mission) return null;
   const tasks = db.prepare('SELECT * FROM os_tasks WHERE mission_id = ? ORDER BY order_index').all(missionId) as unknown as TaskRow[];
@@ -935,6 +941,7 @@ export function getMissionDetail(workspaceId: string, missionId: string) {
     status: mission.status,
     summary: mission.summary,
     requestedBy: mission.requested_by,
+    correlationId: mission.correlation_id ?? null,
     artifactId: mission.artifact_id,
     createdAt: mission.created_at,
     updatedAt: mission.updated_at,

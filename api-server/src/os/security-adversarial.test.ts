@@ -153,6 +153,6 @@ test('secret-shaped output is redacted from mission views, evidence, verificatio
   assert.ok(!JSON.stringify(artifacts).includes(token), 'persisted artifact leaked the token');
   const audit = getOsDb().prepare('SELECT detail FROM os_audit WHERE workspace_id = ?').all(A) as Array<Record<string, string>>;
   assert.ok(!JSON.stringify(audit).includes(token), 'audit detail leaked the token');
-  const approval = createApproval({ workspaceId: A, actionSummary: `token ${token}`, risk: 'high', toolInput: { token }, requestedBy: 'agent' });
+  const approval = createApproval({ workspaceId: A, actionSummary: `token ${token}`, risk: 'high', toolDescription: 'Test action', toolInput: { target: 'test', token }, requestedBy: 'agent' });
   assert.ok(!JSON.stringify(getApproval(A, approval.id)).includes(token), 'approval view leaked the token');
 });

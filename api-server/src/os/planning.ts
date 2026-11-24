@@ -9,6 +9,7 @@
  */
 import { getOsDb, newId, nowIso, parseJson, audit } from './db.js';
 import { getTool } from './tools.js';
+import { openTaskToolInput } from '../security/task-fields.js';
 import type { ProblemProfile } from './problem.js';
 import type { PlanTask } from './orchestrator.js';
 
@@ -203,7 +204,7 @@ export function replanMission(workspaceId: string, missionId: string, reason: st
   const indexMap = new Map(remaining.map((row, index) => [String(row['id']), index]));
   const plan: PlanTask[] = remaining.map((row) => ({
     title: String(row['title']), objective: String(row['objective']), specialization: String(row['specialization']),
-    tool: (row['tool'] as string | null) ?? null, toolInput: parseJson<Record<string, unknown>>(String(row['tool_input'] ?? '{}'), {}),
+    tool: (row['tool'] as string | null) ?? null, toolInput: openTaskToolInput<Record<string, unknown>>(workspaceId, String(row['id']), String(row['tool_input'] ?? '{}'), {}),
     dependsOn: parseJson<string[]>(String(row['depends_on'] ?? '[]'), []).map((id) => indexMap.get(id)).filter((index): index is number => index !== undefined),
     acceptance: parseJson<string[]>(String(row['acceptance'] ?? '[]'), []), detail: String(row['detail'] ?? ''),
   }));

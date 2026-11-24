@@ -302,7 +302,7 @@ test('mission: a denied high-risk step fails loudly and never executes', { timeo
 test('governance: a requester cannot approve their own high-risk request', async () => {
   const { createApproval, decideApproval } = await import('./governance.js');
   const approval = createApproval({
-    workspaceId: WS, actionSummary: 'self approval test', risk: 'high', requestedBy: 'self-requester',
+    workspaceId: WS, actionSummary: 'self approval test', risk: 'high', toolDescription: 'Test action', toolInput: { target: 'self-test' }, requestedBy: 'self-requester',
   });
   assert.throws(() => decideApproval(WS, approval.id, 'approved', 'self', 'self-requester'), /cannot approve/);
   const decided = decideApproval(WS, approval.id, 'approved', 'independent', 'independent-reviewer');

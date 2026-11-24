@@ -54,7 +54,8 @@ export interface OsState {
 
 export interface ApprovalRecord {
   id: string; kind: string; missionId: string | null; taskId: string | null; toolId: string | null;
-  actionSummary: string; risk: string; actionClass?: 'A' | 'B' | 'C'; scope?: string; payloadDigest?: string;
+  actionSummary: string; target?: string; consequences?: string; resourceImpact?: string;
+  summaryVersion?: string; reviewDigest?: string; risk: string; actionClass?: 'A' | 'B' | 'C'; scope?: string; payloadDigest?: string;
   expiresAt?: string | null; amountUsd?: number | null;
   toolInput: Record<string, unknown>; requestedBy: string;
   status: 'pending' | 'approved' | 'denied';

@@ -11,6 +11,7 @@
  * or a file path (default: <cwd>/data/wora-os.db) for persistence.
  */
 import { DatabaseSync } from 'node:sqlite';
+import { runVersionedMigrations } from './migrations.js';
 import { randomUUID } from 'node:crypto';
 import { redactSecrets } from './secrets.js';
 import { mkdirSync } from 'node:fs';
@@ -45,6 +46,7 @@ CREATE TABLE IF NOT EXISTS os_missions (
   objective TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'planning',
   requested_by TEXT NOT NULL DEFAULT 'user',
+  correlation_id TEXT,
   summary TEXT NOT NULL DEFAULT '',
   artifact_id TEXT,
   created_at TEXT NOT NULL,
@@ -163,6 +165,11 @@ CREATE TABLE IF NOT EXISTS os_approvals (
   task_id TEXT,
   tool_id TEXT,
   action_summary TEXT NOT NULL,
+  target TEXT NOT NULL DEFAULT '',
+  consequences TEXT NOT NULL DEFAULT '',
+  resource_impact TEXT NOT NULL DEFAULT '',
+  summary_version TEXT NOT NULL DEFAULT '',
+  review_digest TEXT NOT NULL DEFAULT '',
   risk TEXT NOT NULL DEFAULT 'high',
   action_class TEXT NOT NULL DEFAULT 'C',
   scope TEXT NOT NULL DEFAULT '',
@@ -181,6 +188,17 @@ CREATE TABLE IF NOT EXISTS os_approvals (
 );
 CREATE INDEX IF NOT EXISTS idx_os_approvals_ws ON os_approvals(workspace_id, status, created_at);
 CREATE INDEX IF NOT EXISTS idx_os_approvals_task ON os_approvals(task_id);
+
+CREATE TABLE IF NOT EXISTS security_sessions (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  expires_at INTEGER NOT NULL,
+  revoked_at TEXT,
+  revoked_by TEXT,
+  last_seen_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_security_sessions_user ON security_sessions(user_id, expires_at);
 
 CREATE TABLE IF NOT EXISTS os_devices (
   id TEXT PRIMARY KEY,
@@ -436,7 +454,13 @@ function migrate(db: OsDatabase): void {
   if (!has('os_approvals', 'expires_at')) db.exec('ALTER TABLE os_approvals ADD COLUMN expires_at TEXT');
   if (!has('os_approvals', 'amount_usd')) db.exec('ALTER TABLE os_approvals ADD COLUMN amount_usd REAL');
   if (!has('os_approvals', 'consumed_at')) db.exec('ALTER TABLE os_approvals ADD COLUMN consumed_at TEXT');
+  if (!has('os_missions', 'correlation_id')) db.exec('ALTER TABLE os_missions ADD COLUMN correlation_id TEXT');
   if (!has('os_approvals', 'consumed_by')) db.exec('ALTER TABLE os_approvals ADD COLUMN consumed_by TEXT');
+  if (!has('os_approvals', 'target')) db.exec("ALTER TABLE os_approvals ADD COLUMN target TEXT NOT NULL DEFAULT ''");
+  if (!has('os_approvals', 'consequences')) db.exec("ALTER TABLE os_approvals ADD COLUMN consequences TEXT NOT NULL DEFAULT ''");
+  if (!has('os_approvals', 'resource_impact')) db.exec("ALTER TABLE os_approvals ADD COLUMN resource_impact TEXT NOT NULL DEFAULT ''");
+  if (!has('os_approvals', 'summary_version')) db.exec("ALTER TABLE os_approvals ADD COLUMN summary_version TEXT NOT NULL DEFAULT ''");
+  if (!has('os_approvals', 'review_digest')) db.exec("ALTER TABLE os_approvals ADD COLUMN review_digest TEXT NOT NULL DEFAULT ''");
   if (!has('os_lessons', 'memory_id')) db.exec('ALTER TABLE os_lessons ADD COLUMN memory_id TEXT');
   if (!has('os_lessons', 'revoked_by')) db.exec('ALTER TABLE os_lessons ADD COLUMN revoked_by TEXT');
   if (!has('os_lessons', 'revoked_at')) db.exec('ALTER TABLE os_lessons ADD COLUMN revoked_at TEXT');
@@ -632,7 +656,7 @@ export function getOsDb(): OsDatabase {
     db.exec('PRAGMA journal_mode = WAL;');
     db.exec('PRAGMA foreign_keys = ON;');
     db.exec(SCHEMA);
-    migrate(db);
+    runVersionedMigrations(db, migrate);
     instance = db;
     return db;
   } catch (error) {

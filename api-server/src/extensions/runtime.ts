@@ -18,6 +18,7 @@ import { validateAgainstSchema } from './json-schema.js';
 import { safeFetch } from '../lib/safe-fetch.js';
 import type { PluginToolDefinition, ToolContext } from '../os/tools.js';
 import { logger } from '../lib/logger.js';
+import { isolationStatus } from './sandbox.js';
 
 const MAX_HTTP_BODY = 256 * 1024;
 const MAX_HTTP_RESPONSE = 512 * 1024;
@@ -334,7 +335,7 @@ export function installationHealth(workspaceId: string, installationId: string) 
   const tools = listRegisteredTools(workspaceId).filter((tool) => tool.installationId === installationId);
   return {
     installation,
-    mcp: server ? { id: server.id, transport: server.transport, status: server.status, health: server.health, lastCheckAt: server.lastCheckAt, lastError: server.lastError, discoveredTools: server.discoveredTools } : null,
+    mcp: server ? { id: server.id, transport: server.transport, status: server.status, health: server.health, lastCheckAt: server.lastCheckAt, lastError: server.lastError, discoveredTools: server.discoveredTools, isolation: server.transport === 'stdio' ? isolationStatus() : null } : null,
     tools: tools.map((tool) => ({ toolId: tool.toolId, name: tool.name, health: tool.health, status: tool.status, executionMode: tool.executionMode })),
   };
 }

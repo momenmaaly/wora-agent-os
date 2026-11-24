@@ -15,6 +15,8 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { getOsDb, newId, nowIso, audit, parseJson, type OsDatabase } from './db.js';
 import { classifyAction, type ActionClass, type ActionClassificationInput, type ActionRisk } from './actions.js';
 import { redactSecrets } from './secrets.js';
+import { fieldAad, openJson, sealJson } from '../security/field-crypto.js';
+import { assertSafeReview, buildActionReview, type ActionReview } from './action-summary.js';
 
 export type AutonomyPolicy = 'balanced' | 'autopilot';
 export type ApprovalStatus = 'pending' | 'approved' | 'denied';
@@ -127,7 +129,8 @@ export function requiresHumanApproval(workspaceId: string, risk: string, action?
 /* ─── Approvals ─────────────────────────────────────────── */
 export interface ApprovalRecord {
   id: string; kind: string; missionId: string | null; taskId: string | null; toolId: string | null;
-  actionSummary: string; risk: string; actionClass: ActionClass; scope: string; payloadDigest: string;
+  actionSummary: string; target: string; consequences: string; resourceImpact: string; summaryVersion: string;
+  reviewDigest: string; risk: string; actionClass: ActionClass; scope: string; payloadDigest: string;
   expiresAt: string | null; amountUsd: number | null; toolInput: Record<string, unknown>; requestedBy: string;
   status: ApprovalStatus; decisionNote: string; decidedBy: string | null; decidedAt: string | null;
   consumedAt: string | null; consumedBy: string | null; createdAt: string;
@@ -135,13 +138,17 @@ export interface ApprovalRecord {
 
 const approvalView = (row: Record<string, string | null>): ApprovalRecord => redactSecrets({
   id: String(row['id']), kind: String(row['kind']), missionId: row['mission_id'] ?? null, taskId: row['task_id'] ?? null, toolId: row['tool_id'] ?? null,
-  actionSummary: String(row['action_summary']), risk: String(row['risk']),
+  actionSummary: String(row['action_summary']),
+  target: String(row['target'] ?? ''), consequences: String(row['consequences'] ?? ''),
+  resourceImpact: String(row['resource_impact'] ?? ''), summaryVersion: String(row['summary_version'] ?? ''),
+  reviewDigest: String(row['review_digest'] ?? ''),
+  risk: String(row['risk']),
   actionClass: (String(row['action_class'] ?? 'C')) as ActionClass,
   scope: String(row['scope'] ?? ''),
   payloadDigest: String(row['payload_digest'] ?? ''),
   expiresAt: row['expires_at'] ?? null,
   amountUsd: row['amount_usd'] === null || row['amount_usd'] === undefined ? null : Number(row['amount_usd']),
-  toolInput: parseJson(row['tool_input'], {}), requestedBy: String(row['requested_by']),
+  toolInput: openJson<Record<string, unknown>>(row['tool_input'], fieldAad('approval-tool-input', String(row['workspace_id'] ?? ''), String(row['id'])), {}), requestedBy: String(row['requested_by']),
   status: String(row['status']) as ApprovalStatus, decisionNote: String(row['decision_note'] ?? ''), decidedBy: row['decided_by'] ?? null, decidedAt: row['decided_at'] ?? null,
   consumedAt: row['consumed_at'] ?? null, consumedBy: row['consumed_by'] ?? null, createdAt: String(row['created_at']),
 }).value;
@@ -150,6 +157,7 @@ export function createApproval(input: {
   workspaceId: string; missionId?: string | null; taskId?: string | null; toolId?: string | null;
   actionSummary: string; risk: string; toolInput?: unknown; requestedBy?: string; kind?: string;
   actionClass?: ActionClass; scope?: string; payloadDigest?: string; expiresAt?: string; amountUsd?: number;
+  toolDescription?: string | null; toolPermissions?: string[] | null; review?: ActionReview;
 }): ApprovalRecord {
   const db = getOsDb();
   const id = newId('apr');
@@ -168,6 +176,15 @@ export function createApproval(input: {
   }
   const scope = input.scope ?? actionScope(input.missionId, input.taskId, input.toolId);
   const digest = payloadDigest(input.toolInput ?? {});
+  const review = input.review ?? buildActionReview({
+    toolId: input.toolId ?? null, toolInput: input.toolInput ?? {}, risk: input.risk,
+    toolDescription: input.toolDescription ?? null, toolPermissions: input.toolPermissions ?? null,
+  });
+  assertSafeReview(review);
+  const reviewDigest = payloadDigest({
+    summary: review.summary, target: review.target, consequences: review.consequences,
+    resourceImpact: review.resourceImpact, summaryVersion: review.summaryVersion, payloadDigest: digest,
+  });
   if (input.payloadDigest && input.payloadDigest !== digest) throw new Error('Provided payload digest does not match the canonical tool input');
   const expiresAt = input.expiresAt ?? new Date(Date.now() + budget.approvalTtlMinutes * 60_000).toISOString();
   if (Number.isNaN(Date.parse(expiresAt)) || Date.parse(expiresAt) <= Date.now()) {
@@ -179,11 +196,12 @@ export function createApproval(input: {
   db.exec('BEGIN IMMEDIATE');
   try {
   db.prepare(`INSERT INTO os_approvals
-    (id, workspace_id, kind, mission_id, task_id, tool_id, action_summary, risk, action_class, scope, payload_digest, expires_at, amount_usd, tool_input, requested_by, status, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`)
+    (id, workspace_id, kind, mission_id, task_id, tool_id, action_summary, target, consequences, resource_impact, summary_version, review_digest, risk, action_class, scope, payload_digest, expires_at, amount_usd, tool_input, requested_by, status, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`)
     .run(id, input.workspaceId, input.kind ?? 'tool-execution', input.missionId ?? null, input.taskId ?? null, input.toolId ?? null,
-      input.actionSummary.slice(0, 500), input.risk, actionClass, scope, digest, expiresAt, amountUsd ?? null,
-      JSON.stringify(input.toolInput ?? {}).slice(0, 20_000), input.requestedBy ?? 'orchestrator', nowIso());
+      review.summary.slice(0, 500), review.target.slice(0, 500), review.consequences.slice(0, 1_000), review.resourceImpact.slice(0, 500),
+      review.summaryVersion, reviewDigest, input.risk, actionClass, scope, digest, expiresAt, amountUsd ?? null,
+      sealJson(input.toolInput ?? {}, fieldAad('approval-tool-input', input.workspaceId, id)), input.requestedBy ?? 'orchestrator', nowIso());
   audit(db, { workspaceId: input.workspaceId, actor: input.requestedBy ?? 'orchestrator', action: 'approval.request', subject: id, detail: { toolId: input.toolId ?? null, missionId: input.missionId ?? null, risk: input.risk, actionClass, scope, payloadDigest: digest, expiresAt, amountUsd: amountUsd ?? null } });
   const created = approvalView(db.prepare('SELECT * FROM os_approvals WHERE id = ?').get(id) as Record<string, string>);
   db.exec('COMMIT');
@@ -262,6 +280,16 @@ export function consumeApproval(workspaceId: string, approvalId: string, input: 
     if (String(row['action_class'] ?? 'C') !== input.actionClass) throw new Error('Approval action class does not match');
     if (String(row['scope'] ?? '') !== input.scope) throw new Error('Approval scope does not match');
     if (String(row['payload_digest'] ?? '') !== payloadDigest(input.payload)) throw new Error('Approval payload digest does not match');
+    const storedInput = openJson<Record<string, unknown>>(row['tool_input'], fieldAad('approval-tool-input', workspaceId, approvalId), {});
+    if (payloadDigest(storedInput) !== String(row['payload_digest'] ?? '')) throw new Error('Stored approval payload failed its integrity check');
+    if (row['review_digest']) {
+      const expectedReview = payloadDigest({
+        summary: String(row['action_summary'] ?? ''), target: String(row['target'] ?? ''),
+        consequences: String(row['consequences'] ?? ''), resourceImpact: String(row['resource_impact'] ?? ''),
+        summaryVersion: String(row['summary_version'] ?? ''), payloadDigest: String(row['payload_digest'] ?? ''),
+      });
+      if (String(row['review_digest']) !== expectedReview) throw new Error('Approval review failed its integrity check');
+    }
     if (input.missionId && row['mission_id'] !== input.missionId) throw new Error('Approval mission does not match');
     if (input.taskId && row['task_id'] !== input.taskId) throw new Error('Approval task does not match');
     const amount = row['amount_usd'] === null || row['amount_usd'] === undefined ? undefined : Number(row['amount_usd']);

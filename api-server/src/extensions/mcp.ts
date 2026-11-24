@@ -11,6 +11,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { safeFetch } from '../lib/safe-fetch.js';
+import { resourceLimitedCommand } from './sandbox.js';
 
 export interface McpToolDescriptor {
   name: string;
@@ -119,7 +120,8 @@ export class McpSession {
       LANG: process.env['LANG'] ?? 'C.UTF-8',
       ...(this.options.env ?? {}),
     };
-    this.child = spawn(command, this.options.args ?? [], {
+    const launch = resourceLimitedCommand(command, this.options.args ?? []);
+    this.child = spawn(launch.command, launch.args, {
       cwd: this.home,
       env,
       shell: false,

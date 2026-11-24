@@ -691,6 +691,16 @@ test('api: every extension route enforces authorization server-side', { timeout:
     const secrets = await call('admin', '/secrets');
     assert.equal(secrets.status, 200);
     assert.equal(JSON.stringify(secrets.body).includes('admin-secret-value'), false);
+    assert.equal((await call('member', '/secrets/key-status')).status, 403);
+    const keyStatus = await call('admin', '/secrets/key-status');
+    assert.equal(keyStatus.status, 200);
+    assert.ok(!JSON.stringify(keyStatus.body).includes('admin-secret-value'));
+    const dryRotation = await call('admin', '/secrets/rotate', { method: 'POST', body: JSON.stringify({ dryRun: true }) });
+    assert.equal(dryRotation.status, 200, JSON.stringify(dryRotation.body));
+    assert.equal(dryRotation.body['dryRun'], true);
+    const migration = await call('admin', '/secrets/rotate', { method: 'POST', body: JSON.stringify({ migrateLegacy: true }) });
+    assert.equal(migration.status, 200, JSON.stringify(migration.body));
+    assert.equal(JSON.stringify(migration.body).includes('admin-secret-value'), false);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }

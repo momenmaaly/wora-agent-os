@@ -2,12 +2,13 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 
 const sessionUserId = /^[a-zA-Z0-9_-]{3,64}$/u;
 
-export function issueSessionToken(userId: string, secret: string, minutes: number): string {
+export function issueSessionToken(userId: string, secret: string, minutes: number, options: { sessionId?: string } = {}): string {
   if (!sessionUserId.test(userId) || !secret || !Number.isInteger(minutes) || minutes < 1 || minutes > 480) {
     throw new Error('Invalid workspace session arguments');
   }
   const exp = Math.floor(Date.now() / 1_000) + minutes * 60;
-  const payload = Buffer.from(JSON.stringify({ sub: userId, exp })).toString('base64url');
+  if (options.sessionId !== undefined && !/^[A-Za-z0-9_-]{8,80}$/u.test(options.sessionId)) throw new Error('Invalid session id');
+  const payload = Buffer.from(JSON.stringify({ sub: userId, exp, ...(options.sessionId ? { sid: options.sessionId } : {}) })).toString('base64url');
   return `${payload}.${createHmac('sha256', secret).update(payload).digest('base64url')}`;
 }
 
@@ -18,7 +19,7 @@ export function safeEqual(a: string, b: string): boolean {
 }
 
 /** Verify the workspace's two-part HMAC tokens or HS256 JWTs. */
-export function verifySessionToken(token: string, secret: string, requireExpiry = false): { userId: string; displayName?: string; expiresAt?: number } | null {
+export function verifySessionToken(token: string, secret: string, requireExpiry = false): { userId: string; displayName?: string; expiresAt?: number; sessionId?: string } | null {
   if (!secret || token.length > 4_096) return null;
   const parts = token.split('.');
   if ((parts.length !== 2 && parts.length !== 3) || parts.some((part) => !/^[\w-]+$/.test(part))) return null;
@@ -29,7 +30,7 @@ export function verifySessionToken(token: string, secret: string, requireExpiry 
   try {
     const decode = (encoded: string) => JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'));
     if (parts.length === 2 && decode(parts[0]!)?.alg !== 'HS256') return null;
-    const payload = decode(parts[parts.length - 1]!) as { sub?: unknown; userId?: unknown; name?: unknown; exp?: unknown; nbf?: unknown } | null;
+    const payload = decode(parts[parts.length - 1]!) as { sub?: unknown; userId?: unknown; name?: unknown; exp?: unknown; nbf?: unknown; sid?: unknown } | null;
     if (!payload || typeof payload !== 'object') return null;
     const now = Date.now() / 1_000;
     if (requireExpiry || payload.exp !== undefined) {
@@ -38,8 +39,10 @@ export function verifySessionToken(token: string, secret: string, requireExpiry 
     if (payload.nbf !== undefined && (typeof payload.nbf !== 'number' || !Number.isSafeInteger(payload.nbf) || payload.nbf > now)) return null;
     const userId = payload.sub ?? payload.userId;
     if (typeof userId !== 'string' || !sessionUserId.test(userId)) return null;
+    if (payload.sid !== undefined && (typeof payload.sid !== 'string' || !/^[A-Za-z0-9_-]{8,80}$/u.test(payload.sid))) return null;
     return { userId, displayName: typeof payload.name === 'string' ? payload.name : undefined,
-      ...(typeof payload.exp === 'number' ? { expiresAt: payload.exp * 1_000 } : {}) };
+      ...(typeof payload.exp === 'number' ? { expiresAt: payload.exp * 1_000 } : {}),
+      ...(typeof payload.sid === 'string' ? { sessionId: payload.sid } : {}) };
   } catch {
     return null;
   }
