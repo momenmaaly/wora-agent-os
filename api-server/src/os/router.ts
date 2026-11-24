@@ -24,6 +24,9 @@ import { understandProblem, getProblemProfile } from './problem.js';
 import { modelProblem } from './problem-model.js';
 import { composeMissionPlan, getComposition } from './capability-composition.js';
 import { getMissionOutcome } from './outcome-verification.js';
+import { analyzeProblemReasoning, buildDeterministicReasoning } from './reasoning-engine.js';
+import { addReasoningEvidence, getReasoningModel, listReasoningVersions } from './reasoning-store.js';
+import { reasoningProviderStatus } from './reasoning-provider.js';
 import { listPlanVersions, replanMission } from './planning.js';
 import { previewTeam, getTeamPlan, listSelectionDecisions, performanceReport, requirementsForPlan } from './selection.js';
 import { listLessons, getLesson, collectCandidateLessons, evaluateLesson, promoteLesson, rejectLesson, revokeLesson, recordLessonOutcome, listLessonEvents } from './lessons.js';
@@ -691,6 +694,78 @@ function highRiskAgentCapabilities(permissions: readonly string[], tools: readon
     const outcome = getMissionOutcome(workspace(res), detail.id);
     if (!outcome) { res.status(404).json({ error: 'Outcome verification not found' }); return; }
     res.json(outcome);
+  }));
+
+  router.get('/reasoning/status', asyncWrap((_req, res) => {
+    const status = reasoningProviderStatus();
+    res.json({
+      configured: status.configured, provider: status.name, model: status.model,
+      mode: status.configured ? 'model-assisted-available' : 'deterministic',
+      notice: status.notice,
+      limits: ['Provider proposals are unverified.', 'Deterministic checks, permissions and approvals remain authoritative.', 'No provider key is returned by this endpoint.'],
+    });
+  }));
+
+  router.post('/problems/reason', asyncWrap(async (req, res) => {
+    if (!rateLimit(workspace(res), 30, req.path)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    const evidenceSchema = z.object({
+      statement: z.string().trim().min(1).max(2000),
+      kind: z.enum(['user-fact', 'assumption']).optional(),
+      source: z.string().trim().max(200).optional(),
+      sourceId: z.string().trim().max(200).optional(),
+      confidence: z.number().min(0).max(1).optional(),
+    }).strict();
+    const body = z.object({
+      objective: z.string().trim().min(3).max(4000),
+      track: z.string().trim().min(1).max(40).optional(),
+      useModel: z.boolean().optional(),
+      evidence: z.array(evidenceSchema).max(20).optional(),
+    }).strict().parse(req.body ?? {});
+    const evidence = (body.evidence ?? []).map((item) => ({
+      ...item, kind: item.kind ?? 'user-fact', source: item.source ?? 'user:reasoning-evidence',
+      trust: item.kind === 'assumption' ? 'assumption' as const : 'unverified' as const,
+    }));
+    const model = body.useModel
+      ? await analyzeProblemReasoning({ workspaceId: workspace(res), objective: body.objective, track: body.track, evidence, useModel: true })
+      : buildDeterministicReasoning({ workspaceId: workspace(res), objective: body.objective, track: body.track, evidence });
+    res.json(model);
+  }));
+
+  router.get('/missions/:id/reasoning', asyncWrap((req, res) => {
+    const detail = getMissionDetail(workspace(res), param(req, 'id'));
+    if (!detail) { res.status(404).json({ error: 'Mission not found' }); return; }
+    const model = getReasoningModel(workspace(res), detail.id);
+    if (!model) { res.status(404).json({ error: 'Reasoning model not found' }); return; }
+    res.json(model);
+  }));
+
+  router.get('/missions/:id/reasoning/versions', asyncWrap((req, res) => {
+    const detail = getMissionDetail(workspace(res), param(req, 'id'));
+    if (!detail) { res.status(404).json({ error: 'Mission not found' }); return; }
+    res.json(listReasoningVersions(workspace(res), detail.id, 10));
+  }));
+
+  router.post('/missions/:id/reasoning/evidence', asyncWrap((req, res) => {
+    if (!rateLimit(workspace(res), 20, req.path)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    const detail = getMissionDetail(workspace(res), param(req, 'id'));
+    if (!detail) { res.status(404).json({ error: 'Mission not found' }); return; }
+    const body = z.object({
+      evidence: z.array(z.object({
+        statement: z.string().trim().min(1).max(2000),
+        kind: z.enum(['user-fact', 'assumption']).optional(),
+        source: z.string().trim().max(200).optional(),
+        sourceId: z.string().trim().max(200).optional(),
+        confidence: z.number().min(0).max(1).optional(),
+        contradicts: z.array(z.string().trim().max(100)).max(20).optional(),
+      }).strict()).min(1).max(20),
+    }).strict().parse(req.body ?? {});
+    const evidence = body.evidence.map((item) => ({
+      ...item, kind: item.kind ?? 'user-fact', source: item.source ?? 'user:reasoning-evidence',
+      trust: item.kind === 'assumption' ? 'assumption' as const : 'unverified' as const,
+    }));
+    const result = addReasoningEvidence({ workspaceId: workspace(res), missionId: detail.id, evidence, actor: actor(res) });
+    if (!result) { res.status(404).json({ error: 'Reasoning model not found' }); return; }
+    res.status(201).json(result);
   }));
 
   router.post('/problems/analyze', asyncWrap((req, res) => {

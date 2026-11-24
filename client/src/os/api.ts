@@ -159,8 +159,52 @@ export interface MissionDetail extends MissionSummary {
   verifications?: VerificationRecord[];
   outcomeStatus?: OutcomeStatus;
   outcomeVerification?: OutcomeVerification | null;
+  reasoning?: ReasoningModel | null;
 }
 
+
+export type ReasoningMode = 'deterministic' | 'model-assisted' | 'deterministic-fallback';
+export interface ReasoningClaim {
+  id: string; statement: string; kind: string; active: boolean;
+  provenance: { kind: string; sourceId: string; source: string; trust: string; observedAt: string | null; digest: string | null };
+  confidence: { value: number; kind: string; note: string }; evidenceIds: string[];
+}
+export interface ReasoningHypothesis {
+  id: string; claimId: string; statement: string; cause: string; status: 'candidate' | 'supported' | 'rejected' | 'undetermined';
+  rank: number; score: number; scoreKind: string; assumptions: string[]; evidenceFor: string[]; evidenceAgainst: string[];
+  distinguishingTests: string[]; rejectionReason: string | null; revision: number; updatedAt: string;
+}
+export interface ReasoningCausalEdge {
+  id: string; cause: string; effect: string; relation: string; evidenceKind: string; identified: boolean;
+  evidenceIds: string[]; confounders: string[]; limitation: string; claimId: string | null;
+}
+export interface ReasoningInformationNeed {
+  id: string; question: string; unknownClaimId: string | null; materiality: string; expectedInformationGain: number;
+  cost: { timeMinutes: number; costUsd: number | null; risk: string; reversible: boolean };
+  canSelfGather: boolean; recommendedAction: string; rationale: string; status: string;
+}
+export interface ReasoningMethod {
+  id: string; name: string; domain: string; status: string; applies: boolean; reason: string;
+  requiredInputs: string[]; assumptions: string[]; expectedOutputs: string[]; limitations: string[];
+  evidenceRequirements: string[]; implemented: boolean; externalCapabilityRequired: boolean; gap: string | null; selected: boolean;
+}
+export interface ReasoningModel {
+  schemaVersion: string; workspaceId: string | null; missionId: string | null; version: number; parentVersion: number | null;
+  mode: ReasoningMode; provider: { name: string; model: string | null; status: string; notice: string };
+  objective: string; desiredOutcome: string; problemType: string; domain: string;
+  claims: ReasoningClaim[]; hypotheses: ReasoningHypothesis[]; causalGraph: ReasoningCausalEdge[];
+  informationNeeds: ReasoningInformationNeed[]; methods: ReasoningMethod[]; contradictions: string[];
+  unknowns: string[]; assumptions: string[]; sufficientToProceed: boolean; clarificationQuestion: string | null;
+  confidence: { value: number; kind: string; note: string }; limitations: string[];
+  changes: Array<{ version: number; kind: string; description: string; invalidatedAssumptionIds: string[]; replanRecommended: boolean; createdAt: string }>;
+  createdAt: string;
+}
+export interface ReasoningSummary {
+  schemaVersion: string; mode: ReasoningMode; providerStatus: string; problemType: string; sufficientToProceed: boolean;
+  claimCounts: Record<string, number>; hypothesisCount: number; rejectedHypothesisCount: number; causalEdgeCount: number;
+  informationNeedCount: number; criticalInformationNeedCount: number; selectedMethod: string | null; gapMethods: string[];
+  clarificationQuestion: string | null; confidence: { value: number; kind: string; note: string }; limitations: string[];
+}
 
 export interface UnifiedProblem {
   schemaVersion: string; objective: string; desiredOutcome: string; successCriteria: string[];
@@ -173,7 +217,7 @@ export interface UnifiedProblem {
   risk: string; reversibility: string; uncertainty: string; deterministic: boolean; stochastic: boolean; precision: string;
   approvals: string[]; needs: string[];
   methods: { selected: { name: string; toolId: string | null; guarantee: string } | null; rejected: Array<{ name: string; reason: string; status: string }>; missing: string[]; rationale: string[]; assumptions: string[] };
-  confidence: number; provenance: string[]; createdAt: string;
+  confidence: number; provenance: string[]; reasoning?: ReasoningSummary; createdAt: string;
 }
 
 export interface CompositionNode {
@@ -299,6 +343,10 @@ export const osApi = {
   replanMission: (id: string, reason: string) => request<PlanVersion>(`/missions/${encodeURIComponent(id)}/replan`, { method: 'POST', body: JSON.stringify({ reason }) }),
   missionVerifications: (id: string) => request<VerificationRecord[]>(`/missions/${encodeURIComponent(id)}/verifications`),
   missionOutcome: (id: string) => request<OutcomeVerification>(`/missions/${encodeURIComponent(id)}/outcome`),
+  missionReasoning: (id: string) => request<ReasoningModel>(`/missions/${encodeURIComponent(id)}/reasoning`),
+  missionReasoningVersions: (id: string) => request<Array<{ id: string; version: number; parentVersion: number | null; mode: string; createdAt: string; model: ReasoningModel }>>(`/missions/${encodeURIComponent(id)}/reasoning/versions`),
+  addReasoningEvidence: (id: string, evidence: Array<{ statement: string; kind?: 'user-fact' | 'assumption'; source?: string }>) => request<{ model: ReasoningModel; change: Record<string, unknown> }>(`/missions/${encodeURIComponent(id)}/reasoning/evidence`, { method: 'POST', body: JSON.stringify({ evidence }) }),
+  reasonProblem: (body: { objective: string; track?: string; useModel?: boolean; evidence?: Array<{ statement: string; kind?: 'user-fact' | 'assumption' }> }) => request<ReasoningModel>('/problems/reason', { method: 'POST', body: JSON.stringify(body) }),
   understandProblem: (objective: string, track?: string) => request<ProblemProfile>('/problems/understand', { method: 'POST', body: JSON.stringify({ objective, ...(track ? { track } : {}) }) }),
   launchMission: (objective: string, track?: string) =>
     request<MissionDetail>('/missions', { method: 'POST', body: JSON.stringify({ objective, ...(track ? { track } : {}) }) }),

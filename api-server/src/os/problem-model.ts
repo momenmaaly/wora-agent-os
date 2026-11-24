@@ -9,6 +9,7 @@
 import { getOsDb, newId, nowIso, parseJson } from './db.js';
 import { understandProblem, type ProblemDomain, type ProblemProfile } from './problem.js';
 import { searchMemories } from './memory.js';
+import type { ReasoningSummary } from './reasoning-types.js';
 
 export const UNIFIED_PROBLEM_SCHEMA_VERSION = '1.0';
 
@@ -67,6 +68,8 @@ export interface UnifiedProblem {
   confidence: number;
   provenance: string[];
   baseProfile: ProblemProfile;
+  /** Compact reference to the evidence-grounded reasoning model, when one was built. */
+  reasoning?: ReasoningSummary;
   createdAt: string;
 }
 

@@ -36,6 +36,8 @@ import { composeMissionPlan, saveComposition, getComposition } from './capabilit
 import { modelProblem, saveProblemModel, getProblemModel } from './problem-model.js';
 import { evaluateSemanticCompatibility } from './semantic-contracts.js';
 import { verifyMissionOutcome, getMissionOutcome } from './outcome-verification.js';
+import { buildDeterministicReasoning, summarizeReasoning } from './reasoning-engine.js';
+import { saveReasoningModel, getReasoningModel, recordOutcomeReasoningEvidence } from './reasoning-store.js';
 import { matchCapabilities } from '../extensions/capability-intelligence.js';
 import { persistTeamPlan, resolveTaskAgent, selectReplacement, recordAgentPerformance, getTeamPlan, listSelectionDecisions } from './selection.js';
 import { logger } from '../lib/logger.js';
@@ -402,6 +404,8 @@ export function createMission(input: { workspaceId: string; objective: string; a
   const db = getOsDb();
   const composed = input.track === 'composite' ? composeMissionPlan({ workspaceId: input.workspaceId, objective, track: input.track }) : null;
   const unified = composed?.model ?? modelProblem({ workspaceId: input.workspaceId, objective, track: input.track });
+  const reasoning = buildDeterministicReasoning({ workspaceId: input.workspaceId, objective, track: input.track, baseProblem: unified });
+  unified.reasoning = summarizeReasoning(reasoning);
   const problem = unified.baseProfile;
   const plan = composed?.tasks ?? buildPlan(objective, input.track, input.workspaceId);
   const planComparison = comparePlans(plan, input.workspaceId, problem);
@@ -429,6 +433,7 @@ export function createMission(input: { workspaceId: string; objective: string; a
     }
     saveProblemProfile(input.workspaceId, missionId, problem);
     saveProblemModel(input.workspaceId, missionId, unified);
+    saveReasoningModel({ ...reasoning, missionId });
     const chosenPlan = planComparison.plans.find((candidate) => candidate.strategy === decision.preferredPlan.planStrategy) ?? planComparison.preferred;
     savePlanVersion({ workspaceId: input.workspaceId, missionId, plan: chosenPlan, comparison: { ...planComparison, decision }, reason: 'initial deterministic plan with scientific method comparison', actor: input.actor ?? 'user' });
     saveDecisionRecord({ workspaceId: input.workspaceId, missionId, kind: 'initial', comparison: decision, reason: decision.reason, actor: input.actor ?? 'user' });
@@ -1259,7 +1264,12 @@ function finalizeMission(missionId: string, actor: string): void {
   clearMissionLease(mission.workspace_id, missionId);
   db.prepare('UPDATE os_missions SET status = ?, summary = ?, artifact_id = ?, outcome_status = ?, outcome_evidence = ?, updated_at = ? WHERE id = ?')
     .run(status, allDone ? `${tasks.length} task(s) completed with evidence. ${outcomeNote}` : `Finished with unresolved tasks — see failed/blocked below. ${outcomeNote}`, artifactId, outcome.status, JSON.stringify(outcome).slice(0, 120_000), nowIso(), missionId);
-  audit(db, { workspaceId: mission.workspace_id, actor, action: 'mission.finalize', subject: missionId, detail: { status, tasks: tasks.length } });
+  try {
+    recordOutcomeReasoningEvidence({ workspaceId: mission.workspace_id, missionId, status: outcome.status, taskEvidence: outcome.taskEvidence });
+  } catch (err) {
+    logger.warn({ err, missionId }, 'outcome evidence could not be attached to the reasoning model');
+  }
+  audit(db, { workspaceId: mission.workspace_id, actor, action: 'mission.finalize', subject: missionId, detail: { status, tasks: tasks.length, reasoning: getReasoningModel(mission.workspace_id, missionId)?.version ?? null } });
 }
 
 /**
@@ -1377,6 +1387,7 @@ export function getMissionDetail(workspaceId: string, missionId: string) {
     composition: getComposition(workspaceId, missionId),
     outcomeStatus: mission.outcome_status ?? 'unverified',
     outcomeVerification: getMissionOutcome(workspaceId, missionId),
+    reasoning: getReasoningModel(workspaceId, missionId),
     id: mission.id,
     objective: mission.objective,
     status: mission.status,

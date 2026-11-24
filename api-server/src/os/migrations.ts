@@ -181,6 +181,23 @@ export const MIGRATIONS: Migration[] = [
       addColumn(db, 'os_missions', 'outcome_evidence', "TEXT NOT NULL DEFAULT '{}'");
     },
   },
+  {
+    version: 11,
+    name: 'evidence-grounded-reasoning-model-history',
+    up(db) {
+      db.exec(`CREATE TABLE IF NOT EXISTS os_reasoning_models (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        mission_id TEXT NOT NULL REFERENCES os_missions(id) ON DELETE CASCADE,
+        version INTEGER NOT NULL,
+        parent_version INTEGER,
+        model TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE(workspace_id, mission_id, version)
+      )`);
+      db.exec('CREATE INDEX IF NOT EXISTS idx_os_reasoning_models_mission ON os_reasoning_models(workspace_id, mission_id, version)');
+    },
+  },
 ];
 
 function tableExists(db: OsDatabase, name: string): boolean {

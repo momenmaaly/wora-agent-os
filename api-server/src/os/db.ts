@@ -400,6 +400,18 @@ CREATE TABLE IF NOT EXISTS os_capability_compositions (
   updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_os_capability_compositions_ws ON os_capability_compositions(workspace_id, created_at);
+
+CREATE TABLE IF NOT EXISTS os_reasoning_models (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  mission_id TEXT NOT NULL REFERENCES os_missions(id) ON DELETE CASCADE,
+  version INTEGER NOT NULL,
+  parent_version INTEGER,
+  model TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE(workspace_id, mission_id, version)
+);
+CREATE INDEX IF NOT EXISTS idx_os_reasoning_models_mission ON os_reasoning_models(workspace_id, mission_id, version);
 CREATE TABLE IF NOT EXISTS os_verifications (
   id TEXT PRIMARY KEY,
   workspace_id TEXT NOT NULL,

@@ -428,6 +428,53 @@ export function ExecutionCenter() {
                 </details>
               )}
 
+              {detail.reasoning && (
+                <details className="os-handoffs" open>
+                  <summary><FlaskConical size={14} aria-hidden="true" /> الفهم الاستدلالي: ما نعرفه، وما نفترضه، وما ينقص</summary>
+                  <p>
+                    <strong>الوضع:</strong> {detail.reasoning.mode === 'model-assisted' ? 'مدعوم بنموذج اختياري (مقترحات غير متحقق منها)' : detail.reasoning.mode === 'deterministic-fallback' ? 'احتياطي حتمي بعد فشل المزوّد' : 'حتمي بدون مزوّد خارجي'}
+                    {' · '}<strong>الإصدار:</strong> {detail.reasoning.version}
+                    {' · '}<strong>نوع المشكلة:</strong> {detail.reasoning.problemType}
+                    {' · '}<strong>الثقة:</strong> {Math.round(detail.reasoning.confidence.value * 100)}% ({detail.reasoning.confidence.kind})
+                  </p>
+                  <p><strong>النتيجة المقصودة:</strong> {detail.reasoning.desiredOutcome}</p>
+                  <p className={detail.reasoning.sufficientToProceed ? 'subtle' : 'os-warning'}>
+                    {detail.reasoning.sufficientToProceed ? 'المعلومات الحالية كافية للمتابعة الحتمية؛ لا سؤال إضافي إلزامي.' : 'توجد معلومات حرجة ناقصة؛ لا ينبغي اختراع إجابة.'}
+                  </p>
+                  {detail.reasoning.clarificationQuestion && <p className="os-warning"><strong>السؤال المطلوب:</strong> {detail.reasoning.clarificationQuestion}</p>}
+                  <div className="os-columns">
+                    <div>
+                      <h4>حقائق المستخدم ({detail.reasoning.claims.filter((item) => item.kind === 'user-fact').length})</h4>
+                      <ul className="os-acceptance">{detail.reasoning.claims.filter((item) => item.kind === 'user-fact').slice(0, 8).map((item) => <li key={item.id}>{item.statement} <span className="subtle">[{item.provenance.trust}]</span></li>)}</ul>
+                      <h4>افتراضات معلنة ({detail.reasoning.assumptions.length})</h4>
+                      {detail.reasoning.assumptions.length ? <ul className="os-acceptance">{detail.reasoning.assumptions.slice(0, 8).map((item) => <li key={item}>{item}</li>)}</ul> : <p className="subtle">لا افتراضات مسجلة.</p>}
+                      <h4>معلومات ناقصة ({detail.reasoning.unknowns.length})</h4>
+                      {detail.reasoning.unknowns.length ? <ul className="os-acceptance">{detail.reasoning.unknowns.slice(0, 8).map((item) => <li key={item}>{item}</li>)}</ul> : <p className="subtle">لا معلومات ناقصة مسجلة.</p>}
+                    </div>
+                    <div>
+                      <h4>فرضيات مرشحة ({detail.reasoning.hypotheses.length})</h4>
+                      {detail.reasoning.hypotheses.length ? <ul className="os-acceptance">{detail.reasoning.hypotheses.slice(0, 6).map((item) => <li key={item.id}><strong>{item.rank}. {item.status}</strong> · {item.statement} <span className="subtle">(درجة {item.score} · {item.scoreKind === 'heuristic-uncalibrated' ? 'غير معايرة' : item.scoreKind})</span>{item.rejectionReason ? <span className="subtle"> — {item.rejectionReason}</span> : null}</li>)}</ul> : <p className="subtle">لا توجد فرضيات؛ المشكلة محددة بما يكفي أو لا توجد أسباب محتملة متعددة.</p>}
+                      <h4>سببية</h4>
+                      {detail.reasoning.causalGraph.length ? <ul className="os-acceptance">{detail.reasoning.causalGraph.slice(0, 6).map((edge) => <li key={edge.id}>{edge.cause} ← {edge.relation} → {edge.effect} <span className="subtle">({edge.evidenceKind} · {edge.identified ? 'مُعرّف' : 'غير مُعرّف'})</span><br /><small className="subtle">{edge.limitation}</small></li>)}</ul> : <p className="subtle">لا توجد علاقات سببية مستخرجة؛ لا ندّعي سببية غير مدعومة.</p>}
+                    </div>
+                  </div>
+                  <div className="os-columns">
+                    <div>
+                      <h4>معلومات مطلوبة</h4>
+                      {detail.reasoning.informationNeeds.length ? <ul className="os-acceptance">{detail.reasoning.informationNeeds.slice(0, 8).map((need) => <li key={need.id}><strong>{need.materiality}</strong> · {need.question} <span className="subtle">({need.recommendedAction} · {need.canSelfGather ? 'يمكن جمعها داخليًا' : 'تتطلب المستخدم'} · كسب متوقع {Math.round(need.expectedInformationGain * 100)}%)</span></li>)}</ul> : <p className="subtle">لا حاجة معلومات مفتوحة.</p>}
+                    </div>
+                    <div>
+                      <h4>الطرق العلمية</h4>
+                      <ul className="os-acceptance">{detail.reasoning.methods.slice(0, 8).map((method) => <li key={method.id}><strong>{method.name}</strong> {method.selected ? '· مختارة' : ''} · {method.status}{method.gap ? ` · فجوة: ${method.gap}` : ''}<br /><small className="subtle">{method.reason}</small></li>)}</ul>
+                    </div>
+                  </div>
+                  {detail.reasoning.contradictions.length > 0 && <><h4>تناقضات تحتاج حسمًا</h4><ul className="os-acceptance">{detail.reasoning.contradictions.slice(0, 6).map((item) => <li key={item}>{item}</li>)}</ul></>}
+                  {detail.reasoning.changes.length > 0 && <><h4>آخر تحديث للفهم</h4><ul className="os-acceptance">{detail.reasoning.changes.slice(-4).map((change) => <li key={`${change.version}-${change.kind}`}>v{change.version} · {change.kind} · {change.description}{change.replanRecommended ? ' · يوصى بإعادة التخطيط' : ''}</li>)}</ul></>}
+                  {detail.reasoning.limitations.length > 0 && <><h4>حدود الاستدلال</h4><ul className="os-acceptance">{detail.reasoning.limitations.map((item) => <li key={item}>{item}</li>)}</ul></>}
+                  {detail.reasoning.provider.notice && <p className="subtle">{detail.reasoning.provider.notice}</p>}
+                </details>
+              )}
+
               {detail.outcomeVerification && (
                 <div className="os-subpanel" aria-label="التحقق من النتيجة">
                   <h3><FlaskConical size={15} aria-hidden="true" /> التحقق المستقل من النتيجة</h3>
