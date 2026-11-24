@@ -126,3 +126,23 @@ test('sealed operational fields authenticate their context and remain legacy-rea
   const json = sealJson({ target: 'test' }, 'task:workspace-a:tsk_1');
   assert.deepEqual(openJson(json, 'task:workspace-a:tsk_1', {}), { target: 'test' });
 });
+
+test('a real rotation aborts atomically when any row cannot be authenticated', () => {
+  resetKeyringForTests();
+  process.env['WORA_SECRET_KEYS'] = JSON.stringify({ active: 'v1', keys: { v1: KEY1, v2: KEY2 } });
+  store.putSecret({ workspaceId: WS, name: 'ROTATE_GOOD', value: 'good-value', actor: 'tester' });
+  store.putSecret({ workspaceId: WS, name: 'ROTATE_BAD', value: 'bad-value', actor: 'tester' });
+  const goodBefore = getOsDb().prepare('SELECT key_id, ciphertext FROM ext_secrets WHERE workspace_id = ? AND name = ?').get(WS, 'ROTATE_GOOD') as { key_id: string; ciphertext: string };
+  getOsDb().prepare('UPDATE ext_secrets SET ciphertext = ? WHERE workspace_id = ? AND name = ?')
+    .run(Buffer.from('tampered-ciphertext').toString('base64'), WS, 'ROTATE_BAD');
+  assert.throws(() => store.rotateSecrets({ workspaceId: WS, toKeyId: 'v2', actor: 'rotator' }), /Rotation aborted/);
+  const goodAfter = getOsDb().prepare('SELECT key_id, ciphertext FROM ext_secrets WHERE workspace_id = ? AND name = ?').get(WS, 'ROTATE_GOOD') as { key_id: string; ciphertext: string };
+  assert.deepEqual(goodAfter, goodBefore, 'no row is rewritten when any row fails authentication');
+});
+
+test('sealed JSON with invalid payloads fails closed; legacy plaintext keeps its fallback', () => {
+  const aad = 'task:workspace-a:tsk_malformed';
+  const sealed = sealField('not-json', aad);
+  assert.throws(() => openJson(sealed, aad, {}), /not valid JSON/);
+  assert.deepEqual(openJson('not-json', aad, { fallback: true }), { fallback: true });
+});

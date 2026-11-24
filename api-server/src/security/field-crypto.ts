@@ -50,7 +50,14 @@ export function sealJson(value: unknown, aad: string): string {
 export function openJson<T>(value: string | null | undefined, aad: string, fallback: T): T {
   const opened = openField(value, aad);
   if (opened == null) return fallback;
-  try { return JSON.parse(opened) as T; } catch { return fallback; }
+  try { return JSON.parse(opened) as T; }
+  catch {
+    // A sealed field is authenticated but malformed. Returning a fallback here
+    // would silently execute a tool with a different payload than the one the
+    // operator approved or the planner sealed.
+    if (isSealedField(value)) throw new Error('Sealed field is not valid JSON');
+    return fallback;
+  }
 }
 
 export function fieldAad(kind: string, workspaceId: string, id: string): string {

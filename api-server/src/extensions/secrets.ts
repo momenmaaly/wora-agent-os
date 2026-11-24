@@ -190,42 +190,52 @@ export function rotateSecrets(input: { workspaceId?: string; toKeyId?: string; a
   const target = input.toKeyId ?? keyringStatus().active;
   if (!keyFor(target)) throw new Error(`Target secret key ${target} is not configured`);
   const db = getOsDb();
-  const rows = (input.workspaceId
-    ? db.prepare('SELECT * FROM ext_secrets WHERE workspace_id = ? ORDER BY workspace_id, name').all(input.workspaceId)
-    : db.prepare('SELECT * FROM ext_secrets ORDER BY workspace_id, name').all()) as unknown as SecretRow[];
-  const result: RotationResult = { dryRun: Boolean(input.dryRun), targetKeyId: target, scanned: rows.length, rotated: 0, skipped: 0, failed: 0, details: [] };
-  const updates: Array<{ row: SecretRow; sealed: ReturnType<typeof encrypt>; aad: string }> = [];
-  for (const row of rows) {
-    const from = row.format === NEW_FORMAT && row.key_id ? row.key_id : 'legacy';
-    try {
-      if (row.format === NEW_FORMAT && row.key_id === target && !input.migrateLegacy) {
-        result.skipped += 1;
-        result.details.push({ workspaceId: row.workspace_id, name: row.name, from, to: target, status: 'skipped' });
-        continue;
-      }
-      const plaintext = decryptRow(row);
-      const aad = secretAad(row.workspace_id, row.name, row.purpose);
-      updates.push({ row, sealed: encrypt(plaintext, aad, target), aad });
-      result.rotated += 1;
-      result.details.push({ workspaceId: row.workspace_id, name: row.name, from, to: target, status: 'rotated' });
-    } catch (error) {
-      result.failed += 1;
-      result.details.push({ workspaceId: row.workspace_id, name: row.name, from, to: target, status: 'failed', error: (error instanceof Error ? error.message : 'rotation failed').slice(0, 200) });
-    }
-  }
-  if (result.dryRun || !updates.length) return result;
-  if (result.failed) throw new Error(`Rotation aborted: ${result.failed} secret(s) could not be decrypted; no rows were changed`);
-  db.exec('BEGIN IMMEDIATE');
+  const result: RotationResult = { dryRun: Boolean(input.dryRun), targetKeyId: target, scanned: 0, rotated: 0, skipped: 0, failed: 0, details: [] };
+  const execute = !input.dryRun;
+  if (execute) db.exec('BEGIN IMMEDIATE');
   try {
+    // Select, decrypt and rewrite inside one write transaction. Otherwise a
+    // concurrent secret write between the read and the update could be
+    // overwritten with a stale plaintext.
+    const rows = (input.workspaceId
+      ? db.prepare('SELECT * FROM ext_secrets WHERE workspace_id = ? ORDER BY workspace_id, name').all(input.workspaceId)
+      : db.prepare('SELECT * FROM ext_secrets ORDER BY workspace_id, name').all()) as unknown as SecretRow[];
+    result.scanned = rows.length;
+    const updates: Array<{ row: SecretRow; sealed: ReturnType<typeof encrypt>; aad: string }> = [];
+    for (const row of rows) {
+      const from = row.format === NEW_FORMAT && row.key_id ? row.key_id : 'legacy';
+      try {
+        if (row.format === NEW_FORMAT && row.key_id === target && !input.migrateLegacy) {
+          result.skipped += 1;
+          result.details.push({ workspaceId: row.workspace_id, name: row.name, from, to: target, status: 'skipped' });
+          continue;
+        }
+        const plaintext = decryptRow(row);
+        const aad = secretAad(row.workspace_id, row.name, row.purpose);
+        updates.push({ row, sealed: encrypt(plaintext, aad, target), aad });
+        result.rotated += 1;
+        result.details.push({ workspaceId: row.workspace_id, name: row.name, from, to: target, status: 'rotated' });
+      } catch (error) {
+        result.failed += 1;
+        result.details.push({ workspaceId: row.workspace_id, name: row.name, from, to: target, status: 'failed', error: (error instanceof Error ? error.message : 'rotation failed').slice(0, 200) });
+      }
+    }
+    // A dry run reports failures without changing rows. A real rotation is
+    // all-or-nothing: never report success while any row failed to decrypt.
+    if (!result.dryRun && result.failed) throw new Error(`Rotation aborted: ${result.failed} secret(s) could not be decrypted; no rows were changed`);
+    if (result.dryRun || !updates.length) {
+      if (execute) db.exec('COMMIT');
+      return result;
+    }
     for (const update of updates) {
       db.prepare('UPDATE ext_secrets SET ciphertext = ?, iv = ?, tag = ?, key_id = ?, format = ?, version = version + 1, aad = ?, updated_at = ? WHERE id = ?')
         .run(update.sealed.ciphertext, update.sealed.iv, update.sealed.tag, update.sealed.keyId, NEW_FORMAT, update.aad, nowIso(), update.row.id);
     }
     audit(db, { workspaceId: input.workspaceId ?? '*', actor: input.actor, action: 'extension.secret.rotate', subject: target, detail: { scanned: result.scanned, rotated: result.rotated, skipped: result.skipped, legacyMigration: Boolean(input.migrateLegacy) } });
-    db.exec('COMMIT');
+    if (execute) db.exec('COMMIT');
     return result;
   } catch (error) {
-    try { db.exec('ROLLBACK'); } catch { /* already closed */ }
+    if (execute) { try { db.exec('ROLLBACK'); } catch { /* already closed */ } }
     throw error;
   }
 }
