@@ -8,6 +8,7 @@
  * can inspect them without trusting an agent's self-report.
  */
 import { getOsDb, newId, nowIso, parseJson, audit } from './db.js';
+import { redactSecrets } from './secrets.js';
 
 export type VerificationResult = 'passed' | 'failed' | 'blocked';
 export type VerificationCheckStatus = 'passed' | 'failed' | 'blocked' | 'not_run';
@@ -49,7 +50,7 @@ const jsonCap = (value: unknown, cap = 60_000): string => {
   }
 };
 
-const view = (row: Record<string, string | null>): VerificationRecord => ({
+const view = (row: Record<string, string | null>): VerificationRecord => redactSecrets({
   id: String(row['id']),
   workspaceId: String(row['workspace_id']),
   missionId: String(row['mission_id']),
@@ -66,7 +67,7 @@ const view = (row: Record<string, string | null>): VerificationRecord => ({
   failureReason: String(row['failure_reason'] ?? ''),
   verifier: String(row['verifier']),
   createdAt: String(row['created_at']),
-});
+}).value;
 
 export function recordVerification(input: {
   workspaceId: string;
@@ -87,20 +88,21 @@ export function recordVerification(input: {
   const db = getOsDb();
   const id = newId('ver');
   const createdAt = nowIso();
+  const clean = <T>(value: T): T => redactSecrets(value).value;
   db.prepare(`INSERT INTO os_verifications
     (id, workspace_id, mission_id, task_id, run_id, objective, acceptance_criteria, expected_output, actual_output, evidence, checks, result, independence, failure_reason, verifier, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(
       id, input.workspaceId, input.missionId, input.taskId, input.runId,
-      input.objective.slice(0, 4_000),
-      jsonCap(input.acceptanceCriteria, 10_000),
-      input.expectedOutput.slice(0, 4_000),
-      jsonCap(input.actualOutput),
-      jsonCap(input.evidence),
-      jsonCap(input.checks, 20_000),
+      clean(input.objective).slice(0, 4_000),
+      jsonCap(clean(input.acceptanceCriteria), 10_000),
+      clean(input.expectedOutput).slice(0, 4_000),
+      jsonCap(clean(input.actualOutput)),
+      jsonCap(clean(input.evidence)),
+      jsonCap(clean(input.checks), 20_000),
       input.result,
       input.independence ?? 'deterministic-review',
-      (input.failureReason ?? '').slice(0, 4_000),
+      clean(input.failureReason ?? '').slice(0, 4_000),
       (input.verifier ?? 'wora.orchestrator/reviewRun').slice(0, 200),
       createdAt,
     );

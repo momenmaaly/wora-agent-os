@@ -7,7 +7,8 @@
     "typecheck": "tsc --noEmit",
     "build": "tsc --noEmit && node scripts/check-api-contract.mjs && vite build",
     "preview": "vite preview",
-    "test": "node --experimental-strip-types --test tests/*.test.mjs"
+    "test": "node --experimental-strip-types --test tests/*.test.mjs",
+    "test:e2e": "node --experimental-strip-types --test tests/browser-e2e.test.mjs"
   },
   "dependencies": {
     "@fontsource-variable/inter": "^5.3.0",
@@ -26,6 +27,7 @@
     "@types/three": "^0.170.0",
     "@vitejs/plugin-react": "^4.3.3",
     "jsdom": "^26.1.0",
+    "playwright-core": "^1.65.1",
     "typescript": "^5.8.3",
     "vite": "^6.4.6"
   }

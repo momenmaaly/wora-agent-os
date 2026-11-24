@@ -12,6 +12,7 @@
  */
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
+import { redactSecrets } from './secrets.js';
 import { mkdirSync } from 'node:fs';
 import { hostname } from 'node:os';
 import path from 'node:path';
@@ -666,5 +667,5 @@ export function parseJson<T>(raw: string | null | undefined, fallback: T): T {
 export function audit(db: OsDatabase, entry: { workspaceId: string; actor: string; action: string; subject: string; detail?: unknown }): void {
   db.prepare(
     'INSERT INTO os_audit (id, workspace_id, actor, action, subject, detail, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
-  ).run(newId('aud'), entry.workspaceId, entry.actor, entry.action, entry.subject, JSON.stringify(entry.detail ?? {}), nowIso());
+  ).run(newId('aud'), entry.workspaceId, entry.actor, entry.action, entry.subject, JSON.stringify(redactSecrets(entry.detail ?? {}).value), nowIso());
 }

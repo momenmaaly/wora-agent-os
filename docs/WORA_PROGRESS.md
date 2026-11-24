@@ -1,6 +1,6 @@
 # WORA Progress and Verified Baseline
 
-**Updated:** 2026-11-24
+**Updated:** 2026-11-24 (production readiness phase)
 **Branch:** `feat/extensions-subsystem`
 **HEAD at audit:** `a5a4e0a` — Remediate Phase 1 security findings F1–F13
 **Latest committed units:** `883efd7` audit hardening, concurrent scheduler, formal planning, expanded verification, lesson lifecycle, expanded benchmarks and UI; `a221fec` class C tool-boundary guard; `1fe32e4` governance enforcement, durable runtime, problem understanding, independent verification, learning and benchmarks; `07d34f1` algorithm catalog; `6b5c483` verification records; `f965594` action classification
@@ -55,7 +55,7 @@ The following gaps remain after inspection. They are ordered by risk and depende
 7. **End-to-end product creation is not a reusable workflow.** Organization/scaffold pieces exist; market validation, product definition, launch readiness and post-launch monitoring are not integrated.
 8. **Sandboxing is incomplete.** Generated tests and stdio MCP remain host processes; stdio MCP is disabled by default as containment.
 9. **Tenancy and identity are incomplete.** Sessions are HMAC tokens; organizations/projects cannot be shared across users.
-10. **No CI, no migration versioning, no OpenTelemetry and no browser E2E suite.**
+10. **No CI, no migration versioning and no OpenTelemetry.** Browser E2E now exists (`client/tests/browser-e2e.test.mjs`) but runs against the preview API, not production signed sessions.
 11. **Skills are not injected into planner/model context; auto-load is still a flag.**
 12. **The client still has substantial hardcoded Arabic in older OS pages.**
 
@@ -179,19 +179,9 @@ Enforcement completed in workstream 1: payload-digest, scope, expiry, single-use
 - APIs: `GET /api/os/benchmarks/domains`, `POST /api/os/benchmarks/run`, `GET /api/os/benchmarks/runs`.
 - Evidence: `benchmarks.test.ts` (4 tests).
 
-## 5. Next eligible tasks
-
-In dependency order:
-
-1. **Expose the new controls in the UI**: action-budget editor, approval binding details, task leases/checkpoints, problem profile, lessons and benchmark results in the existing WORA management surfaces.
-2. **Skill context injection**: load assigned skill instructions into planner/agent context with provenance and token budgets; preserve the existing 19 specialist skills.
-3. **Fully concurrent mission scheduler**: use the durable claim layer to execute independent tasks in parallel with dependency ordering.
-4. **Lesson monitoring and revocation**: monitor promoted lessons after later failures and add a governed revoke path.
-5. **Broader benchmarks**: planning quality, recovery success, verification accuracy, human intervention and safety violations.
-
 ## 6. Current evidence and limitations
 
-After the algorithm unit: **API 120 tests: 119 passed, 1 skipped, 0 failed**. After the verification unit: **API 124 tests: 123 passed, 1 skipped, 0 failed**. After workstreams 1–6: **API 168 tests: 167 passed, 1 skipped, 0 failed**. After workstreams 7–12: **API 183 tests: 182 passed, 1 skipped, 0 failed**. API typecheck and build pass. Client **48/48 passed**, with typecheck and build green.
+After the algorithm unit: **API 120 tests: 119 passed, 1 skipped, 0 failed**. After the verification unit: **API 124 tests: 123 passed, 1 skipped, 0 failed**. After workstreams 1–6: **API 168 tests: 167 passed, 1 skipped, 0 failed**. After workstreams 7–12: **API 183 tests: 182 passed, 1 skipped, 0 failed**. After the production-readiness phase: **API 210 tests: 209 passed, 1 skipped, 0 failed; client 49/49; browser E2E 1/1**. API typecheck and build pass.
 
 - The first unit is locally tested; it is not yet exercised by a live external marketplace or a model-driven planner.
 - The selector is deterministic and intentionally conservative. It does not claim semantic understanding of arbitrary natural language.
@@ -219,7 +209,7 @@ Confirmed defects fixed:
 - Benchmark schedule correctness now requires the expected shift count and a finite non-negative cost.
 - The independent verifier scans evidence as well as output and rejects successful but empty output.
 
-Evidence: expanded `governance-enforcement.test.ts` (11 tests), `task-queue.test.ts` (11 tests), `lessons.test.ts` (6 tests), `independent-verification.test.ts` (5 tests) and full suite **183 tests: 182 passed, 1 skipped**.
+Evidence: expanded `governance-enforcement.test.ts` (11 tests), `task-queue.test.ts` (11 tests), `lessons.test.ts` (6 tests), `independent-verification.test.ts` (5 tests), production-readiness suites (`security-adversarial.test.ts` 6, `scheduler-stress.test.ts` 8, `mission-e2e.test.ts` 6, `planning-evaluation.test.ts` 4) and full suite **210 tests: 209 passed, 1 skipped**.
 
 ## 4k. Workstream 8 — concurrent mission scheduler
 
@@ -273,7 +263,21 @@ Limitations: structural verification is not a formal proof; it complements, but 
 - Suite version 1.1.0 now has **14 fixtures**, including problem understanding, planning comparison, algorithm selection, dependency/failure verification, independent verification accuracy, human-intervention classification and multi-agent plan structure.
 - All 14 pass; sample run: **14/14, 0 failed, 176.296 ms** on the development container. Timing is environment-specific.
 - UI: execution center now exposes pause/cancel/concurrency, problem profile, plan versions, plan verification, leases and independent verification history; System Console exposes execution limits; Intelligence Hub adds lesson lifecycle and benchmark tabs. All controls call real APIs.
-- Evidence: client **48/48**, typecheck and production build green.
+- Evidence: client **49/49** (including browser E2E), typecheck and production build green.
+
+## 4p. Workstream 13 — production readiness and adversarial validation
+
+**Status:** implemented and measured. Full report: `WORA_PRODUCTION_READINESS.md`; planning analysis: `WORA_PLANNING_EVALUATION.md`.
+
+- **Security:** `security-adversarial.test.ts` 6/6 covers approval replay, payload substitution, scope widening, cross-workspace lookup, workspace isolation, admin-only lesson lifecycle and secret redaction. Cancellation now wins over finalization; `paused` missions are preserved.
+- **Secrets:** `os/secrets.ts` redacts known credential signatures and secret-named environment values from audit writes/reads, run evidence, verification records, artifacts and mission/approval views. Raw execution inputs remain in SQLite; at-rest encryption is not implemented.
+- **Scheduler:** `scheduler-stress.test.ts` 8/8 covers 2/4/8 workers, dependency chains, expired leases, retry exhaustion, failed dependencies and cancellation during a running tool. Timings are short-task measurements, not capacity claims.
+- **Missions:** `mission-e2e.test.ts` 6/6 covers application build, generate/scan/test under approval, resource scheduling, missing-information disclosure, interrupted recovery and explicit approval. General code repair is not implemented.
+- **Planning:** `planning-evaluation.test.ts` 4/4 shows risk-first reorders without reducing total cost; the 6-task chain is forced; the existing MIP solves 20×5 at cost 480 in 95–211 ms. No HTN/A*/CP was added.
+- **Browser:** `client/tests/browser-e2e.test.mjs` starts the real preview API and Vite server, then drives Chromium through mission creation, problem profile, plan verification, pause/resume/cancel, approval digest, evidence, lesson evaluate/promote/revoke and benchmarks (`14/14`).
+- **Defects fixed:** cancelled missions overwritten by `finalizeMission`; missing `paused` client contract/label/resume; shared rate-limit bucket causing cross-endpoint `429`.
+
+Limitations: preview auth only in browser E2E; one Chromium version; SQLite single writer; heuristic redaction; no OS-level plugin sandbox; no at-rest secret encryption; no CI/OTel.
 
 ## 5. Next eligible tasks
 

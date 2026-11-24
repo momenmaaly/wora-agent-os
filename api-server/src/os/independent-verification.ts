@@ -7,6 +7,7 @@
  * output. The orchestrator combines these checks with its acceptance review.
  */
 import { createHash } from 'node:crypto';
+import { SECRET_PATTERNS } from './secrets.js';
 
 export interface IndependentCheck {
   id: string;
@@ -31,14 +32,7 @@ const digest = (value: unknown): string => {
 const isRecord = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 const finite = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
 
-const SECRET_PATTERNS: Array<{ id: string; pattern: RegExp }> = [
-  { id: 'aws-access-key', pattern: /AKIA[0-9A-Z]{16}/ },
-  { id: 'github-token', pattern: /gh[pousr]_[A-Za-z0-9]{20,}/ },
-  { id: 'github-pat', pattern: /github_pat_[A-Za-z0-9_]{20,}/ },
-  { id: 'openai-key', pattern: /sk-[A-Za-z0-9]{20,}/ },
-  { id: 'private-key', pattern: /-----BEGIN (RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----/ },
-  { id: 'slack-token', pattern: /xox[baprs]-[A-Za-z0-9-]{10,}/ },
-];
+
 
 function strings(value: unknown, out: string[] = [], depth = 0): string[] {
   if (depth > 20 || value == null) return out;

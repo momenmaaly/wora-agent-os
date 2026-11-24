@@ -6,7 +6,7 @@ import {
 import { OsApiError, osApi, type ApprovalRecord, type MissionDetail, type MissionSummary, type OsTask, type TaskLease, type VerificationRecord } from '../os/api.js';
 
 const STATUS_LABEL: Record<MissionSummary['status'], string> = {
-  planning: 'يخطط', running: 'قيد التنفيذ', awaiting_approval: 'بانتظار موافقتك', completed: 'مكتملة', failed: 'متعثرة', cancelled: 'ملغاة',
+  planning: 'يخطط', running: 'قيد التنفيذ', paused: 'متوقفة مؤقتًا', awaiting_approval: 'بانتظار موافقتك', completed: 'مكتملة', failed: 'متعثرة', cancelled: 'ملغاة',
 };
 const TASK_STATUS_LABEL: Record<OsTask['status'], string> = {
   created: 'منشأة', planned: 'مخططة', assigned: 'مُسندة', running: 'قيد التنفيذ', reviewing: 'قيد المراجعة', completed: 'مكتملة', failed: 'فشلت', blocked: 'محظورة', cancelled: 'ملغاة',
@@ -330,12 +330,12 @@ export function ExecutionCenter() {
                 <h2 dir="auto">{detail.objective}</h2>
                 <div className="os-detail-meta">
                   <StatusPill status={detail.status} />
-                  {(detail.status === 'failed' || detail.status === 'awaiting_approval' || detail.status === 'planning') && (
+                  {(detail.status === 'failed' || detail.status === 'awaiting_approval' || detail.status === 'planning' || detail.status === 'paused') && (
                     <button type="button" className="button ghost small" onClick={() => void resumeMission()} disabled={busy}>
                       <Play size={12} aria-hidden="true" /> استئناف
                     </button>
                   )}
-                  {(detail.status === 'running' || detail.status === 'planning') && (
+                  {(detail.status === 'running' || detail.status === 'planning' || detail.status === 'awaiting_approval') && (
                     <button type="button" className="button ghost small" onClick={() => void pauseMission()} disabled={busy}>
                       <Pause size={12} aria-hidden="true" /> إيقاف مؤقت
                     </button>

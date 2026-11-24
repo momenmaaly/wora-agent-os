@@ -114,3 +114,12 @@ test('execution limits, formal plans and replanning are real HTTP endpoints', as
   assert.equal(executed.status, 200);
   assert.equal(((await executed.json()) as { status?: string }).status, 'completed');
 });
+
+test('mutation route quotas are isolated from unrelated mutating endpoints', async () => {
+  for (let index = 0; index < 35; index += 1) {
+    const paused = await fetch(`${baseUrl}/missions/msn_missing/pause`, { method: 'POST' });
+    assert.ok([404, 429].includes(paused.status));
+  }
+  const cancelled = await fetch(`${baseUrl}/missions/msn_missing/cancel`, { method: 'POST' });
+  assert.notEqual(cancelled.status, 429, 'a separate route must not inherit another route\'s exhausted bucket');
+});

@@ -180,3 +180,23 @@ No result is reported until the fixture and command are committed.
 ## Immediate next eligible task
 
 Expose the new governance, runtime, problem-profile, lesson and benchmark controls in the existing WORA management UI; then add skill-context injection with provenance and token budgets. The extensions marketplace/UI already exists and must be reused, not duplicated.
+
+## Phase 13 — Production readiness and adversarial validation
+
+**Status:** completed for the current branch; deployment blockers remain documented.
+
+Completed:
+
+- Adversarial approval tests: replay, payload substitution, scope widening, cross-workspace lookup, expiry, budget recheck and autopilot bypass.
+- Workspace isolation across missions, plans, leases, verifications and lessons.
+- Secret redaction in audit, evidence, verification, artifacts and mission/approval views.
+- Scheduler stress at 2/4/8 workers, dependency chains, expired leases, retry exhaustion, failed dependencies and cancellation.
+- Six end-to-end mission scenarios, including explicit approval and interrupted recovery.
+- Planning evaluation showing no measured benefit from HTN/A*/CP on the tested classes; existing MIP retained for scheduling.
+- Browser E2E against the real preview API and Vite server: mission, plan, workers, pause/resume/cancel, approval, evidence, lessons and benchmarks.
+- Fixed: cancellation overwritten by finalization; paused client contract/label/resume; cross-endpoint rate-limit exhaustion.
+
+Remaining blockers:
+
+- Secrets at rest, production signed-session browser E2E, OS-level plugin sandbox, distributed scheduler, CI/OTel and a general code-repair workflow.
+- Evidence: `WORA_PRODUCTION_READINESS.md`, `WORA_PLANNING_EVALUATION.md`.

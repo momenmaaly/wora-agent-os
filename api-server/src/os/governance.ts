@@ -14,6 +14,7 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { getOsDb, newId, nowIso, audit, parseJson, type OsDatabase } from './db.js';
 import { classifyAction, type ActionClass, type ActionClassificationInput, type ActionRisk } from './actions.js';
+import { redactSecrets } from './secrets.js';
 
 export type AutonomyPolicy = 'balanced' | 'autopilot';
 export type ApprovalStatus = 'pending' | 'approved' | 'denied';
@@ -132,7 +133,7 @@ export interface ApprovalRecord {
   consumedAt: string | null; consumedBy: string | null; createdAt: string;
 }
 
-const approvalView = (row: Record<string, string | null>): ApprovalRecord => ({
+const approvalView = (row: Record<string, string | null>): ApprovalRecord => redactSecrets({
   id: String(row['id']), kind: String(row['kind']), missionId: row['mission_id'] ?? null, taskId: row['task_id'] ?? null, toolId: row['tool_id'] ?? null,
   actionSummary: String(row['action_summary']), risk: String(row['risk']),
   actionClass: (String(row['action_class'] ?? 'C')) as ActionClass,
@@ -143,7 +144,7 @@ const approvalView = (row: Record<string, string | null>): ApprovalRecord => ({
   toolInput: parseJson(row['tool_input'], {}), requestedBy: String(row['requested_by']),
   status: String(row['status']) as ApprovalStatus, decisionNote: String(row['decision_note'] ?? ''), decidedBy: row['decided_by'] ?? null, decidedAt: row['decided_at'] ?? null,
   consumedAt: row['consumed_at'] ?? null, consumedBy: row['consumed_by'] ?? null, createdAt: String(row['created_at']),
-});
+}).value;
 
 export function createApproval(input: {
   workspaceId: string; missionId?: string | null; taskId?: string | null; toolId?: string | null;

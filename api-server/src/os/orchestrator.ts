@@ -25,6 +25,7 @@ import { recordVerification, listVerifications } from './verification.js';
 import { claimTask, heartbeatTask, releaseTaskLease, checkpointTask, latestTaskCheckpoint, listTaskLeases, clearMissionLeases, recoverExpiredTaskLeases, getExecutionLimits, getTaskLease } from './task-queue.js';
 import { understandProblem, saveProblemProfile, getProblemProfile } from './problem.js';
 import { verifyIndependently } from './independent-verification.js';
+import { redactSecrets } from './secrets.js';
 import { collectCandidateLessons } from './lessons.js';
 import { comparePlans, savePlanVersion, listPlanVersions, verifyPlanExecution } from './planning.js';
 import { logger } from '../lib/logger.js';
@@ -622,12 +623,14 @@ export async function executeMission(missionId: string, actor = 'orchestrator', 
       const review = reviewRun(task, result.ok, result.output, result.error ?? null);
       const independent = verifyIndependently({ tool: task.tool, toolInput, toolOk: result.ok, output: result.output, error: result.error ?? null, evidence: lastEvidence });
       reviewPassed = review.passed && independent.passed;
-      lastIssues = [...review.issues, ...independent.failures];
+      lastOutput = redactSecrets(result.output ?? null).value;
+      const safeError = redactSecrets(result.error ?? '').value;
+      lastIssues = redactSecrets([...review.issues, ...independent.failures]).value;
       lastEvidence = [{
-        tool: result.tool, ok: result.ok, durationMs: result.durationMs, output: result.ok ? result.output : undefined,
-        error: result.error, reviewAttempt: attempt,
+        tool: result.tool, ok: result.ok, durationMs: result.durationMs, output: result.ok ? lastOutput : undefined,
+        error: safeError, reviewAttempt: attempt,
         artifactDigest: independent.artifactDigest,
-        independentChecks: independent.checks,
+        independentChecks: redactSecrets(independent.checks).value,
         capabilityDigest: lastProfile?.digest ?? null,
         skills: lastProfile?.skills.map((skill) => `${skill.key}@${skill.version}`) ?? [],
         plugins: lastProfile?.plugins.map((plugin) => `${plugin.key}@${plugin.version}`) ?? [],
@@ -647,7 +650,7 @@ export async function executeMission(missionId: string, actor = 'orchestrator', 
         .run(reviewPassed ? 'completed' : attempt === maxAttempts ? 'failed' : 'retrying', nowIso(),
           reviewPassed ? `Completed by ${agent.name}${attempt > 1 ? ` (after ${attempt} attempts)` : ''}` : `Review failed: ${review.issues.join('; ')}`,
           JSON.stringify(lastEvidence).slice(0, 60_000),
-          JSON.stringify(review.issues),
+          JSON.stringify(redactSecrets(review.issues).value),
           runId);
       checkpointTask({
         workspaceId: mission.workspace_id, taskId: task.id, missionId, runId, attempt,
@@ -715,7 +718,7 @@ export async function executeMission(missionId: string, actor = 'orchestrator', 
     if (reviewPassed) {
       db.prepare('UPDATE os_tasks SET status = ?, updated_at = ? WHERE id = ?').run('completed', nowIso(), task.id);
       completed.add(task.id);
-      addMemory({ workspaceId: mission.workspace_id, scope: 'execution', scopeId: missionId, content: `Task "${task.title}" completed by ${agent.name}. ${contract.deliverables.join(' ')}`, tags: ['execution', task.specialization], provenance: `mission:${missionId}`, agentId: agent.id, actor });
+      addMemory({ workspaceId: mission.workspace_id, scope: 'execution', scopeId: missionId, content: redactSecrets(`Task "${task.title}" completed by ${agent.name}. ${contract.deliverables.join(' ')}`).value, tags: ['execution', task.specialization], provenance: `mission:${missionId}`, agentId: agent.id, actor });
     } else {
       db.prepare('UPDATE os_tasks SET status = ?, updated_at = ? WHERE id = ?').run('failed', nowIso(), task.id);
       failed = true;
@@ -769,7 +772,8 @@ function summarizeDeliverables(tool: string | null, output: unknown): string[] {
 
 function finalizeMission(missionId: string, actor: string): void {
   const db = getOsDb();
-  const mission = db.prepare('SELECT * FROM os_missions WHERE id = ?').get(missionId) as { id: string; workspace_id: string; objective: string; created_at: string };
+  const mission = db.prepare('SELECT * FROM os_missions WHERE id = ?').get(missionId) as { id: string; workspace_id: string; objective: string; status: string; created_at: string };
+  if (mission.status === 'cancelled' || mission.status === 'paused' || mission.status === 'completed') return;
   const tasks = db.prepare('SELECT * FROM os_tasks WHERE mission_id = ? ORDER BY order_index').all(missionId) as unknown as TaskRow[];
   const pending = tasks.filter((t) => ['planned', 'created', 'assigned', 'running'].includes(t.status));
   if (pending.length) {
@@ -807,7 +811,7 @@ function finalizeMission(missionId: string, actor: string): void {
     `- Completion reflects passing deterministic acceptance checks on attached evidence, not agent self-report.`,
     `- No external side effects were performed beyond sandboxed file writes and allowlisted node --test executions.`,
   ];
-  const content = lines.join('\n');
+  const content = redactSecrets(lines.join('\n')).value;
   let artifactId: string | null = null;
   try {
     const dir = path.join(workspacePath(mission.workspace_id), 'reports');
@@ -902,9 +906,9 @@ const taskView = (row: TaskRow) => ({
 export function listMissions(workspaceId: string, limit = 30) {
   const db = getOsDb();
   const missions = db.prepare('SELECT * FROM os_missions WHERE workspace_id = ? ORDER BY created_at DESC LIMIT ?').all(workspaceId, Math.min(limit, 100)) as Array<Record<string, string>>;
-  return missions.map((m) => ({
+  return redactSecrets(missions.map((m) => ({
     id: m['id'], objective: m['objective'], status: m['status'], summary: m['summary'], requestedBy: m['requested_by'], artifactId: m['artifact_id'], createdAt: m['created_at'], updatedAt: m['updated_at'],
-  }));
+  }))).value;
 }
 
 export function getMissionDetail(workspaceId: string, missionId: string) {
@@ -919,7 +923,7 @@ export function getMissionDetail(workspaceId: string, missionId: string) {
   const handoffs = db.prepare('SELECT * FROM os_handoffs WHERE mission_id = ? ORDER BY created_at ASC').all(missionId) as Array<Record<string, string>>;
   const artifacts = db.prepare('SELECT id, name, kind, created_at FROM os_artifacts WHERE mission_id = ?').all(missionId) as Array<Record<string, string>>;
   const approvals = listMissionApprovals(workspaceId, missionId);
-  return {
+  return redactSecrets({
     approvals,
     problemProfile: getProblemProfile(workspaceId, missionId),
     planVersions: listPlanVersions(workspaceId, missionId),
@@ -944,7 +948,7 @@ export function getMissionDetail(workspaceId: string, missionId: string) {
     })),
     handoffs: handoffs.map((h) => ({ id: h['id'], taskId: h['task_id'], from: h['from_specialization'], to: h['to_specialization'], contract: parseJson(h['contract'] as string, {}), createdAt: h['created_at'] })),
     artifacts,
-  };
+  }).value;
 }
 
 export function getOsState(workspaceId: string) {

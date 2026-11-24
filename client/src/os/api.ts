@@ -129,7 +129,7 @@ export interface Handoff {
 
 export interface MissionSummary {
   id: string; objective: string;
-  status: 'planning' | 'running' | 'awaiting_approval' | 'completed' | 'failed' | 'cancelled';
+  status: 'planning' | 'running' | 'paused' | 'awaiting_approval' | 'completed' | 'failed' | 'cancelled';
   summary: string; requestedBy: string; artifactId: string | null;
   createdAt: string; updatedAt: string;
 }

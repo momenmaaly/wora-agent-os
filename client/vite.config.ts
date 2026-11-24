@@ -2,6 +2,8 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import path from 'node:path';
 
+const apiTarget = process.env.WORA_API_TARGET ?? 'http://127.0.0.1:4000';
+
 export default defineConfig({
   plugins: [react()],
   resolve: {
@@ -27,20 +29,20 @@ export default defineConfig({
     host: '0.0.0.0',
     allowedHosts: ['.e2b.app'],
     proxy: {
-      '/api':       { target: 'http://127.0.0.1:4000', changeOrigin: true },
-      '/health':    { target: 'http://127.0.0.1:4000', changeOrigin: true },
-      '/ready':     { target: 'http://127.0.0.1:4000', changeOrigin: true },
-      '/socket.io': { target: 'http://127.0.0.1:4000', ws: true },
+      '/api':       { target: apiTarget, changeOrigin: true },
+      '/health':    { target: apiTarget, changeOrigin: true },
+      '/ready':     { target: apiTarget, changeOrigin: true },
+      '/socket.io': { target: apiTarget, ws: true },
     },
   },
   preview: {
     host: '0.0.0.0',
     allowedHosts: ['.e2b.app'],
     proxy: {
-      '/api':       { target: 'http://127.0.0.1:4000', changeOrigin: true },
-      '/health':    { target: 'http://127.0.0.1:4000', changeOrigin: true },
-      '/ready':     { target: 'http://127.0.0.1:4000', changeOrigin: true },
-      '/socket.io': { target: 'http://127.0.0.1:4000', ws: true },
+      '/api':       { target: apiTarget, changeOrigin: true },
+      '/health':    { target: apiTarget, changeOrigin: true },
+      '/ready':     { target: apiTarget, changeOrigin: true },
+      '/socket.io': { target: apiTarget, ws: true },
     },
   },
 });

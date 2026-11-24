@@ -130,7 +130,7 @@ The **Executive Command bar** at the bottom of every screen now launches a real 
 
 - Workspace scoping mirrors the existing API: production requires a signed session → `wora-{userId}`;
   preview lands in `wora-preview`; admin key bypass available server-side.
-- Rate limits: 60/min per workspace on `/api/os` mutations (30/min missions, 10/min org builds).
+- Rate limits: per-workspace and per-normalized-route buckets (default 60/min, 30/min missions, 10/min org builds/lesson promotion/revocation). Separate endpoints no longer exhaust each other's quota.
 - All tool executions audited (`os_audit`); memory writes/deletes audited; agent create/update/delete audited.
 - No secrets in the client; OS core never sees provider keys. `/api/os/tools/:id/execute` refuses high-risk tools.
 - Sandboxed writes: generated apps and reports live under `WORA_WORKSPACE/<workspaceId>`; path traversal rejected.
@@ -139,7 +139,7 @@ The **Executive Command bar** at the bottom of every screen now launches a real 
 
 ## Test results (this branch)
 
-- `api-server`: full suite **183 tests: 182 pass, 1 skipped** (Mongo integration, opt-in), 0 failed —
+- `api-server`: full suite **210 tests: 209 pass, 1 skipped** (Mongo integration, opt-in), 0 failed —
   `npm test`. Coverage includes solvers, tools, memory isolation + ACL + TTL + version snapshots, registry
   and agent versions, orchestrator journeys 1–5 + failure/approval/denial paths, autonomy policy, device
   pairing, RBAC, boards, digital twins, playbook reuse, SQLite lease fencing, extensions, and the new
@@ -148,8 +148,9 @@ The **Executive Command bar** at the bottom of every screen now launches a real 
   explicit failure, blocked capability denial, workspace isolation and HTTP routes), action
   classification and enforcement (binding, replay, expiry, budgets, bypass attempts), durable task
   leases/checkpoints, structured problem understanding, independent verification, lesson promotion
-  controls and reproducible benchmarks.
-- `client`: 48/48 pass — `npm test`; typecheck + production build green.
+  controls, reproducible benchmarks, adversarial approval/workspace tests, scheduler stress, end-to-end missions and planning evaluation.
+- `client`: 49/49 pass — `npm test` (includes the browser E2E journey); typecheck + production build green.
+- Browser E2E: **1/1 pass** against the real preview API and Vite dev server (`client/tests/browser-e2e.test.mjs`).
 - Production bundle builds: client `npm run build`, api-server `npm run build`.
 
 ## Six worlds — mapping (honest)
