@@ -3,7 +3,7 @@
 **Updated:** 2026-11-24 (production readiness phase)
 **Branch:** `feat/extensions-subsystem`
 **HEAD at audit:** `321d69b` — Production readiness and adversarial validation
-**Latest committed units:** Phase 7 evidence-grounded reasoning and problem intelligence; `321d69b` production readiness, adversarial and browser validation; `883efd7` audit hardening, concurrent scheduler, formal planning, expanded verification, lesson lifecycle, expanded benchmarks and UI; `a221fec` class C tool-boundary guard; `1fe32e4` governance enforcement, durable runtime, problem understanding, independent verification, learning and benchmarks; `07d34f1` algorithm catalog; `6b5c483` verification records; `f965594` action classification
+**Latest committed units:** Phase 7.1 forecasting reliability and generalization; Phase 7 evidence-grounded reasoning and problem intelligence; `321d69b` production readiness, adversarial and browser validation; `883efd7` audit hardening, concurrent scheduler, formal planning, expanded verification, lesson lifecycle, expanded benchmarks and UI; `a221fec` class C tool-boundary guard; `1fe32e4` governance enforcement, durable runtime, problem understanding, independent verification, learning and benchmarks; `07d34f1` algorithm catalog; `6b5c483` verification records; `f965594` action classification
 **Working tree:** clean after the production-readiness commit
 **Remote main at audit:** `a1ca08c`
 **Rule:** this file records only work verified by source inspection, commands, tests or live HTTP probes. It is not a marketing status page.
@@ -408,3 +408,19 @@ See `WORA_PHASE6_VALIDATION.md`.
 - **Limits:** lexical understanding and contradiction detection; heuristic-uncalibrated hypothesis scores; no causal identification; no Bayesian/model-checking/SMT/nonlinear/learned-classifier implementation; no automatic external information collection; provider adapter not benchmarked against a real model; no automatic partial replan; SQLite single-writer; no distributed consensus.
 
 See `WORA_PHASE7_REASONING.md`.
+
+## 4y. Workstream 22 — Phase 7.1 reasoning reliability and generalization
+
+**Status:** implemented and verified; this is a reliability correction, not a claim of general semantic understanding.
+
+- **Root cause:** the original held-out forecasting paraphrase (`Project monthly subscription revenue for the next six months from historical totals.`) was classified as `business_operations` because forecast intent was a narrow keyword gate and the word `revenue` matched the business rule. `UnifiedProblem.features.hasTimeSeries` was false, algorithm selection returned `needs_input`, the reasoning layer selected only the deterministic planner and reported `sufficientToProceed=true`, and `buildPlan` had no forecasting path, so it would have run two summary tasks. The evaluation checked only selected-method wording, not target/horizon/observations/readiness or execution.
+- **Structure layer:** `os/problem-structure.ts` separates projection, temporal, historical-basis, target and negative signals into a typed structure with target, horizon, observations, malformed/conflicting flags, requirements, missing inputs and `canExecute`. It is deterministic and does not execute anything.
+- **Forecast readiness:** target, 1–90 period horizon and at least eight chronological observations are required; malformed/conflicting/contradictory inputs block execution. Missing inputs become critical information needs and no sample series is substituted.
+- **Planning and verification:** `buildPlan` now executes `forecast.linear` only with exactly the supplied series and horizon; otherwise it creates a `FORECAST INPUT GAP` task. Outcome verification marks gaps `partially_verified`, never `verified`. A verified forecast means the calculation was independently checked, not that the future is guaranteed.
+- **Capability seed:** `data_analyst` seed agents gain `forecast.linear`; additive migration 12 updates existing seed agents without changing permissions.
+- **Evaluation:** broad Phase 7 development **21/21**, held-out **10/10**; dedicated forecasting paraphrases development **16/16**, held-out **12/12**, negative controls **6/6**. Baseline from `1586bb4` reproduced as development **20/20**, held-out **9/10** with `held-subscription-revenue` failing. The original failure is now a development regression case; held-out wording is different.
+- **Tests:** `phase7_1.test.ts` 9/9 covers the original failure, valid execution, missing data, malformed/insufficient/conflicting inputs, misleading wording, tool failure, malformed output and cross-domain regression.
+- **Verification:** API full suite **343 tests, 342 passed, 1 skipped, 0 failed**; Phase 7 **16/16**; Phase 7.1 **9/9**; migrations **3/3**; client unit **50/50**; browser E2E **1/1**; API/client typecheck and production builds pass.
+- **Limits:** deterministic lexical structure rather than general understanding; 12 held-out forecast paraphrases are a small sample; conflicting records are blocked, not reconciled; linear trend is a baseline; no causal identification or external provider benchmark; SQLite single-writer; custom/non-seed data-analyst agents are not auto-granted the forecast tool.
+
+See `WORA_PHASE7_1_REASONING_RELIABILITY.md`.

@@ -1,6 +1,6 @@
 # WORA Phase 7 — Semantic Reasoning & Problem Intelligence
 
-**Status:** implemented and tested vertical slice. This is not a claim of general intelligence, calibrated probability, causal identification, or a model-provider benchmark.
+**Status:** implemented and tested vertical slice. This is not a claim of general intelligence, calibrated probability, causal identification, or a model-provider benchmark. Phase 7.1 corrects forecasting paraphrase/readiness behavior; see `WORA_PHASE7_1_REASONING_RELIABILITY.md`.
 
 **Starting commit:** `e91540b` on `feat/extensions-subsystem`
 **Final commit:** the Phase 7 commit on `feat/extensions-subsystem` (`feat(os): add evidence-grounded reasoning and problem intelligence`).
@@ -66,7 +66,7 @@ A model proposal is stored with `provenance.trust = "model-proposal"`. It is nev
 | `Reduce checkout failures by 20% so that customers can complete purchases reliably` | `root_cause_analysis` | outcome extracted after `so that`; hypotheses; causal gap |
 | `Build a multi-tenant SaaS API with role-based access` | `software_engineering` | no forced hypotheses; deterministic planner/typescript checks |
 | `Schedule 12 nurses across 5 shifts...` | `optimization` | employee scheduling MIP selected; implemented |
-| `Forecast next quarter demand...` | `forecasting` | linear trend baseline selected; not a causal forecast |
+| `Forecast next quarter demand...` | `forecasting` | intent recognized; linear baseline is selected only when observations and horizon are present |
 | `Prove ... with a model checker and SMT` | `formal_verification` | model-checking and SAT/SMT reported as gaps |
 | `Ice cream sales are associated with drowning...` | `causal_analysis` | observational association, not identified causation |
 

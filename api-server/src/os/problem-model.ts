@@ -10,6 +10,7 @@ import { getOsDb, newId, nowIso, parseJson } from './db.js';
 import { understandProblem, type ProblemDomain, type ProblemProfile } from './problem.js';
 import { searchMemories } from './memory.js';
 import type { ReasoningSummary } from './reasoning-types.js';
+import type { ProblemStructure } from './problem-structure.js';
 
 export const UNIFIED_PROBLEM_SCHEMA_VERSION = '1.0';
 
@@ -70,6 +71,7 @@ export interface UnifiedProblem {
   baseProfile: ProblemProfile;
   /** Compact reference to the evidence-grounded reasoning model, when one was built. */
   reasoning?: ReasoningSummary;
+  structure?: ProblemStructure;
   createdAt: string;
 }
 

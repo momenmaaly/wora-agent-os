@@ -36,6 +36,15 @@ export interface ReasoningScenario {
     noHypotheses?: boolean;
     minMethods?: number;
     provenanceComplete?: boolean;
+    forecastIntent?: boolean;
+    targetVariableIncludes?: string;
+    forecastHorizonSteps?: number;
+    forecastObservations?: number;
+    forecastCanExecute?: boolean;
+    missingInputIncludes?: string;
+    methodAssessedIncludes?: string;
+    selectedMethodCount?: number;
+    selectedMethodExcludes?: string;
   };
 }
 
@@ -58,7 +67,12 @@ const DEV_SCENARIOS: ReasoningScenario[] = [
   {
     id: 'dev-forecasting',
     objective: 'Forecast next quarter demand from a time series and report uncertainty.',
-    expect: { problemType: 'forecasting', selectedMethodIncludes: 'linear trend', selectedMethodStatus: 'implemented', sufficient: true, noHypotheses: true },
+    expect: { problemType: 'forecasting', forecastIntent: true, targetVariableIncludes: 'demand', forecastHorizonSteps: 3, forecastCanExecute: false, missingInputIncludes: 'observations', methodAssessedIncludes: 'linear trend', selectedMethodExcludes: 'linear', criticalNeed: true, askQuestion: true, sufficient: false, noHypotheses: true },
+  },
+  {
+    id: 'dev-forecast-ready',
+    objective: 'Predict next month sales from [120, 128, 135, 142, 150, 159, 168, 178].',
+    expect: { problemType: 'forecasting', forecastIntent: true, targetVariableIncludes: 'sales', forecastHorizonSteps: 1, forecastObservations: 8, forecastCanExecute: true, selectedMethodIncludes: 'linear trend', selectedMethodStatus: 'implemented', sufficient: true, noHypotheses: true },
   },
   {
     id: 'dev-decision',
@@ -156,8 +170,8 @@ const HELD_OUT_SCENARIOS: ReasoningScenario[] = [
   },
   {
     id: 'held-subscription-revenue',
-    objective: 'Project monthly subscription revenue for the next six months from historical totals.',
-    expect: { problemType: 'forecasting', selectedMethodIncludes: 'linear trend', selectedMethodStatus: 'implemented' },
+    objective: 'Estimate the next two quarters of subscription revenue from the recorded monthly totals.',
+    expect: { problemType: 'forecasting', forecastIntent: true, targetVariableIncludes: 'revenue', forecastHorizonSteps: 6, forecastCanExecute: false, missingInputIncludes: 'observations', methodAssessedIncludes: 'linear trend', selectedMethodExcludes: 'linear', criticalNeed: true, askQuestion: true, sufficient: false },
   },
   {
     id: 'held-cloud-provider',
@@ -249,6 +263,16 @@ function evaluateScenario(scenario: ReasoningScenario, suite: 'development' | 'h
   if (expect.gapIncludes) checks.push(check('capability-gap', model.methods.some((item) => !item.implemented && item.applies && lower(`${item.id} ${item.name}`).includes(lower(expect.gapIncludes!))), `gaps=${model.methods.filter((item) => !item.implemented && item.applies).map((item) => item.id).join(', ') || 'none'}`));
   if (expect.minMethods !== undefined) checks.push(check('methods', model.methods.length >= expect.minMethods, `methods=${model.methods.length}`));
   if (expect.provenanceComplete) checks.push(check('provenance', model.claims.every((item) => Boolean(item.provenance.source && item.provenance.digest && item.provenance.trust)), `claims=${model.claims.length}`));
+  const forecast = model.problemStructure?.forecasting;
+  if (expect.forecastIntent !== undefined) checks.push(check('forecast-intent', Boolean(forecast?.intent) === expect.forecastIntent, `intent=${Boolean(forecast?.intent)}`));
+  if (expect.targetVariableIncludes) checks.push(check('forecast-target', lower(forecast?.targetVariable ?? '').includes(lower(expect.targetVariableIncludes)), `target=${forecast?.targetVariable ?? 'none'}`));
+  if (expect.forecastHorizonSteps !== undefined) checks.push(check('forecast-horizon', forecast?.horizon?.steps === expect.forecastHorizonSteps, `horizon=${forecast?.horizon?.steps ?? 'none'}`));
+  if (expect.forecastObservations !== undefined) checks.push(check('forecast-observations', forecast?.observations.length === expect.forecastObservations, `observations=${forecast?.observations.length ?? 0}`));
+  if (expect.forecastCanExecute !== undefined) checks.push(check('forecast-can-execute', forecast?.canExecute === expect.forecastCanExecute, `canExecute=${Boolean(forecast?.canExecute)}`));
+  if (expect.missingInputIncludes) checks.push(check('forecast-missing-input', (forecast?.missingInputs ?? []).some((item) => lower(item).includes(lower(expect.missingInputIncludes!))), `missing=${(forecast?.missingInputs ?? []).join(' | ') || 'none'}`));
+  if (expect.methodAssessedIncludes) checks.push(check('method-assessed', model.methods.some((item) => lower(item.name).includes(lower(expect.methodAssessedIncludes!)) || lower(item.id).includes(lower(expect.methodAssessedIncludes!))), `methods=${model.methods.map((item) => item.name).join(' | ') || 'none'}`));
+  if (expect.selectedMethodCount !== undefined) checks.push(check('selected-method-count', model.methods.filter((item) => item.selected).length === expect.selectedMethodCount, `selected=${model.methods.filter((item) => item.selected).map((item) => item.name).join(' | ') || 'none'}`));
+  if (expect.selectedMethodExcludes) checks.push(check('selected-method-excluded', model.methods.every((item) => !item.selected || !(lower(item.name).includes(lower(expect.selectedMethodExcludes!)) || lower(item.id).includes(lower(expect.selectedMethodExcludes!)))), `selected=${model.methods.filter((item) => item.selected).map((item) => item.name).join(' | ') || 'none'}`));
   return {
     id: scenario.id, suite, passed: checks.every((item) => item.passed), checks,
     summary: { problemType: model.problemType, mode: model.mode, claims: model.claims.length, hypotheses: model.hypotheses.length, methods: model.methods.length, informationNeeds: model.informationNeeds.length },
@@ -285,6 +309,7 @@ export function evaluateReasoningScenarios(): ReasoningEvaluation {
       informationGathering: aggregate(all, 'information', ['critical-need', 'clarification', 'sufficiency']),
       methodSelection: aggregate(all, 'methods', ['selected-method', 'selected-method-status', 'capability-gap', 'methods']),
       reliability: aggregate(all, 'reliability', ['provenance']),
+      forecasting: aggregate(all, 'forecasting', ['forecast-intent', 'forecast-target', 'forecast-horizon', 'forecast-observations', 'forecast-can-execute', 'forecast-missing-input']),
     },
     baseline, scenarios: all,
   };

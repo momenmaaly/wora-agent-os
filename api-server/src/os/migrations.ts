@@ -198,6 +198,19 @@ export const MIGRATIONS: Migration[] = [
       db.exec('CREATE INDEX IF NOT EXISTS idx_os_reasoning_models_mission ON os_reasoning_models(workspace_id, mission_id, version)');
     },
   },
+  {
+    version: 12,
+    name: 'data-analyst-forecast-capability',
+    up(db) {
+      const rows = db.prepare("SELECT id, tools FROM os_agents WHERE specialization = 'data_analyst' AND source = 'seed'").all() as Array<{ id: string; tools: string }>;
+      const update = db.prepare('UPDATE os_agents SET tools = ?, updated_at = ? WHERE id = ?');
+      for (const row of rows) {
+        const tools = JSON.parse(row.tools || '[]') as unknown;
+        if (!Array.isArray(tools) || tools.includes('forecast.linear')) continue;
+        update.run(JSON.stringify([...tools, 'forecast.linear']), nowIso(), row.id);
+      }
+    },
+  },
 ];
 
 function tableExists(db: OsDatabase, name: string): boolean {

@@ -34,7 +34,7 @@ export interface OutcomeVerification {
 
 interface TaskRow {
   id: string; workspace_id: string; mission_id: string; title: string; status: string;
-  tool: string | null; tool_input: string; created_at: string;
+  tool: string | null; tool_input: string; detail: string; created_at: string;
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -208,6 +208,15 @@ export function verifyMissionOutcome(workspaceId: string, missionId: string): Ou
     taskEvidence.push({ taskId: task.id, tool: task.tool, status: task.status, verification: verification?.result ?? null, outcome: outcome.status });
   }
 
+  const inputGapTasks = tasks.filter((task) => /(?:FORECAST INPUT GAP|INPUT GAP\b|MISSING REQUIRED INPUT)/iu.test(task.detail ?? ''));
+  if (inputGapTasks.length) {
+    partial = true;
+    add({
+      id: 'required-input-gap', kind: 'outcome', status: 'not_run',
+      description: 'A task reported missing required inputs instead of fabricating them',
+      evidence: inputGapTasks.map((task) => task.detail).join(' | ').slice(0, 1_500),
+    });
+  }
   const compositionRow = db.prepare('SELECT gaps FROM os_capability_compositions WHERE mission_id = ?').get(missionId) as { gaps?: string } | undefined;
   const compositionGaps = compositionRow?.gaps ? parseJson<Array<{ message?: string; missing?: string[] }>>(compositionRow.gaps, []) : [];
   if (compositionGaps.length) {
@@ -246,7 +255,7 @@ export function verifyMissionOutcome(workspaceId: string, missionId: string): Ou
   if (notRun.length || partial) {
     return persist(workspaceId, missionId, { missionId, workspaceId, status: 'partially_verified', checks, reasons: [...new Set([...reasons, ...notRun.map((check) => `${check.id}: ${check.description}`)])], taskEvidence, artifactId: artifacts?.id ?? null, generatedAt: nowIso() });
   }
-  const businessClaim = /market|revenue|profit|sales|سوق|إيراد|ربح|مبيعات/iu.test(mission.objective);
+  const businessClaim = /market|revenue|profit|sales|سوق|إيراد|ربح|مبيعات/iu.test(mission.objective) && !/\b(?:forecast|project|predict|estimate|extrapolat)/iu.test(mission.objective);
   if (businessClaim) {
     return persist(workspaceId, missionId, {
       missionId, workspaceId, status: 'partially_verified',

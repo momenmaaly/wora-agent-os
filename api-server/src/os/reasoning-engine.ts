@@ -10,6 +10,7 @@
 import { createHash } from 'node:crypto';
 import { nowIso } from './db.js';
 import { modelProblem, type UnifiedProblem } from './problem-model.js';
+import { inferProblemStructure, type ProblemStructure } from './problem-structure.js';
 import { listScientificDomains } from './science.js';
 import type {
   CausalEdge, ClaimKind, ClaimProvenance, ClaimTrust, ConfidenceKind, Hypothesis, InformationNeed,
@@ -66,11 +67,16 @@ function desiredOutcomeOf(objective: string, base: UnifiedProblem): string {
   return sentence(objective);
 }
 
-function problemTypeOf(objective: string, base: UnifiedProblem): string {
+function problemTypeOf(objective: string, base: UnifiedProblem, structure?: ProblemStructure): string {
   if (/root cause|root-cause|troubleshoot|diagnos|\bwhy\b|intermittent|sometimes fails|\b(?:fail(?:s|ed|ure|ures)?|failing|error|incident|outage|bug|broken|discrepancy|mismatch|explains?)\b|سبب|تشخيص|لماذا|فشل|خطأ|عطل/iu.test(objective) || base.domain === 'diagnostics') return 'root_cause_analysis';
   if (/causal|causation|counterfactual|confound|correlat|associated with|linked to|causing|\bcauses?\b|سببية|ارتباط/iu.test(objective)) return 'causal_analysis';
   if (/formal verif|model check|sat solver|smt|proof|تحقق رسمي|إثبات/iu.test(objective)) return 'formal_verification';
   if (/optimi[sz](?:e|ing|ed|ation)?|minimi[sz](?:e|ing|ed|ation)?|maximi[sz](?:e|ing|ed|ation)?|schedul|allocat|assign(?:ed|ing|ment)?|cost matrix|shift|جدولة|توزيع|تخصيص/iu.test(objective)) return 'optimization';
+  if (structure?.kind === 'software_engineering') return 'software_engineering';
+  if (structure?.kind === 'causal_analysis') return 'causal_analysis';
+  if (structure?.kind === 'forecasting') return 'forecasting';
+  if (structure?.kind === 'descriptive_statistics' || structure?.kind === 'trend_analysis') return 'data_analysis';
+  if (structure?.kind === 'classification') return 'classification';
   if (/forecast|time series|trend|estimate\b.{0,40}\b(?:revenue|sales|demand)|sales history|monthly.*history|تنبؤ|سلسلة زمنية/iu.test(objective)) return 'forecasting';
   if (/decision|criteria|alternative|قرار|معايير/iu.test(objective)) return 'decision';
   if (/data|dataset|statistic|analytics|\bmean\b|median|average|numeric series|بيانات|إحصاء/iu.test(objective)) return 'data_analysis';
@@ -266,7 +272,7 @@ function extractCausalEdges(objective: string, evidence: ReasoningEvidenceInput[
   return edges;
 }
 
-function informationNeeds(claims: ReasoningClaim[], base: UnifiedProblem, problemType: string, contradictions: string[]): InformationNeed[] {
+function informationNeeds(claims: ReasoningClaim[], base: UnifiedProblem, problemType: string, contradictions: string[], structure?: ProblemStructure): InformationNeed[] {
   const needs: InformationNeed[] = [];
   for (const item of claims.filter((entry) => entry.kind === 'unknown')) {
     const explicitUnknown = item.provenance.kind === 'objective';
@@ -285,6 +291,22 @@ function informationNeeds(claims: ReasoningClaim[], base: UnifiedProblem, proble
         : 'This information could improve the answer but is not required to proceed; the deterministic plan can continue.',
       status: 'open',
     });
+  }
+  if (structure?.kind === 'forecasting' && structure.forecasting?.intent && !structure.forecasting.canExecute) {
+    for (const missing of structure.forecasting.missingInputs) {
+      const question = missing === 'target variable to forecast'
+        ? 'Which target variable should WORA forecast?'
+        : missing.startsWith('forecast horizon')
+          ? 'How many future periods should the forecast cover?'
+          : structure.forecasting.seriesMalformed
+            ? 'Please provide a valid chronological numeric series; the supplied observations are malformed.'
+            : 'Please provide at least 8 chronological numeric observations for this forecast.';
+      needs.push({
+        id: idFor('info', `forecast:${missing}`), question, unknownClaimId: null, materiality: 'critical', expectedInformationGain: 0.95,
+        cost: { timeMinutes: 10, costUsd: null, risk: 'low', reversible: true }, canSelfGather: false,
+        recommendedAction: 'ask-user', rationale: `The implemented forecast requires ${missing}; no observations were fabricated.`, status: 'open',
+      });
+    }
   }
   if (contradictions.length) {
     needs.push({
@@ -305,7 +327,7 @@ function methodCatalog(): Map<string, { name: string; domain: string; status: Me
   return map;
 }
 
-function methodAssessments(base: UnifiedProblem, problemType: string): MethodAssessment[] {
+function methodAssessments(base: UnifiedProblem, problemType: string, structure?: ProblemStructure): MethodAssessment[] {
   const catalog = methodCatalog();
   const assessments = new Map<string, MethodAssessment>();
   const add = (id: string, reason: string, applies: boolean, selected = false) => {
@@ -350,7 +372,12 @@ function methodAssessments(base: UnifiedProblem, problemType: string): MethodAss
   if (/machine learning|classifier|classification model|تعلم آلي|تصنيف/iu.test(base.objective)) add('classification', 'A learned classifier was requested; no model-training capability is implemented.', true);
   if (problemType === 'forecasting') {
     for (const item of assessments.values()) item.selected = false;
-    add('linear-forecast', 'A linear trend baseline is implemented; it is not a causal forecast.', true, true);
+    const forecast = structure?.forecasting;
+    const ready = forecast?.canExecute === true;
+    add('linear-forecast', ready
+      ? 'A linear trend baseline is implemented and all required inputs are present; it is not a causal forecast.'
+      : `A linear trend baseline is applicable, but it cannot execute until the missing inputs are supplied: ${(forecast?.missingInputs ?? ['historical observations']).join(', ')}.`, true, ready);
+    if (!ready) add('deterministic-planner', 'No forecast can execute honestly with missing inputs; deterministic planning must collect or report the gap instead.', true, true);
   }
   if (problemType === 'decision') {
     for (const item of assessments.values()) item.selected = false;
@@ -426,6 +453,34 @@ function mergeProposal(model: ReasoningModel, proposal: ReasoningProposal): Reas
   };
 }
 
+function structureClaims(structure: ProblemStructure): ReasoningClaim[] {
+  const forecast = structure.forecasting;
+  if (structure.kind !== 'forecasting' || !forecast?.intent) return [];
+  const claims: ReasoningClaim[] = [];
+  if (forecast.observations.length > 0) {
+    claims.push(claim({
+      statement: `Historical observations supplied for ${forecast.targetVariable ?? 'the forecast'}: ${forecast.observations.join(', ')}`,
+      kind: 'user-fact', provenance: provenance('objective', idFor('series', forecast.observations), forecast.seriesSource ?? 'objective:explicit-series', 'unverified'),
+      confidence: 1, confidenceKind: 'deterministic', confidenceNote: 'Explicit numeric observations; their reality is not independently verified.',
+    }));
+  }
+  for (const missing of forecast.missingInputs) {
+    claims.push(claim({
+      statement: `Missing forecast input: ${missing}`, kind: 'unknown',
+      provenance: provenance('deterministic-rule', idFor('forecast-missing', missing), 'problem-structure-rules', 'unverified'),
+      confidence: 0.2, confidenceKind: 'none', confidenceNote: 'Required input is absent; it was not invented.',
+    }));
+  }
+  for (const assumption of forecast.assumptions) {
+    claims.push(claim({
+      statement: assumption, kind: 'assumption',
+      provenance: provenance('deterministic-rule', idFor('forecast-assumption', assumption), 'problem-structure-rules', 'assumption'),
+      confidence: 0.5, confidenceKind: 'heuristic', confidenceNote: 'Structural assumption; not a verified fact.',
+    }));
+  }
+  return claims;
+}
+
 export interface AnalyzeReasoningInput {
   workspaceId?: string | null;
   missionId?: string | null;
@@ -440,15 +495,18 @@ export interface AnalyzeReasoningInput {
 
 export function buildDeterministicReasoning(input: AnalyzeReasoningInput): ReasoningModel {
   const base = input.baseProblem ?? modelProblem({ workspaceId: input.workspaceId ?? '', objective: input.objective, track: input.track, includeMemory: input.includeMemory });
-  const problemType = problemTypeOf(base.objective, base);
+  const structure = inferProblemStructure(base.objective, base, input.evidence ?? []);
+  base.structure = structure;
+  const problemType = problemTypeOf(base.objective, base, structure);
   const desiredOutcome = desiredOutcomeOf(base.objective, base);
   const claims = initialClaims(base, input.evidence ?? []);
+  claims.push(...structureClaims(structure));
   const contradictions = detectContradictions(claims);
   const hypotheses = generateHypotheses(claims, problemType, base.objective, base);
   claims.push(...hypotheses.claims);
   const causalGraph = extractCausalEdges(base.objective, input.evidence ?? [], claims);
-  const needs = informationNeeds(claims, base, problemType, contradictions);
-  const methods = methodAssessments(base, problemType);
+  const needs = informationNeeds(claims, base, problemType, contradictions, structure);
+  const methods = methodAssessments(base, problemType, structure);
   const criticalNeeds = needs.filter((item) => item.materiality === 'critical');
   const selectedMethod = methods.find((item) => item.selected) ?? null;
   const status = reasoningProviderStatus();
@@ -462,7 +520,7 @@ export function buildDeterministicReasoning(input: AnalyzeReasoningInput): Reaso
     version: 1, parentVersion: null, mode: 'deterministic', provider, objective: base.objective, desiredOutcome,
     problemType, domain: base.domain, claims, hypotheses: hypotheses.hypotheses, causalGraph, informationNeeds: needs, methods,
     contradictions, unknowns: claims.filter((item) => item.kind === 'unknown').map((item) => item.statement),
-    assumptions: claims.filter((item) => item.kind === 'assumption').map((item) => item.statement),
+    assumptions: unique([...claims.filter((item) => item.kind === 'assumption').map((item) => item.statement), ...(structure.forecasting?.assumptions ?? [])]),
     sufficientToProceed: criticalNeeds.length === 0,
     clarificationQuestion: criticalNeeds.find((item) => item.recommendedAction === 'ask-user')?.question ?? (contradictions.length ? 'Which conflicting statement is correct, and what evidence supports it?' : null),
     confidence: { value: Math.max(0, Math.min(1, Number((0.35 + (base.confidence * 0.25) + (selectedMethod ? 0.15 : 0) - (contradictions.length ? 0.15 : 0)).toFixed(3)))), kind: 'heuristic', note: 'Heuristic confidence from deterministic extraction, method availability and unresolved contradictions; not calibrated.' },
@@ -473,7 +531,7 @@ export function buildDeterministicReasoning(input: AnalyzeReasoningInput): Reaso
       ...(provider.status === 'not-configured' ? ['No reasoning model provider is configured.'] : []),
     ]),
     changes: [{ version: 1, kind: 'initial', description: 'Initial deterministic reasoning model.', affectedClaimIds: claims.map((item) => item.id), invalidatedAssumptionIds: [], replanRecommended: false, affectedTaskIds: [], createdAt: nowIso() }],
-    baseProblem: base, createdAt: nowIso(),
+    baseProblem: base, problemStructure: structure, createdAt: nowIso(),
   };
 }
 
@@ -508,6 +566,7 @@ export function summarizeReasoning(model: ReasoningModel): ReasoningSummary {
     criticalInformationNeedCount: model.informationNeeds.filter((item) => item.materiality === 'critical').length,
     selectedMethod: model.methods.find((item) => item.selected)?.name ?? null,
     gapMethods: model.methods.filter((item) => !item.implemented && item.applies).map((item) => item.name),
+    forecasting: model.problemStructure?.forecasting ? { intent: model.problemStructure.forecasting.intent, targetVariable: model.problemStructure.forecasting.targetVariable, horizonSteps: model.problemStructure.forecasting.horizon?.steps ?? null, observations: model.problemStructure.forecasting.observations.length, canExecute: model.problemStructure.forecasting.canExecute, missingInputs: model.problemStructure.forecasting.missingInputs, seriesMalformed: model.problemStructure.forecasting.seriesMalformed, conflictingRecords: model.problemStructure.forecasting.conflictingRecords } : null,
     clarificationQuestion: model.clarificationQuestion, confidence: model.confidence, limitations: model.limitations,
   };
 }
@@ -518,7 +577,11 @@ export function updateReasoningWithEvidence(model: ReasoningModel, evidence: Rea
   next.parentVersion = model.version;
   const base = next.baseProblem ?? modelProblem({ workspaceId: model.workspaceId ?? '', objective: model.objective, includeMemory: false });
   next.baseProblem = base;
+  const structure = inferProblemStructure(next.objective, base, evidence);
+  next.problemStructure = structure;
+  base.structure = structure;
   const claims = initialClaims(base, evidence);
+  claims.push(...structureClaims(structure));
   const existing = new Set(next.claims.map((item) => `${item.kind}:${item.statement.toLowerCase()}`));
   const added = claims.filter((item) => !existing.has(`${item.kind}:${item.statement.toLowerCase()}`));
   next.claims.push(...added);
@@ -565,9 +628,10 @@ export function updateReasoningWithEvidence(model: ReasoningModel, evidence: Rea
       if (causalClaim && !next.claims.some((claim) => claim.id === causalClaim.id)) next.claims.push(causalClaim);
     }
   }
-  next.informationNeeds = informationNeeds(next.claims, base, next.problemType, next.contradictions);
+  next.methods = methodAssessments(base, next.problemType, structure);
+  next.informationNeeds = informationNeeds(next.claims, base, next.problemType, next.contradictions, structure);
   next.unknowns = next.claims.filter((item) => item.kind === 'unknown').map((item) => item.statement);
-  next.assumptions = next.claims.filter((item) => item.kind === 'assumption' && item.active).map((item) => item.statement);
+  next.assumptions = unique([...next.claims.filter((item) => item.kind === 'assumption' && item.active).map((item) => item.statement), ...(structure.forecasting?.assumptions ?? [])]);
   next.sufficientToProceed = next.informationNeeds.every((item) => item.materiality !== 'critical');
   next.clarificationQuestion = next.informationNeeds.find((item) => item.recommendedAction === 'ask-user')?.question ?? null;
   const change: ReasoningChange = {

@@ -34,6 +34,7 @@ import { compareSolutionStrategies, saveDecisionRecord, listDecisionRecords, ass
 import { applyAdaptiveReplan, alternativeForTask } from './adaptive-replan.js';
 import { composeMissionPlan, saveComposition, getComposition } from './capability-composition.js';
 import { modelProblem, saveProblemModel, getProblemModel } from './problem-model.js';
+import { inferProblemStructure } from './problem-structure.js';
 import { evaluateSemanticCompatibility } from './semantic-contracts.js';
 import { verifyMissionOutcome, getMissionOutcome } from './outcome-verification.js';
 import { buildDeterministicReasoning, summarizeReasoning } from './reasoning-engine.js';
@@ -369,6 +370,41 @@ export function buildPlan(objective: string, track?: string, workspaceId = 'wora
       acceptance: ['Page fetched with status < 400 or failure reported honestly', 'Readable text extracted (title + excerpt)'],
       detail: 'Fetches only the URLs explicitly present in the instruction.',
     }));
+  }
+
+  // Forecasting with a reusable problem-structure check. A forecast is planned
+  // only when the target, horizon and at least eight observations are present.
+  const structure = inferProblemStructure(text);
+  if (structure.kind === 'forecasting' && structure.forecasting) {
+    const forecast = structure.forecasting;
+    if (forecast.canExecute && forecast.observations.length >= 8 && forecast.horizon?.steps) {
+      return [{
+        title: `Forecast ${forecast.targetVariable ?? 'the target'} with the implemented linear baseline`,
+        objective: text,
+        specialization: 'data_analyst',
+        tool: 'forecast.linear',
+        toolInput: { series: forecast.observations, steps: forecast.horizon.steps },
+        dependsOn: [],
+        acceptance: [
+          'Only the supplied chronological observations are used',
+          'At least eight observations and a 1–90 period horizon are present',
+          'Honest holdout metrics and residual bands are reported',
+          'The linear baseline is not presented as a causal or guaranteed prediction',
+        ],
+        detail: `Problem structure: forecasting; target=${forecast.targetVariable ?? 'unspecified'}; horizon=${forecast.horizon.steps} ${forecast.horizon.unit} period(s); observations=${forecast.observations.length}. Method: forecast.linear (linear trend baseline, implemented). Limitations: ${forecast.assumptions.join(' ')}`,
+      }];
+    }
+    const gap = `FORECAST INPUT GAP — target=${forecast.targetVariable ?? 'unspecified'}; horizon=${forecast.horizon?.steps ?? 'unspecified'}; supplied observations=${forecast.observations.length}; missing: ${forecast.missingInputs.join('; ') || 'none'}. No observation was invented or replaced with a sample series.`;
+    return [{
+      title: 'Report the forecast input gap honestly',
+      objective: text,
+      specialization: 'data_analyst',
+      tool: 'text.extract_summary',
+      toolInput: { text: `${gap} The implemented forecast requires ${forecast.missingInputs.join(' and ') || 'valid inputs'}. Ask the user for those inputs or attach the real series; do not execute a forecast from fabricated data.`, sentences: 3 },
+      dependsOn: [],
+      acceptance: ['Missing forecast inputs are stated explicitly', 'No forecast is fabricated', 'No sample series is substituted'],
+      detail: gap,
+    }];
   }
 
   // Default — grounded analysis + recorded rationale

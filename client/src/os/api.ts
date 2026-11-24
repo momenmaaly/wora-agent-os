@@ -188,6 +188,19 @@ export interface ReasoningMethod {
   requiredInputs: string[]; assumptions: string[]; expectedOutputs: string[]; limitations: string[];
   evidenceRequirements: string[]; implemented: boolean; externalCapabilityRequired: boolean; gap: string | null; selected: boolean;
 }
+export interface ProblemStructureForecast {
+  intent: boolean; targetVariable: string | null; horizon: { text: string; steps: number | null; unit: string; assumption: string | null } | null;
+  observations: number[]; seriesSource: string | null; seriesMalformed: boolean; conflictingRecords: boolean;
+  basis: string; requirements: Array<{ id: string; label: string; present: boolean; reason: string }>;
+  missingInputs: string[]; canExecute: boolean; assumptions: string[]; extractionNotes: string[];
+}
+export interface ProblemStructure {
+  schemaVersion: string; objectiveDigest: string; kind: string; confidence: number;
+  signals: { projection: string[]; temporal: string[]; historical: string[]; target: string[]; negative: string[]; forecast: string[] };
+  forecasting: ProblemStructureForecast | null;
+  provenance: { kind: string; source: string; trust: string; digest: string };
+}
+
 export interface ReasoningModel {
   schemaVersion: string; workspaceId: string | null; missionId: string | null; version: number; parentVersion: number | null;
   mode: ReasoningMode; provider: { name: string; model: string | null; status: string; notice: string };
@@ -197,6 +210,7 @@ export interface ReasoningModel {
   unknowns: string[]; assumptions: string[]; sufficientToProceed: boolean; clarificationQuestion: string | null;
   confidence: { value: number; kind: string; note: string }; limitations: string[];
   changes: Array<{ version: number; kind: string; description: string; invalidatedAssumptionIds: string[]; replanRecommended: boolean; createdAt: string }>;
+  baseProblem?: UnifiedProblem | null; problemStructure?: ProblemStructure | null;
   createdAt: string;
 }
 export interface ReasoningSummary {
@@ -217,7 +231,7 @@ export interface UnifiedProblem {
   risk: string; reversibility: string; uncertainty: string; deterministic: boolean; stochastic: boolean; precision: string;
   approvals: string[]; needs: string[];
   methods: { selected: { name: string; toolId: string | null; guarantee: string } | null; rejected: Array<{ name: string; reason: string; status: string }>; missing: string[]; rationale: string[]; assumptions: string[] };
-  confidence: number; provenance: string[]; reasoning?: ReasoningSummary; createdAt: string;
+  confidence: number; provenance: string[]; reasoning?: ReasoningSummary; structure?: ProblemStructure | null; createdAt: string;
 }
 
 export interface CompositionNode {

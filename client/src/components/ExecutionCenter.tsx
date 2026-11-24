@@ -438,6 +438,16 @@ export function ExecutionCenter() {
                     {' · '}<strong>الثقة:</strong> {Math.round(detail.reasoning.confidence.value * 100)}% ({detail.reasoning.confidence.kind})
                   </p>
                   <p><strong>النتيجة المقصودة:</strong> {detail.reasoning.desiredOutcome}</p>
+                  {detail.reasoning.problemStructure?.forecasting && (
+                    <div className="os-subpanel" aria-label="بنية مسألة التنبؤ">
+                      <p><strong>بنية المسألة:</strong> تنبؤ · الهدف <span dir="ltr">{detail.reasoning.problemStructure.forecasting.targetVariable ?? 'غير محدد'}</span> · الأفق <span dir="ltr">{detail.reasoning.problemStructure.forecasting.horizon?.steps ?? 'غير محدد'}</span> {detail.reasoning.problemStructure.forecasting.horizon?.unit ?? ''} · الملاحظات <span dir="ltr">{detail.reasoning.problemStructure.forecasting.observations.length}</span></p>
+                      <p className={detail.reasoning.problemStructure.forecasting.canExecute ? 'subtle' : 'os-warning'}>
+                        {detail.reasoning.problemStructure.forecasting.canExecute ? 'المدخلات المطلوبة مكتملة؛ يمكن تنفيذ الطريقة المطبقة.' : `لا يمكن تنفيذ تنبؤ الآن. المدخلات الناقصة: ${detail.reasoning.problemStructure.forecasting.missingInputs.join('، ') || 'غير محددة'}. لم يتم اختراع أي بيانات.`}
+                      </p>
+                      {detail.reasoning.problemStructure.forecasting.conflictingRecords && <p className="os-warning">السجلات التاريخية متعارضة؛ لن تُختار سلسلة موثوقة تلقائيًا.</p>}
+                      {detail.reasoning.problemStructure.forecasting.extractionNotes.length > 0 && <ul className="os-acceptance">{detail.reasoning.problemStructure.forecasting.extractionNotes.map((note) => <li key={note}>{note}</li>)}</ul>}
+                    </div>
+                  )}
                   <p className={detail.reasoning.sufficientToProceed ? 'subtle' : 'os-warning'}>
                     {detail.reasoning.sufficientToProceed ? 'المعلومات الحالية كافية للمتابعة الحتمية؛ لا سؤال إضافي إلزامي.' : 'توجد معلومات حرجة ناقصة؛ لا ينبغي اختراع إجابة.'}
                   </p>

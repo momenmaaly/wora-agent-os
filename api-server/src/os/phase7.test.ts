@@ -306,12 +306,12 @@ test('Phase 7 J — reasoning APIs enforce authentication and sanitize user evid
 
 test('Phase 7 K — development and held-out evaluation results are reported honestly', () => {
   const evaluation = evaluateReasoningScenarios();
-  assert.equal(evaluation.development.total, 20);
-  assert.equal(evaluation.development.passed, 20);
+  assert.equal(evaluation.development.total, 21);
+  assert.equal(evaluation.development.passed, 21);
   assert.equal(evaluation.heldOut.total, 10);
-  assert.equal(evaluation.heldOut.passed, 9);
+  assert.equal(evaluation.heldOut.passed, 10);
   assert.equal(evaluation.providerBenchmark, 'not-run');
-  assert.ok(evaluation.scenarios.some((item) => item.id === 'held-subscription-revenue' && !item.passed));
+  assert.ok(evaluation.scenarios.every((item) => item.passed));
   assert.ok(evaluation.metrics['understanding']!.rate >= 0.9);
   assert.ok(evaluation.metrics['causalReasoning']!.rate >= 0.8);
   assert.ok(evaluation.metrics['informationGathering']!.rate >= 0.9);

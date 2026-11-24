@@ -7,6 +7,7 @@
  * evidence or verification supports it.
  */
 import type { UnifiedProblem } from './problem-model.js';
+import type { ProblemStructure } from './problem-structure.js';
 
 export const REASONING_SCHEMA_VERSION = '1.0';
 
@@ -168,6 +169,7 @@ export interface ReasoningModel {
   limitations: string[];
   changes: ReasoningChange[];
   baseProblem: UnifiedProblem | null;
+  problemStructure?: ProblemStructure;
   createdAt: string;
 }
 
@@ -185,6 +187,7 @@ export interface ReasoningSummary {
   criticalInformationNeedCount: number;
   selectedMethod: string | null;
   gapMethods: string[];
+  forecasting?: { intent: boolean; targetVariable: string | null; horizonSteps: number | null; observations: number; canExecute: boolean; missingInputs: string[]; seriesMalformed: boolean; conflictingRecords: boolean } | null;
   clarificationQuestion: string | null;
   confidence: { value: number; kind: ConfidenceKind; note: string };
   limitations: string[];
