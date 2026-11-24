@@ -337,6 +337,11 @@ test('HTTP memory routes enforce signed workspace, actor and role boundaries', a
     const memberRecord = await memberWrite.json() as { id: string };
     assert.equal((await call('DELETE', `/memory/${memberRecord.id}`, aliceToken)).status, 204);
     assert.equal((await call('GET', `/memory/${memberRecord.id}/versions`, aliceToken)).status, 404);
+    addMemory({ workspaceId: 'wora-alice', scope: 'workspace', visibility: 'owner', content: 'bob owner reasoning secret', actor: 'bob' });
+    const bobMission = createMission({ workspaceId: 'wora-alice', objective: 'Explain the private owner note', actor: 'bob' });
+    const evidenceResponse = await call('POST', `/missions/${bobMission}/reasoning/evidence`, aliceToken, { evidence: [{ statement: 'Alice added independent evidence', kind: 'user-fact' }] });
+    assert.equal(evidenceResponse.status, 201);
+    assert.ok(!JSON.stringify(await evidenceResponse.json()).includes('bob owner reasoning secret'), 'reasoning evidence response leaked another actor memory');
     removeWorkspaceRole('wora-alice', 'alice', 'root');
     const revokedWrite = await call('POST', '/memory', aliceToken, { scope: 'workspace', content: 'removed member must not write' });
     assert.equal(revokedWrite.status, 403);
