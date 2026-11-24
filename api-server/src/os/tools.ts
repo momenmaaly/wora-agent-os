@@ -36,6 +36,8 @@ export interface ToolContext {
   signal?: AbortSignal;
   missionId?: string;
   taskId?: string;
+  /** The orchestrator's classification for this action; class C always needs a consumed approval. */
+  actionClass?: 'A' | 'B' | 'C';
   /** Set only after a class C approval was consumed by the orchestrator. */
   approvedAction?: { approvalId: string; payloadDigest: string; scope: string };
 }
@@ -899,7 +901,7 @@ export async function runTool(id: string, rawInput: unknown, ctx: ToolContext): 
     audit(getOsDb(), { workspaceId: ctx.workspaceId, actor: ctx.actor, action: 'tool.denied', subject: id, detail: { missing } });
     return { ok: false, tool: id, error: `Missing permission(s) for ${id}: ${missing.join(', ')}`, durationMs: Date.now() - started };
   }
-  if (tool.risk === 'high') {
+  if (tool.risk === 'high' || ctx.actionClass === 'C') {
     const approved = ctx.approvedAction;
     const expectedScope = actionScope(ctx.missionId, ctx.taskId, id);
     const approval = approved?.approvalId ? getApproval(ctx.workspaceId, approved.approvalId) : null;
@@ -916,7 +918,7 @@ export async function runTool(id: string, rawInput: unknown, ctx: ToolContext): 
     );
     if (!valid) {
       audit(getOsDb(), { workspaceId: ctx.workspaceId, actor: ctx.actor, action: 'tool.denied', subject: id, detail: { reason: 'approval_required_or_invalid', missionId: ctx.missionId ?? null, taskId: ctx.taskId ?? null } });
-      return { ok: false, tool: id, error: 'High-risk tool requires a valid, payload-bound approval', code: 'APPROVAL_REQUIRED', durationMs: Date.now() - started };
+      return { ok: false, tool: id, error: 'This action requires a valid, payload-bound approval', code: 'APPROVAL_REQUIRED', durationMs: Date.now() - started };
     }
   }
   const parsed = tool.schema.safeParse(rawInput ?? {});

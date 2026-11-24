@@ -136,6 +136,15 @@ test('the tool boundary rejects direct high-risk execution without a valid appro
   assert.equal(result.code, 'APPROVAL_REQUIRED');
 });
 
+test('a class C action is refused at the tool boundary even when the tool itself is low risk', async () => {
+  const { missionId, taskId } = taskFixture();
+  const result = await runTool('meta.understand_problem', { objective: 'Inspect my computer and identify potential problems' }, {
+    workspaceId: WS, actor: 'test', permissions: new Set(), missionId, taskId, actionClass: 'C',
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'APPROVAL_REQUIRED');
+});
+
 test('a valid approval reaches the tool boundary, but a substituted payload does not', async () => {
   const { missionId, taskId } = taskFixture();
   const payload = { command: 'node', args: ['--test', 'test/app.test.mjs'] };

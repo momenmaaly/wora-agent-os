@@ -191,7 +191,7 @@ In dependency order:
 
 ## 6. Current evidence and limitations
 
-After the algorithm unit: **API 120 tests: 119 passed, 1 skipped, 0 failed**. After the verification unit: **API 124 tests: 123 passed, 1 skipped, 0 failed**. After workstreams 1–6: **API 167 tests: 166 passed, 1 skipped, 0 failed**. API typecheck and build pass. Client remains **44/44 passed**, with typecheck and build green.
+After the algorithm unit: **API 120 tests: 119 passed, 1 skipped, 0 failed**. After the verification unit: **API 124 tests: 123 passed, 1 skipped, 0 failed**. After workstreams 1–6: **API 168 tests: 167 passed, 1 skipped, 0 failed**. API typecheck and build pass. Client remains **44/44 passed**, with typecheck and build green.
 
 - The first unit is locally tested; it is not yet exercised by a live external marketplace or a model-driven planner.
 - The selector is deterministic and intentionally conservative. It does not claim semantic understanding of arbitrary natural language.

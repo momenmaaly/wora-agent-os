@@ -582,6 +582,7 @@ export async function executeMission(missionId: string, actor = 'orchestrator', 
         toolAllowlist: new Set(profile.tools),
         missionId,
         taskId: task.id,
+        actionClass: actionClass?.class,
         approvedAction,
       };
       const toolInput = taskInput;

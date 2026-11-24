@@ -42,13 +42,13 @@ Existing databases are migrated additively with `ALTER TABLE`; no data is droppe
 
 - `POST /api/os/tools/:id/execute` refuses high-risk tools.
 - `executeForAgent` refuses high-risk tools and audits the denial.
-- `runTool` refuses a high-risk tool without a real, approved, payload-matched approval, even for internal callers.
+- `runTool` refuses a high-risk tool, or any action the orchestrator classified as class C, without a real, approved, payload-matched approval, even for internal callers.
 - Autopilot no longer bypasses high-risk approval; it remains an explicit preference but cannot bypass class C.
 - Expired approvals cannot be approved, denied or consumed.
 
 ## 5. Tests
 
-`api-server/src/os/governance-enforcement.test.ts` covers:
+`api-server/src/os/governance-enforcement.test.ts` (9 tests) covers:
 
 - class, digest, scope and expiry binding;
 - payload substitution, scope widening and cross-mission replay;
@@ -56,7 +56,7 @@ Existing databases are migrated additively with `ALTER TABLE`; no data is droppe
 - expired approvals;
 - default-zero and raised budgets, plus per-mission approval limits;
 - autopilot cannot bypass high risk;
-- direct tool execution without approval is refused;
+- direct tool execution without approval is refused, including a class C classification on a low-risk tool;
 - a valid approval reaches the tool boundary, while a substituted payload is refused.
 
 Existing mission tests still cover approval, denial and automatic resume.
