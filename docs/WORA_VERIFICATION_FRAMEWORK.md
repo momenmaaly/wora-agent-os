@@ -1,7 +1,7 @@
 # WORA Verification and Evidence Framework
 
-**Status:** first durable slice implemented and locally tested.  
-**Source:** `api-server/src/os/verification.ts`, `api-server/src/os/orchestrator.ts`, `api-server/src/os/db.ts`.
+**Status:** first durable slice implemented and locally tested.
+**Source:** `api-server/src/os/verification.ts`, `api-server/src/os/independent-verification.ts`, `api-server/src/os/orchestrator.ts`, `api-server/src/os/db.ts`.
 
 ## 1. Principle
 
@@ -52,16 +52,17 @@ Both are workspace-scoped by the same session/workspace resolution as the rest o
 ## 5. What this does not yet do
 
 - It does not run external third-party audits; `independence` says `deterministic-review`, not `external`.
-- It does not yet have property-based tests, database integrity suites, performance benchmarks or API contract verification as first-class check types.
-- It does not yet bind a verification record to a capability snapshot digest or a signed artifact. That is a next step.
+- Property and API-contract checks exist for the current tool surface; broader property-based, database-integrity and performance check families remain future work.
+- It computes an artifact digest but does not yet bind it to a signed capability snapshot or an external signature. That is a next step.
 - It does not replace domain-specific solver revalidation; those checks remain inside the solver and the deterministic review.
 - It does not make a failed mission successful. It records failure honestly.
 
 ## 6. Acceptance evidence
 
-`api-server/src/os/verification.test.ts` verifies:
+`api-server/src/os/verification.test.ts` and `independent-verification.test.ts` verify:
 
 - a completed mission produces a passed record with checks and evidence;
 - a failed record preserves the failure reason;
 - records are isolated by workspace;
-- the HTTP API returns the mission list and a single record.
+- the HTTP API returns the mission list and a single record;
+- contract, property, secret-leak and artifact-integrity checks fail closed.

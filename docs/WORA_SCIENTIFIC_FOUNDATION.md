@@ -1,6 +1,6 @@
 # WORA Scientific Foundation Map
 
-**Status:** research and architecture map, not a claim that every discipline is implemented.  
+**Status:** research and architecture map, not a claim that every discipline is implemented.
 **Audit basis:** source inspection of `api-server/src/os`, the extension subsystem and the existing test suite.
 
 ## 1. Purpose

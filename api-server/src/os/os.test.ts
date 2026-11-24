@@ -241,7 +241,7 @@ test('mission: build a working web application — high-risk QA step waits for h
   assert.equal(done.status, 'completed');
   assert.equal(done.tasks.find((t) => t.tool === 'host.exec')!.status, 'completed');
   assert.ok(done.tasks.every((t) => t.status === 'completed'));
-  // Autopilot policy opts out of the gate entirely for future missions — documented behavior.
+  // Autopilot remains a preference, but it cannot bypass class C approvals.
   setAutonomyPolicy(WS, 'autopilot', 'test');
   setAutonomyPolicy(WS, 'balanced', 'test');
 });
@@ -310,14 +310,14 @@ test('governance: a requester cannot approve their own high-risk request', async
 });
 
 /* ─── Governance: autonomy policy + revocable devices ─── */
-test('governance: autonomy policy round-trips and high-risk gate follows it', async () => {
+test('governance: autonomy policy round-trips and autopilot cannot bypass high-risk', async () => {
   const { getAutonomyPolicy, setAutonomyPolicy, requiresHumanApproval } = await import('./governance.js');
   assert.equal(getAutonomyPolicy(WS), 'balanced');
   assert.equal(requiresHumanApproval(WS, 'high'), true);
   assert.equal(requiresHumanApproval(WS, 'medium'), false);
   setAutonomyPolicy(WS, 'autopilot', 'test');
   assert.equal(getAutonomyPolicy(WS), 'autopilot');
-  assert.equal(requiresHumanApproval(WS, 'high'), false);
+  assert.equal(requiresHumanApproval(WS, 'high'), true);
   setAutonomyPolicy(WS, 'balanced', 'test');
   assert.equal(getAutonomyPolicy(WS), 'balanced');
 });

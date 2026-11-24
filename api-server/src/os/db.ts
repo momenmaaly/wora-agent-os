@@ -163,12 +163,19 @@ CREATE TABLE IF NOT EXISTS os_approvals (
   tool_id TEXT,
   action_summary TEXT NOT NULL,
   risk TEXT NOT NULL DEFAULT 'high',
+  action_class TEXT NOT NULL DEFAULT 'C',
+  scope TEXT NOT NULL DEFAULT '',
+  payload_digest TEXT NOT NULL DEFAULT '',
+  expires_at TEXT,
+  amount_usd REAL,
   tool_input TEXT NOT NULL DEFAULT '{}',
   requested_by TEXT NOT NULL DEFAULT 'orchestrator',
   status TEXT NOT NULL DEFAULT 'pending',
   decision_note TEXT NOT NULL DEFAULT '',
   decided_by TEXT,
   decided_at TEXT,
+  consumed_at TEXT,
+  consumed_by TEXT,
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_os_approvals_ws ON os_approvals(workspace_id, status, created_at);
@@ -282,6 +289,42 @@ CREATE TABLE IF NOT EXISTS os_ai_usage (
 CREATE INDEX IF NOT EXISTS idx_os_ai_usage_created ON os_ai_usage(created_at);
 CREATE INDEX IF NOT EXISTS idx_os_ai_usage_provider ON os_ai_usage(provider, model);
 
+CREATE TABLE IF NOT EXISTS os_benchmark_runs (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  suite_version TEXT NOT NULL,
+  results TEXT NOT NULL,
+  summary TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_os_benchmark_runs_ws ON os_benchmark_runs(workspace_id, created_at);
+CREATE TABLE IF NOT EXISTS os_lessons (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  mission_id TEXT,
+  task_id TEXT,
+  title TEXT NOT NULL,
+  content TEXT NOT NULL,
+  evidence TEXT NOT NULL DEFAULT '[]',
+  status TEXT NOT NULL DEFAULT 'candidate',
+  confidence REAL NOT NULL DEFAULT 0,
+  version INTEGER NOT NULL DEFAULT 1,
+  provenance TEXT NOT NULL,
+  created_by TEXT NOT NULL,
+  promoted_by TEXT,
+  promoted_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_os_lessons_ws ON os_lessons(workspace_id, status, created_at);
+CREATE INDEX IF NOT EXISTS idx_os_lessons_mission ON os_lessons(workspace_id, mission_id);
+CREATE TABLE IF NOT EXISTS os_problem_profiles (
+  workspace_id TEXT NOT NULL,
+  mission_id TEXT NOT NULL REFERENCES os_missions(id) ON DELETE CASCADE,
+  profile TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (workspace_id, mission_id)
+);
 CREATE TABLE IF NOT EXISTS os_verifications (
   id TEXT PRIMARY KEY,
   workspace_id TEXT NOT NULL,
@@ -302,6 +345,36 @@ CREATE TABLE IF NOT EXISTS os_verifications (
 );
 CREATE INDEX IF NOT EXISTS idx_os_verifications_mission ON os_verifications(workspace_id, mission_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_os_verifications_task ON os_verifications(workspace_id, task_id, created_at);
+
+CREATE TABLE IF NOT EXISTS os_task_leases (
+  task_id TEXT PRIMARY KEY REFERENCES os_tasks(id) ON DELETE CASCADE,
+  mission_id TEXT NOT NULL,
+  workspace_id TEXT NOT NULL,
+  owner_id TEXT NOT NULL,
+  acquired_at TEXT NOT NULL,
+  heartbeat_at TEXT NOT NULL,
+  expires_at INTEGER NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_os_task_leases_expiry ON os_task_leases(expires_at);
+CREATE INDEX IF NOT EXISTS idx_os_task_leases_mission ON os_task_leases(workspace_id, mission_id);
+
+CREATE TABLE IF NOT EXISTS os_task_checkpoints (
+  id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL REFERENCES os_tasks(id) ON DELETE CASCADE,
+  mission_id TEXT NOT NULL,
+  workspace_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  attempt INTEGER NOT NULL,
+  status TEXT NOT NULL,
+  output_digest TEXT NOT NULL DEFAULT '',
+  evidence_digest TEXT NOT NULL DEFAULT '',
+  checkpoint TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(task_id, run_id)
+);
+CREATE INDEX IF NOT EXISTS idx_os_task_checkpoints_task ON os_task_checkpoints(workspace_id, task_id, created_at);
 
 CREATE TABLE IF NOT EXISTS os_runtime_leases (
   id TEXT PRIMARY KEY,
@@ -325,6 +398,13 @@ function migrate(db: OsDatabase): void {
   if (!has('os_memory', 'owner_id')) db.exec("ALTER TABLE os_memory ADD COLUMN owner_id TEXT NOT NULL DEFAULT ''");
   if (!has('os_memory', 'expires_at')) db.exec('ALTER TABLE os_memory ADD COLUMN expires_at TEXT');
   if (!has('os_agents', 'version')) db.exec('ALTER TABLE os_agents ADD COLUMN version INTEGER NOT NULL DEFAULT 1');
+  if (!has('os_approvals', 'action_class')) db.exec("ALTER TABLE os_approvals ADD COLUMN action_class TEXT NOT NULL DEFAULT 'C'");
+  if (!has('os_approvals', 'scope')) db.exec("ALTER TABLE os_approvals ADD COLUMN scope TEXT NOT NULL DEFAULT ''");
+  if (!has('os_approvals', 'payload_digest')) db.exec("ALTER TABLE os_approvals ADD COLUMN payload_digest TEXT NOT NULL DEFAULT ''");
+  if (!has('os_approvals', 'expires_at')) db.exec('ALTER TABLE os_approvals ADD COLUMN expires_at TEXT');
+  if (!has('os_approvals', 'amount_usd')) db.exec('ALTER TABLE os_approvals ADD COLUMN amount_usd REAL');
+  if (!has('os_approvals', 'consumed_at')) db.exec('ALTER TABLE os_approvals ADD COLUMN consumed_at TEXT');
+  if (!has('os_approvals', 'consumed_by')) db.exec('ALTER TABLE os_approvals ADD COLUMN consumed_by TEXT');
 }
 
 export function nowIso(): string {

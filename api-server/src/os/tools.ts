@@ -19,6 +19,8 @@ import { safeFetch } from '../lib/safe-fetch.js';
 import { solveAssignment, solveEmployeeSchedule, solveLp } from './ortools.js';
 import { PROBLEM_KINDS, selectAlgorithm } from './algorithms.js';
 import { classifyAction } from './actions.js';
+import { understandProblem } from './problem.js';
+import { getApproval, payloadDigest, actionScope } from './governance.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -34,6 +36,8 @@ export interface ToolContext {
   signal?: AbortSignal;
   missionId?: string;
   taskId?: string;
+  /** Set only after a class C approval was consumed by the orchestrator. */
+  approvedAction?: { approvalId: string; payloadDigest: string; scope: string };
 }
 
 export interface ToolDefinition {
@@ -736,6 +740,31 @@ const actionClassifySchema = z.object({
   expiresAt: z.string().datetime({ offset: true }).optional(),
 }).strict();
 
+const problemUnderstandSchema = z.object({
+  objective: z.string().trim().min(1).max(4000),
+  track: z.string().trim().min(1).max(40).optional(),
+}).strict();
+
+const problemUnderstandTool: ToolDefinition = {
+  id: 'meta.understand_problem',
+  name: 'Structured Problem Understanding',
+  description: 'Extracts explicit constraints, dependencies, resources, uncertainty, success criteria and algorithm features from an objective. Deterministic rules only; it does not claim semantic understanding.',
+  inputSchema: {
+    type: 'object',
+    properties: { objective: { type: 'string' }, track: { type: 'string' } },
+    required: ['objective'],
+    additionalProperties: false,
+  },
+  schema: problemUnderstandSchema,
+  permission: null,
+  risk: 'low',
+  environment: 'host',
+  timeoutMs: 5_000,
+  execute(input: z.infer<typeof problemUnderstandSchema>) {
+    return understandProblem(input);
+  },
+};
+
 const actionClassifyTool: ToolDefinition = {
   id: 'meta.classify_action',
   name: 'Action Classification',
@@ -832,6 +861,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   orgBuildTool,
   agentsCreateTool,
   algorithmSelectTool,
+  problemUnderstandTool,
   actionClassifyTool,
 ];
 
@@ -868,6 +898,26 @@ export async function runTool(id: string, rawInput: unknown, ctx: ToolContext): 
   if (missing.length) {
     audit(getOsDb(), { workspaceId: ctx.workspaceId, actor: ctx.actor, action: 'tool.denied', subject: id, detail: { missing } });
     return { ok: false, tool: id, error: `Missing permission(s) for ${id}: ${missing.join(', ')}`, durationMs: Date.now() - started };
+  }
+  if (tool.risk === 'high') {
+    const approved = ctx.approvedAction;
+    const expectedScope = actionScope(ctx.missionId, ctx.taskId, id);
+    const approval = approved?.approvalId ? getApproval(ctx.workspaceId, approved.approvalId) : null;
+    const valid = Boolean(
+      approved &&
+      approval &&
+      approval.status === 'approved' &&
+      approval.actionClass === 'C' &&
+      approval.scope === expectedScope &&
+      approval.payloadDigest === payloadDigest(rawInput ?? {}) &&
+      (!ctx.missionId || approval.missionId === ctx.missionId) &&
+      (!ctx.taskId || approval.taskId === ctx.taskId) &&
+      (!approval.expiresAt || Date.parse(approval.expiresAt) > Date.now()),
+    );
+    if (!valid) {
+      audit(getOsDb(), { workspaceId: ctx.workspaceId, actor: ctx.actor, action: 'tool.denied', subject: id, detail: { reason: 'approval_required_or_invalid', missionId: ctx.missionId ?? null, taskId: ctx.taskId ?? null } });
+      return { ok: false, tool: id, error: 'High-risk tool requires a valid, payload-bound approval', code: 'APPROVAL_REQUIRED', durationMs: Date.now() - started };
+    }
   }
   const parsed = tool.schema.safeParse(rawInput ?? {});
   if (!parsed.success) {

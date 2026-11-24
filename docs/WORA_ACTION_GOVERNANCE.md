@@ -1,6 +1,6 @@
 # WORA Action Governance
 
-**Status:** first classification slice implemented and locally tested. Enforcement of every class is not complete.  
+**Status:** classification and enforcement implemented for the current tool/action surface. See `WORA_GOVERNANCE_ENFORCEMENT.md` for binding, budgets and bypass defenses.
 **Source:** `api-server/src/os/actions.ts`, `api-server/src/os/tools.ts`, `api-server/src/os/router.ts`.
 
 ## 1. Classes
@@ -54,17 +54,22 @@ The same decision is available to agents as the low-risk core tool `meta.classif
 
 - The classifier validates action text, risk, amount bounds and ISO expiry.
 - It fails closed on invalid expiry or negative/oversized amounts.
-- High-risk tools in the orchestrator still use the existing human approval gate; class C classification is consistent with that gate.
+- High-risk and class C actions require an approval bound to the exact canonical payload, mission, task, tool, class and expiry.
+- Approvals are single-use; payload substitution, scope widening, cross-mission replay, expiry and self-approval fail closed.
+- Workspace budgets default to zero spend, 10 class C approvals per mission and a 60-minute TTL.
+- The orchestrator classifies each tool-backed task and consumes the approval before execution.
+- `runTool` refuses a high-risk tool without a valid approval; the direct tool API and extension executor refuse high-risk tools as well.
+- Autopilot cannot bypass class C.
 - Tool execution continues to require the existing permission, agent allowlist and capability profile.
 
 ## 5. What is not yet enforced
 
-- Class B policy checks are not yet a first-class durable record.
-- Class C approvals are not yet bound to a stored action payload digest, scope and expiry in the approval table; the existing approval stores the tool input but not a general action contract.
-- There is no action budget ledger, approval delegation, or automatic expiry sweeper.
-- The classifier is not yet called for every orchestrator action; it is currently available through the API and tool.
+- Class B is represented by the existing permission/allowlist policy check; there is no separate class B policy editor or durable policy decision record.
+- There is no multi-approver quorum, approval delegation or automatic expiry sweeper.
+- The amount budget applies when the payload contains a numeric `amountUsd`, `amount`, `budgetUsd` or `costUsd` field.
+- The UI does not yet render the digest, expiry and amount as a dedicated approval review panel.
 
-These are the remaining Phase 3 items and must not be described as complete.
+These are follow-up items and must not be described as complete.
 
 ## 6. Acceptance evidence
 

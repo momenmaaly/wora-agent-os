@@ -1,7 +1,7 @@
 # WORA Algorithm Catalog and Selection Layer
 
-**Catalog version:** `2026-11-24.1`  
-**Source of truth:** `api-server/src/os/algorithms.ts`  
+**Catalog version:** `2026-11-24.1`
+**Source of truth:** `api-server/src/os/algorithms.ts`
 **Rule:** only algorithms implemented and tested in this repository are advertised. Research candidates are not listed as production capabilities.
 
 ## 1. What the layer does

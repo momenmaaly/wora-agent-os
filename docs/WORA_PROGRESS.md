@@ -4,7 +4,7 @@
 **Branch:** `feat/extensions-subsystem`
 **HEAD at audit:** `a5a4e0a` — Remediate Phase 1 security findings F1–F13
 **Latest committed units:** `07d34f1` algorithm catalog; `6b5c483` verification records; `f965594` action classification
-**Working tree:** clean after the third unit
+**Working tree:** workstreams 1–6 implemented, pending final commit
 **Remote main at audit:** `a1ca08c`
 **Rule:** this file records only work verified by source inspection, commands, tests or live HTTP probes. It is not a marketing status page.
 
@@ -114,21 +114,84 @@ Added `api-server/src/os/actions.ts`:
 
 Evidence: `api-server/src/os/actions.test.ts` (8 tests). API suite after this unit: **132 tests, 131 passed, 1 skipped, 0 failed**.
 
-Limitation: the classifier is available to agents and the API but is not yet enforced for every orchestrator action. Class C approvals still use the existing high-risk tool gate; payload-digest, scope and expiry binding in the approval table is not yet implemented.
+Enforcement completed in workstream 1: payload-digest, scope, expiry, single-use consumption, budgets and tool-boundary guards are now live. See sections 4d–4i.
+
+## 4d. Workstream 1 — governance enforcement
+
+**Status:** implemented, tested and integrated.
+
+- `os_approvals` now stores action class, scope, canonical payload digest, expiry, amount, consumption and consumer.
+- High-risk actions always require approval; autopilot cannot bypass class C.
+- Approvals are single-use; payload substitution, scope widening, cross-mission replay and expired approvals fail closed.
+- `runTool` re-validates a high-risk approval at the registry boundary; direct API and extension execution paths refuse high-risk tools.
+- Workspace action budgets default to zero spend, 10 class C approvals per mission and a 60-minute approval TTL; `GET/POST /api/os/settings/action-budget`.
+- Evidence: `governance-enforcement.test.ts` (8 adversarial tests) plus the existing approval/denial mission tests.
+
+## 4e. Workstream 2 — durable autonomous runtime
+
+**Status:** first slice implemented, tested and integrated.
+
+- `os_task_leases`: atomic claim, owner, heartbeat, expiry; one active owner per task.
+- `os_task_checkpoints`: started/completed/failed/blocked per run, with output/evidence digests.
+- Orchestrator claims before execution, heartbeats during execution and releases in `finally`.
+- Pause, resume and cancel are persisted and exposed as real endpoints; cancel clears leases.
+- Restart recovery clears stale leases and leaves completed tasks intact.
+- A started-but-unfinished checkpoint blocks a duplicate side effect as `side_effect_uncertain`.
+- Evidence: `task-queue.test.ts` (8 tests), including expiry recovery, pause/resume, cancellation, restart and duplicate-side-effect protection.
+- Limit: the mission executor is still sequential; the claim layer supports multiple workers, but a fully concurrent mission scheduler is not implemented.
+
+## 4f. Workstream 3 — structured problem understanding
+
+**Status:** first slice implemented and persisted with missions.
+
+- `os/problem.ts` extracts domain, constraints, dependencies, resources, uncertainty, success criteria, missing information and ambiguity.
+- Structured features feed the real algorithm selector; unsupported nonlinear problems stay unsupported.
+- Profiles are stored in `os_problem_profiles` and returned with mission detail; `GET /api/os/missions/:id/problem`, `POST /api/os/problems/understand` and `meta.understand_problem`.
+- Deterministic fallback is explicit; no semantic-model claim.
+- Evidence: `problem.test.ts` (5 tests).
+
+## 4g. Workstream 4 — independent verification
+
+**Status:** implemented and integrated with the orchestrator.
+
+- API-contract, deterministic property, secret-leak and artifact-digest checks run after the executor.
+- The acceptance review and independent checks must both pass; failures cause a retry or an honest failed result.
+- Verification records now name `wora.verifier/independent` and include the independent checks and digest.
+- Evidence: `independent-verification.test.ts` (4 tests) plus the existing verification suite.
+
+## 4h. Workstream 5 — memory and experience learning
+
+**Status:** first slice implemented and tested.
+
+- Completed verified missions collect candidate lessons only.
+- Evaluation is explicit; promotion is an authorized action that writes semantic memory with provenance; rejection is explicit.
+- No candidate is auto-promoted.
+- Evidence: `lessons.test.ts` (4 tests).
+
+## 4i. Workstream 6 — scientific benchmarks
+
+**Status:** first reproducible suite implemented and measured.
+
+- 12-domain capability map with implemented/partial/missing lists.
+- Seven real fixtures: assignment, employee schedule, LP, seeded Monte Carlo, linear forecast, weighted decision and descriptive statistics.
+- Independent references/repeatability checks, measured time, limitations and persisted runs.
+- Sample run: 7/7 passed, 115.375 ms total on the development container (timing is environment-specific).
+- APIs: `GET /api/os/benchmarks/domains`, `POST /api/os/benchmarks/run`, `GET /api/os/benchmarks/runs`.
+- Evidence: `benchmarks.test.ts` (4 tests).
 
 ## 5. Next eligible tasks
 
 In dependency order:
 
-1. **Complete action-class governance**: persist action contracts with payload digest, scope and expiry; enforce B/C before every side effect; add budget ledger and expiry sweeper.
-2. **Durable execution queue**: lease-based worker claim, heartbeat, retry policy, cancellation and restart recovery; keep SQLite single-writer semantics.
-3. **Problem-understanding model**: structured problem profile with constraints, uncertainty, dependencies and confidence; feed the algorithm selector.
-4. **Skill context injection**: load assigned skill instructions into the planner/agent context with provenance and token budgets.
-5. **Benchmark suite**: reproducible task fixtures for assignment, scheduling, forecasting, decision analysis and verification; no fabricated results.
+1. **Expose the new controls in the UI**: action-budget editor, approval binding details, task leases/checkpoints, problem profile, lessons and benchmark results in the existing WORA management surfaces.
+2. **Skill context injection**: load assigned skill instructions into planner/agent context with provenance and token budgets; preserve the existing 19 specialist skills.
+3. **Fully concurrent mission scheduler**: use the durable claim layer to execute independent tasks in parallel with dependency ordering.
+4. **Lesson monitoring and revocation**: monitor promoted lessons after later failures and add a governed revoke path.
+5. **Broader benchmarks**: planning quality, recovery success, verification accuracy, human intervention and safety violations.
 
 ## 6. Current evidence and limitations
 
-After the algorithm unit: **API 120 tests: 119 passed, 1 skipped, 0 failed**. After the verification unit: **API 124 tests: 123 passed, 1 skipped, 0 failed**. After the action-classification unit: **API 132 tests: 131 passed, 1 skipped, 0 failed**. API typecheck and build pass.
+After the algorithm unit: **API 120 tests: 119 passed, 1 skipped, 0 failed**. After the verification unit: **API 124 tests: 123 passed, 1 skipped, 0 failed**. After workstreams 1–6: **API 167 tests: 166 passed, 1 skipped, 0 failed**. API typecheck and build pass. Client remains **44/44 passed**, with typecheck and build green.
 
 - The first unit is locally tested; it is not yet exercised by a live external marketplace or a model-driven planner.
 - The selector is deterministic and intentionally conservative. It does not claim semantic understanding of arbitrary natural language.

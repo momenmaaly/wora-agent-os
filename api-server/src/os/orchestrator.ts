@@ -9,9 +9,11 @@
  */
 import { writeFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { getOsDb, newId, nowIso, parseJson, audit } from './db.js';
 import { runTool, getTool, type ToolContext } from './tools.js';
-import { requiresHumanApproval, createApproval, getTaskApproval, listMissionApprovals } from './governance.js';
+import { requiresHumanApproval, createApproval, getTaskApproval, listMissionApprovals, consumeApproval, actionScope, extractAmount } from './governance.js';
+import { classifyAction } from './actions.js';
 import { maybeDistillPlaybook, findPlaybookFor, recordPlaybookReuse } from './playbooks.js';
 import { listAgents, pickAgent, ensureSeedAgents, type AgentRecord } from './registry.js';
 import { addMemory } from './memory.js';
@@ -20,10 +22,14 @@ import { resolveAndSnapshot, authorizeTool } from '../extensions/capabilities.js
 import { listRegisteredTools, listCapabilitySnapshots } from '../extensions/store.js';
 import { selectAlgorithm } from './algorithms.js';
 import { recordVerification, listVerifications } from './verification.js';
+import { claimTask, heartbeatTask, releaseTaskLease, checkpointTask, latestTaskCheckpoint, listTaskLeases, clearMissionLeases, recoverExpiredTaskLeases } from './task-queue.js';
+import { understandProblem, saveProblemProfile, getProblemProfile } from './problem.js';
+import { verifyIndependently } from './independent-verification.js';
+import { collectCandidateLessons } from './lessons.js';
 import { logger } from '../lib/logger.js';
 
-export type MissionStatus = 'planning' | 'running' | 'awaiting_approval' | 'completed' | 'failed';
-export type TaskStatus = 'created' | 'planned' | 'assigned' | 'running' | 'reviewing' | 'completed' | 'failed' | 'blocked';
+export type MissionStatus = 'planning' | 'running' | 'awaiting_approval' | 'paused' | 'cancelled' | 'completed' | 'failed';
+export type TaskStatus = 'created' | 'planned' | 'assigned' | 'running' | 'reviewing' | 'completed' | 'failed' | 'blocked' | 'cancelled';
 
 interface PlanTask {
   title: string;
@@ -324,6 +330,7 @@ export function createMission(input: { workspaceId: string; objective: string; a
   if (!objective) throw new Error('Objective is required');
   ensureSeedAgents(input.workspaceId);
   const db = getOsDb();
+  const problem = understandProblem({ objective, track: input.track });
   const plan = buildPlan(objective, input.track, input.workspaceId);
   const missionId = newId('msn');
   const ts = nowIso();
@@ -346,12 +353,13 @@ export function createMission(input: { workspaceId: string; objective: string; a
     for (const [index, task] of plan.entries()) {
       if (task.dependsOn.length) updateDeps.run(JSON.stringify(task.dependsOn.map((i) => taskIds[i]!)), taskIds[index]!);
     }
+    saveProblemProfile(input.workspaceId, missionId, problem);
     db.exec('COMMIT');
   } catch (err) {
     db.exec('ROLLBACK');
     throw err;
   }
-  audit(db, { workspaceId: input.workspaceId, actor: input.actor ?? 'user', action: 'mission.create', subject: missionId, detail: { objective: objective.slice(0, 300), tasks: plan.length } });
+  audit(db, { workspaceId: input.workspaceId, actor: input.actor ?? 'user', action: 'mission.create', subject: missionId, detail: { objective: objective.slice(0, 300), tasks: plan.length, domain: problem.domain, algorithmStatus: problem.algorithmSelection.status } });
   return missionId;
 }
 
@@ -401,13 +409,16 @@ const digest = (value: unknown, cap = 6000): string => {
   try { const s = JSON.stringify(value); return s.length > cap ? `${s.slice(0, cap)}…[truncated ${s.length - cap} chars]` : s; } catch { return '[unserializable]'; }
 };
 
-export async function executeMission(missionId: string, actor = 'orchestrator'): Promise<void> {
+export async function executeMission(missionId: string, actor = 'orchestrator', options: { workerId?: string; leaseTtlMs?: number; maxAttempts?: number } = {}): Promise<void> {
   const db = getOsDb();
   const mission = db.prepare('SELECT * FROM os_missions WHERE id = ?').get(missionId) as { id: string; workspace_id: string; objective: string; status: string } | undefined;
   if (!mission) throw new Error(`Mission ${missionId} not found`);
-  // Completed missions never re-run. Failed/awaiting missions re-enter: completed tasks are skipped,
-  // the failed/blocked ones re-plan from their stored objective (retry after a fix or a restart).
-  if (mission.status === 'completed') return;
+  // Completed, paused and cancelled missions never run. Failed/awaiting missions
+  // re-enter: completed tasks are skipped and the failed/blocked ones retry.
+  if (mission.status === 'completed' || mission.status === 'paused' || mission.status === 'cancelled') return;
+  const workerId = options.workerId ?? `wora-worker:${os.hostname()}:${process.pid}`;
+  const leaseTtlMs = options.leaseTtlMs ?? 30_000;
+  const maxAttempts = Math.min(Math.max(options.maxAttempts ?? 2, 1), 5);
   db.prepare('UPDATE os_missions SET status = ?, updated_at = ? WHERE id = ?').run('running', nowIso(), missionId);
 
   const tasks = db.prepare('SELECT * FROM os_tasks WHERE mission_id = ? ORDER BY order_index ASC').all(missionId) as unknown as TaskRow[];
@@ -415,6 +426,8 @@ export async function executeMission(missionId: string, actor = 'orchestrator'):
   let failed = false;
 
   for (const task of tasks) {
+    const liveMission = db.prepare('SELECT status FROM os_missions WHERE id = ?').get(missionId) as { status?: string } | undefined;
+    if (!liveMission || liveMission.status === 'paused' || liveMission.status === 'cancelled' || liveMission.status === 'completed') return;
     const deps = parseJson<string[]>(task.depends_on, []);
     const blockedBy = deps.filter((id) => !completed.has(id));
     const depRows = deps.map((id) => tasks.find((t) => t.id === id));
@@ -435,21 +448,51 @@ export async function executeMission(missionId: string, actor = 'orchestrator'):
     }
     db.prepare('UPDATE os_tasks SET status = ?, agent_id = ?, updated_at = ? WHERE id = ?').run('assigned', agent.id, nowIso(), task.id);
 
-    /* High-risk tools pause for an explicit human decision on the exact payload. */
+    /* Governance: classify the action, bind any approval to the exact payload,
+       scope and expiry, and fail closed on uncertainty. High-risk actions
+       always require approval; autopilot cannot bypass class C. */
     const toolDef = task.tool ? getTool(task.tool) : null;
-    if (toolDef && requiresHumanApproval(mission.workspace_id, toolDef.risk)) {
+    const taskInput = parseJson<Record<string, unknown>>(task.tool_input, {});
+    const scope = toolDef ? actionScope(missionId, task.id, toolDef.id) : actionScope(missionId, task.id, null);
+    const amountUsd = extractAmount(taskInput);
+    const actionClass = toolDef
+      ? classifyAction({ action: task.title, risk: toolDef.risk, reversible: toolDef.risk !== 'high', scope, amountUsd })
+      : null;
+    let approvedAction: ToolContext['approvedAction'] | undefined;
+    if (toolDef && requiresHumanApproval(mission.workspace_id, toolDef.risk, {
+      action: task.title, reversible: toolDef.risk !== 'high', scope, amountUsd,
+    })) {
       const existing = getTaskApproval(mission.workspace_id, task.id);
+      if (existing?.expiresAt && Date.parse(existing.expiresAt) <= Date.now()) {
+        db.prepare('UPDATE os_tasks SET status = ?, detail = ?, updated_at = ? WHERE id = ?')
+          .run('failed', 'Approval expired before execution — request a new approval', nowIso(), task.id);
+        failed = true;
+        continue;
+      }
       if (!existing || existing.status === 'pending') {
-        const approval = existing ?? createApproval({
-          workspaceId: mission.workspace_id,
-          missionId,
-          taskId: task.id,
-          toolId: toolDef.id,
-          actionSummary: `${agent.name} يطلب تنفيذ ${toolDef.id} من نوع "${task.title}" قبل المتابعة`,
-          risk: toolDef.risk,
-          toolInput: parseJson(task.tool_input, {}),
-          requestedBy: agent.name,
-        });
+        let approval;
+        try {
+          approval = existing ?? createApproval({
+            workspaceId: mission.workspace_id,
+            missionId,
+            taskId: task.id,
+            toolId: toolDef.id,
+            actionSummary: `${agent.name} يطلب تنفيذ ${toolDef.id} من نوع "${task.title}" قبل المتابعة`,
+            risk: toolDef.risk,
+            toolInput: taskInput,
+            requestedBy: agent.name,
+            actionClass: actionClass?.class ?? 'C',
+            scope,
+            amountUsd,
+          });
+        } catch (err) {
+          const reason = err instanceof Error ? err.message : 'Approval could not be created';
+          db.prepare('UPDATE os_tasks SET status = ?, detail = ?, updated_at = ? WHERE id = ?')
+            .run('failed', `Approval blocked: ${reason}`.slice(0, 500), nowIso(), task.id);
+          audit(db, { workspaceId: mission.workspace_id, actor: agent.name, action: 'approval.blocked', subject: task.id, detail: { missionId, reason, scope } });
+          failed = true;
+          continue;
+        }
         db.prepare('UPDATE os_tasks SET status = ?, detail = ?, updated_at = ? WHERE id = ?')
           .run('blocked', `awaiting_approval:${approval.id}`, nowIso(), task.id);
         continue;
@@ -460,8 +503,36 @@ export async function executeMission(missionId: string, actor = 'orchestrator'):
         failed = true;
         continue;
       }
-      // approved → fall through into normal execution with evidence and review
+      try {
+        const consumed = consumeApproval(mission.workspace_id, existing.id, {
+          payload: taskInput, scope, actionClass: actionClass?.class ?? 'C', actor: agent.name,
+          missionId, taskId: task.id,
+        });
+        approvedAction = { approvalId: consumed.id, payloadDigest: consumed.payloadDigest, scope: consumed.scope };
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : 'Approval binding failed';
+        db.prepare('UPDATE os_tasks SET status = ?, detail = ?, updated_at = ? WHERE id = ?')
+          .run('failed', `Approval rejected: ${reason}`.slice(0, 500), nowIso(), task.id);
+        audit(db, { workspaceId: mission.workspace_id, actor: agent.name, action: 'approval.rejected', subject: task.id, detail: { missionId, reason, scope, approvalId: existing.id } });
+        failed = true;
+        continue;
+      }
     }
+
+    const lease = claimTask({ workspaceId: mission.workspace_id, taskId: task.id, missionId, ownerId: workerId, ttlMs: leaseTtlMs });
+    if (!lease) continue;
+    const heartbeat = setInterval(() => {
+      try { heartbeatTask({ workspaceId: mission.workspace_id, taskId: task.id, ownerId: workerId, ttlMs: leaseTtlMs }); } catch { /* lease recovery handles failure */ }
+    }, Math.max(1_000, Math.floor(leaseTtlMs / 3)));
+    heartbeat.unref?.();
+    try {
+      const priorCheckpoint = latestTaskCheckpoint(mission.workspace_id, task.id);
+      if (priorCheckpoint?.status === 'started') {
+        db.prepare('UPDATE os_tasks SET status = ?, detail = ?, updated_at = ? WHERE id = ?')
+          .run('blocked', 'side_effect_uncertain — a prior attempt started but did not record completion; manual review is required', nowIso(), task.id);
+        failed = true;
+        continue;
+      }
 
     let attempt = 1;
     let reviewPassed = false;
@@ -471,9 +542,10 @@ export async function executeMission(missionId: string, actor = 'orchestrator'):
     let lastDuration = 0;
     let lastProfile: ReturnType<typeof resolveAndSnapshot> | null = null;
 
-    while (attempt <= 2 && !reviewPassed) {
+    while (attempt <= maxAttempts && !reviewPassed) {
       const startedAt = nowIso();
       const runId = newId('run');
+      checkpointTask({ workspaceId: mission.workspace_id, taskId: task.id, missionId, runId, attempt, status: 'started', checkpoint: { tool: task.tool, attempt } });
       db.prepare('UPDATE os_tasks SET status = ?, updated_at = ? WHERE id = ?').run('running', nowIso(), task.id);
       db.prepare('INSERT INTO os_runs (id, task_id, mission_id, workspace_id, agent_id, status, started_at, attempt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
         .run(runId, task.id, missionId, mission.workspace_id, agent.id, 'running', startedAt, attempt);
@@ -491,6 +563,7 @@ export async function executeMission(missionId: string, actor = 'orchestrator'):
           db.prepare('UPDATE os_runs SET status = ?, finished_at = ?, summary = ?, evidence = ?, issues = ? WHERE id = ?')
             .run('failed', nowIso(), `Capability denied: ${reason}`, JSON.stringify(lastEvidence), JSON.stringify(lastIssues), runId);
           audit(db, { workspaceId: mission.workspace_id, actor: agent.name, action: 'capability.denied', subject: task.tool, detail: { missionId, taskId: task.id, reason, digest: profile.digest } });
+          checkpointTask({ workspaceId: mission.workspace_id, taskId: task.id, missionId, runId, attempt, status: 'blocked', evidence: lastEvidence, checkpoint: { reason } });
           recordVerification({
             workspaceId: mission.workspace_id, missionId, taskId: task.id, runId,
             objective: task.objective, acceptanceCriteria: parseJson<string[]>(task.acceptance, []),
@@ -509,8 +582,9 @@ export async function executeMission(missionId: string, actor = 'orchestrator'):
         toolAllowlist: new Set(profile.tools),
         missionId,
         taskId: task.id,
+        approvedAction,
       };
-      const toolInput = parseJson<Record<string, unknown>>(task.tool_input, {});
+      const toolInput = taskInput;
       const result = task.tool
         ? await runTool(task.tool, toolInput, ctx)
         : { ok: false, tool: 'none', error: 'No tool assigned to task', durationMs: 0 } as Awaited<ReturnType<typeof runTool>>;
@@ -518,22 +592,30 @@ export async function executeMission(missionId: string, actor = 'orchestrator'):
       lastOutput = result.output ?? null;
       lastDuration = result.durationMs;
       const review = reviewRun(task, result.ok, result.output, result.error ?? null);
-      reviewPassed = review.passed;
-      lastIssues = review.issues;
+      const independent = verifyIndependently({ tool: task.tool, toolInput, toolOk: result.ok, output: result.output, error: result.error ?? null, evidence: lastEvidence });
+      reviewPassed = review.passed && independent.passed;
+      lastIssues = [...review.issues, ...independent.failures];
       lastEvidence = [{
         tool: result.tool, ok: result.ok, durationMs: result.durationMs, output: result.ok ? result.output : undefined,
         error: result.error, reviewAttempt: attempt,
+        artifactDigest: independent.artifactDigest,
+        independentChecks: independent.checks,
         capabilityDigest: lastProfile?.digest ?? null,
         skills: lastProfile?.skills.map((skill) => `${skill.key}@${skill.version}`) ?? [],
         plugins: lastProfile?.plugins.map((plugin) => `${plugin.key}@${plugin.version}`) ?? [],
       }];
 
       db.prepare('UPDATE os_runs SET status = ?, finished_at = ?, summary = ?, evidence = ?, issues = ? WHERE id = ?')
-        .run(reviewPassed ? 'completed' : attempt === 2 ? 'failed' : 'retrying', nowIso(),
+        .run(reviewPassed ? 'completed' : attempt === maxAttempts ? 'failed' : 'retrying', nowIso(),
           reviewPassed ? `Completed by ${agent.name}${attempt > 1 ? ` (after ${attempt} attempts)` : ''}` : `Review failed: ${review.issues.join('; ')}`,
           JSON.stringify(lastEvidence).slice(0, 60_000),
           JSON.stringify(review.issues),
           runId);
+      checkpointTask({
+        workspaceId: mission.workspace_id, taskId: task.id, missionId, runId, attempt,
+        status: reviewPassed ? 'completed' : 'failed', output: lastOutput, evidence: lastEvidence,
+        checkpoint: { tool: result.tool, ok: result.ok, reviewPassed, issues: review.issues },
+      });
 
       recordVerification({
         workspaceId: mission.workspace_id, missionId, taskId: task.id, runId,
@@ -544,11 +626,12 @@ export async function executeMission(missionId: string, actor = 'orchestrator'):
         evidence: lastEvidence,
         checks: [
           { id: 'tool-execution', kind: 'runtime', description: 'The assigned tool completed without an execution error', status: result.ok ? 'passed' : 'failed', evidence: result.ok ? `${result.tool} returned in ${result.durationMs} ms` : (result.error ?? 'unknown tool error') },
-          { id: 'acceptance-review', kind: 'acceptance', description: 'Deterministic acceptance review over the actual output and evidence', status: reviewPassed ? 'passed' : 'failed', evidence: review.issues.join('; ') || 'All deterministic acceptance checks passed.' },
+          { id: 'acceptance-review', kind: 'acceptance', description: 'Deterministic acceptance review over the actual output and evidence', status: review.passed ? 'passed' : 'failed', evidence: review.issues.join('; ') || 'All deterministic acceptance checks passed.' },
+          ...independent.checks,
         ],
         result: reviewPassed ? 'passed' : 'failed',
-        failureReason: reviewPassed ? '' : review.issues.join('; '),
-        verifier: 'wora.orchestrator/reviewRun',
+        failureReason: reviewPassed ? '' : lastIssues.join('; '),
+        verifier: 'wora.verifier/independent',
       });
 
       if (!reviewPassed) attempt += 1;
@@ -590,14 +673,23 @@ export async function executeMission(missionId: string, actor = 'orchestrator'):
       db.prepare('UPDATE os_tasks SET status = ?, updated_at = ? WHERE id = ?').run('failed', nowIso(), task.id);
       failed = true;
     }
+    } finally {
+      clearInterval(heartbeat);
+      releaseTaskLease({ workspaceId: mission.workspace_id, taskId: task.id, ownerId: workerId });
+    }
   }
 
+  // Another worker may still hold tasks from this mission; never finalize over it.
+  if (listTaskLeases(mission.workspace_id, missionId).length > 0) return;
   finalizeMission(missionId, actor);
   // Self-building intelligence: distill this mission's validated OR runs into reusable playbooks.
   try {
     await maybeDistillPlaybook({ workspaceId: mission.workspace_id, missionId, objective: mission.objective, actor });
+    if (getMissionDetail(mission.workspace_id, missionId)?.status === 'completed') {
+      collectCandidateLessons(mission.workspace_id, missionId, actor);
+    }
   } catch (err) {
-    logger.warn({ err, missionId }, 'playbook distillation failed (mission unaffected)');
+    logger.warn({ err, missionId }, 'playbook or lesson collection failed (mission unaffected)');
   }
 }
 
@@ -682,8 +774,10 @@ function finalizeMission(missionId: string, actor: string): void {
  */
 export function markInterruptedMissions(): number {
   const db = getOsDb();
+  recoverExpiredTaskLeases();
   const stale = db.prepare("SELECT id, workspace_id FROM os_missions WHERE status IN ('running', 'planning')").all() as Array<{ id: string; workspace_id: string }>;
   for (const mission of stale) {
+    clearMissionLeases(mission.workspace_id, mission.id);
     db.prepare("UPDATE os_tasks SET status = 'blocked', detail = 'interrupted_by_restart — resume the mission to re-execute this task', updated_at = ? WHERE mission_id = ? AND status IN ('running', 'assigned', 'reviewing', 'planned', 'created')")
       .run(nowIso(), mission.id);
     db.prepare("UPDATE os_runs SET status = 'interrupted', finished_at = ?, summary = 'Interrupted by process restart' WHERE mission_id = ? AND status = 'running'")
@@ -693,6 +787,37 @@ export function markInterruptedMissions(): number {
     audit(db, { workspaceId: mission.workspace_id, actor: 'system', action: 'mission.interrupted', subject: mission.id, detail: { reason: 'process restart' } });
   }
   return stale.length;
+}
+
+/** Pause before the next task boundary. Running tool calls are not aborted. */
+export function pauseMission(workspaceId: string, missionId: string, actor: string): boolean {
+  const db = getOsDb();
+  const result = db.prepare("UPDATE os_missions SET status = 'paused', updated_at = ? WHERE workspace_id = ? AND id = ? AND status NOT IN ('completed', 'cancelled')")
+    .run(nowIso(), workspaceId, missionId);
+  if (Number(result.changes) > 0) audit(db, { workspaceId, actor, action: 'mission.pause', subject: missionId, detail: {} });
+  return Number(result.changes) > 0;
+}
+
+/** Resume a paused or failed mission; the caller then invokes executeMission. */
+export function resumeMission(workspaceId: string, missionId: string, actor: string): boolean {
+  const db = getOsDb();
+  const result = db.prepare("UPDATE os_missions SET status = 'running', updated_at = ? WHERE workspace_id = ? AND id = ? AND status IN ('paused', 'failed', 'awaiting_approval')")
+    .run(nowIso(), workspaceId, missionId);
+  if (Number(result.changes) > 0) audit(db, { workspaceId, actor, action: 'mission.resume', subject: missionId, detail: {} });
+  return Number(result.changes) > 0;
+}
+
+/** Cancel a mission and invalidate any task leases so no worker can continue it. */
+export function cancelMission(workspaceId: string, missionId: string, actor: string): boolean {
+  const db = getOsDb();
+  const result = db.prepare("UPDATE os_missions SET status = 'cancelled', summary = 'Cancelled by an operator.', updated_at = ? WHERE workspace_id = ? AND id = ? AND status NOT IN ('completed', 'cancelled')")
+    .run(nowIso(), workspaceId, missionId);
+  if (Number(result.changes) > 0) {
+    clearMissionLeases(workspaceId, missionId);
+    db.prepare("UPDATE os_tasks SET status = 'cancelled', updated_at = ? WHERE mission_id = ? AND status NOT IN ('completed', 'cancelled')").run(nowIso(), missionId);
+    audit(db, { workspaceId, actor, action: 'mission.cancel', subject: missionId, detail: {} });
+  }
+  return Number(result.changes) > 0;
 }
 
 /* ─── Read models ───────────────────────────────────────── */
@@ -735,6 +860,7 @@ export function getMissionDetail(workspaceId: string, missionId: string) {
   const approvals = listMissionApprovals(workspaceId, missionId);
   return {
     approvals,
+    problemProfile: getProblemProfile(workspaceId, missionId),
     verifications: listVerifications(workspaceId, { missionId, limit: 100 }),
     capabilitySnapshots: listCapabilitySnapshots(workspaceId, { missionId, limit: 100 }),
     id: mission.id,

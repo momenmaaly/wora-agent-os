@@ -10,13 +10,19 @@ An in-process execution platform behind the product surface:
 
 - **Execution engine** (`api-server/src/os/orchestrator.ts`): objective → understand → decompose →
   assign → execute → review → deliver. Every mission/task/run/handoff is persisted in SQLite.
+- **Durable task runtime** (`os/task-queue.ts`): atomic task claims, expiring worker leases, heartbeats,
+  per-run checkpoints, pause/resume/cancel, restart recovery and conservative side-effect uncertainty.
+- **Structured problem understanding** (`os/problem.ts`): persisted domain, constraints, dependencies,
+  resources, uncertainty, success criteria, missing information and algorithm features. Deterministic rules,
+  not a semantic-model claim.
 - **Persistent agent registry** (`os/registry.ts`): 18 seeded specializations plus user-created and
   organization-created agents. Agents carry identity, role, skills, tools, permissions, model config,
   limits, instructions, status and evaluation criteria. They are executable entities, not profile cards.
-- **Unified tool registry** (`os/tools.ts`, `os/scaffold.ts`, `os/ortools.ts`): 19 tools, each with a
+- **Unified tool registry** (`os/tools.ts`, `os/scaffold.ts`, `os/ortools.ts`): 20 tools, each with a
   JSON-schema contract, risk tier, required permission, environment and timeout; audited on every call.
   `meta.select_algorithm` exposes the deterministic algorithm selector over the real solvers;
-  `meta.classify_action` classifies actions into A/B/C before execution.
+  `meta.classify_action` classifies actions into A/B/C before execution;
+  `meta.understand_problem` extracts structured constraints, uncertainty and algorithm features.
 - **Algorithm selection** (`os/algorithms.ts`): a versioned catalog of implemented algorithms plus a
   deterministic selector (`meta.select_algorithm`, `GET /api/os/algorithms`, `POST /api/os/algorithms/select`).
   It returns required inputs, guarantees, verification checks, limitations and alternatives, and fails closed
@@ -52,15 +58,20 @@ An in-process execution platform behind the product surface:
   (observations + scenario runs, cap 200) and what-if scenarios that re-run the seeded Monte Carlo
   simulator with adjusted drivers — baseline-vs-scenario p10/p50/p90/mean deltas, always labeled
   `simulated: true`. Intelligence → التوائم الرقمية wires the full flow.
+- **Experience learning** (`os/lessons.ts`): completed verified episodes produce candidate lessons;
+  evaluation is explicit; promotion is an authorized action that writes semantic memory with provenance.
+  Nothing is auto-promoted.
+- **Scientific benchmarks** (`os/benchmarks.ts`): 12-domain capability map and seven reproducible fixtures
+  with independent references, measured time, limitations and persisted runs.
 - **Playbook planner preference** (`os/playbooks.ts` + planner): the OR planner checks validated playbooks
   (Jaccard ≥ 0.5 on tokens) before falling back to the bundled SAMPLE roster; reuses are counted
   (`reuse_count`) and surfaced in the Intelligence playbooks tab.
-- **Verification records** (`os/verification.ts` + `os_verifications`): every run attempt persists objective, acceptance criteria, expected/actual output, evidence, structured checks, result, failure reason and verifier identity. Mission detail and `GET /api/os/missions/:id/verifications` expose them.
-- **Action classification** (`os/actions.ts`): A/B/C decision support with payload-binding and expiry rules; `POST /api/os/actions/classify` and `meta.classify_action`. Enforcement of every class is still pending.
-- **Governance** (`os/governance.ts`): human approval gate for high-risk tools (balanced policy by default —
-  `host.exec` pauses a mission until a person approves the exact payload; approving auto-resumes the mission),
-  per-workspace autonomy policy (`balanced` | explicit `autopilot`) stored in `os_settings`, and revocable
-  device connections (one-time hashed pairing codes, single-use redeem, terminal revoke, full audit trail).
+- **Verification records** (`os/verification.ts` + `os_verifications`): every run attempt persists objective, acceptance criteria, expected/actual output, evidence, structured checks, result, failure reason and verifier identity. Independent checks (`os/independent-verification.ts`) add API-contract, deterministic property, secret-leak and artifact-digest checks; mission detail and `GET /api/os/missions/:id/verifications` expose them.
+- **Action classification and enforcement** (`os/actions.ts`, `os/governance.ts`): A/B/C classification, payload-bound approvals, scope, expiry, single-use consumption, budgets and a tool-registry guard. High-risk tools cannot bypass approval through autopilot, the direct tool API or the extension executor. `POST /api/os/actions/classify`, `meta.classify_action`, `POST /api/os/settings/action-budget`.
+- **Governance** (`os/governance.ts`): payload-digest-bound, expiring, single-use approvals for high-risk
+  tools; the requester cannot self-approve; autopilot cannot bypass class C; per-workspace amount and
+  approval budgets; revocable device connections (one-time hashed pairing codes, single-use redeem,
+  terminal revoke, full audit trail).
 - **Artifact generation** (`os/scaffold.ts`): `scaffold.webapp` writes a complete zero-dependency web app
   (kanban UI + Node http JSON API + `node --test` suite) into the sandboxed workspace and **runs the suite**;
   `host.exec` re-runs exactly `node --test` as an allowlisted verification step. The QA gate requires a green
@@ -123,19 +134,21 @@ The **Executive Command bar** at the bottom of every screen now launches a real 
 - All tool executions audited (`os_audit`); memory writes/deletes audited; agent create/update/delete audited.
 - No secrets in the client; OS core never sees provider keys. `/api/os/tools/:id/execute` refuses high-risk tools.
 - Sandboxed writes: generated apps and reports live under `WORA_WORKSPACE/<workspaceId>`; path traversal rejected.
-- Human approvals: high-risk tool executions require explicit approval in `balanced` mode; approvals carry the exact payload; decisions are audited; denials fail the task.
+- Human approvals: high-risk tool executions require explicit approval in every autonomy mode; approvals carry the exact canonical payload, scope and expiry, are single-use and are rechecked at the tool boundary; decisions and consumption are audited; denials fail the task.
 - Device connections: pairing codes are single-use and stored hashed (SHA-256); revocation is terminal; both are audited. No device is ever marked inspected unless it redeemed a code.
 
 ## Test results (this branch)
 
-- `api-server`: full suite **132 tests: 131 pass, 1 skipped** (Mongo integration, opt-in), 0 failed —
+- `api-server`: full suite **167 tests: 166 pass, 1 skipped** (Mongo integration, opt-in), 0 failed —
   `npm test`. Coverage includes solvers, tools, memory isolation + ACL + TTL + version snapshots, registry
   and agent versions, orchestrator journeys 1–5 + failure/approval/denial paths, autonomy policy, device
   pairing, RBAC, boards, digital twins, playbook reuse, SQLite lease fencing, extensions, and the new
   algorithm catalog/selector (catalog integrity, explicit/feature/keyword precedence, fail-closed
   nonlinear/unknown handling, tool execution and HTTP routes), and verification records (passed,
-  explicit failure, blocked capability denial, workspace isolation and HTTP routes), and action
-  classification (A/B/C escalation, expiry and amount validation, tool and HTTP routes).
+  explicit failure, blocked capability denial, workspace isolation and HTTP routes), action
+  classification and enforcement (binding, replay, expiry, budgets, bypass attempts), durable task
+  leases/checkpoints, structured problem understanding, independent verification, lesson promotion
+  controls and reproducible benchmarks.
 - `client`: 44/44 pass — `npm test`; typecheck + production build green.
 - Production bundle builds: client `npm run build`, api-server `npm run build`.
 

@@ -37,6 +37,7 @@ export interface ActionClassification {
   allowedAutomatically: boolean;
   allowedAfterPolicyCheck: boolean;
   payloadBinding: 'exact' | 'scope';
+  amountUsd: number | null;
   scope: string;
   expiresAt: string | null;
   reasons: string[];
@@ -105,6 +106,7 @@ export function classifyAction(input: ActionClassificationInput): ActionClassifi
     allowedAutomatically: actionClass === 'A',
     allowedAfterPolicyCheck: actionClass === 'B',
     payloadBinding: actionClass === 'C' ? 'exact' : 'scope',
+    amountUsd: input.amountUsd ?? null,
     scope: (input.scope ?? 'workspace').slice(0, 200),
     expiresAt,
     reasons,

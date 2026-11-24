@@ -13,12 +13,85 @@
  */
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { getOsDb, newId, nowIso, audit, parseJson, type OsDatabase } from './db.js';
+import { classifyAction, type ActionClass, type ActionClassificationInput, type ActionRisk } from './actions.js';
 
 export type AutonomyPolicy = 'balanced' | 'autopilot';
 export type ApprovalStatus = 'pending' | 'approved' | 'denied';
 
 const AUTONOMY_KEY = 'autonomy_policy';
+const ACTION_BUDGET_KEY = 'action_budget';
 const sha256 = (value: string) => createHash('sha256').update(value, 'utf8').digest('base64url');
+
+export interface ActionBudget {
+  maxAmountUsd: number;
+  maxApprovalsPerMission: number;
+  approvalTtlMinutes: number;
+}
+
+const DEFAULT_ACTION_BUDGET: ActionBudget = {
+  maxAmountUsd: 0,
+  maxApprovalsPerMission: 10,
+  approvalTtlMinutes: 60,
+};
+
+/** Stable canonical JSON so a payload digest does not depend on key order. */
+function canonical(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, entry]) => [key, canonical(entry)]));
+  }
+  return value;
+}
+
+export function payloadDigest(value: unknown): string {
+  return sha256(JSON.stringify(canonical(value ?? {})));
+}
+
+export function actionScope(missionId?: string | null, taskId?: string | null, toolId?: string | null): string {
+  if (!missionId && !taskId && !toolId) return 'workspace';
+  return `mission:${missionId ?? 'none'}:task:${taskId ?? 'none'}:tool:${toolId ?? 'none'}`;
+}
+
+export function extractAmount(toolInput: unknown): number | undefined {
+  if (!toolInput || typeof toolInput !== 'object') return undefined;
+  const record = toolInput as Record<string, unknown>;
+  for (const key of ['amountUsd', 'amount', 'budgetUsd', 'costUsd']) {
+    const value = record[key];
+    if (typeof value === 'number' && Number.isFinite(value) && value >= 0) return value;
+  }
+  return undefined;
+}
+
+export function getActionBudget(workspaceId: string): ActionBudget {
+  const row = getOsDb().prepare('SELECT value FROM os_settings WHERE workspace_id = ? AND key = ?').get(workspaceId, ACTION_BUDGET_KEY) as { value?: string } | undefined;
+  const parsed = parseJson<Partial<ActionBudget>>(row?.value, {});
+  const number = (value: unknown, fallback: number, min: number) =>
+    typeof value === 'number' && Number.isFinite(value) && value >= min ? value : fallback;
+  return {
+    maxAmountUsd: number(parsed.maxAmountUsd, DEFAULT_ACTION_BUDGET.maxAmountUsd, 0),
+    maxApprovalsPerMission: number(parsed.maxApprovalsPerMission, DEFAULT_ACTION_BUDGET.maxApprovalsPerMission, 1),
+    approvalTtlMinutes: number(parsed.approvalTtlMinutes, DEFAULT_ACTION_BUDGET.approvalTtlMinutes, 1),
+  };
+}
+
+export function setActionBudget(workspaceId: string, budget: Partial<ActionBudget>, actor: string): ActionBudget {
+  const current = getActionBudget(workspaceId);
+  const next: ActionBudget = {
+    maxAmountUsd: budget.maxAmountUsd ?? current.maxAmountUsd,
+    maxApprovalsPerMission: budget.maxApprovalsPerMission ?? current.maxApprovalsPerMission,
+    approvalTtlMinutes: budget.approvalTtlMinutes ?? current.approvalTtlMinutes,
+  };
+  if (!Number.isFinite(next.maxAmountUsd) || next.maxAmountUsd < 0) throw new Error('maxAmountUsd must be a non-negative number');
+  if (!Number.isInteger(next.maxApprovalsPerMission) || next.maxApprovalsPerMission < 1) throw new Error('maxApprovalsPerMission must be a positive integer');
+  if (!Number.isFinite(next.approvalTtlMinutes) || next.approvalTtlMinutes < 1 || next.approvalTtlMinutes > 10_080) throw new Error('approvalTtlMinutes must be between 1 and 10080');
+  const db = getOsDb();
+  db.prepare('INSERT INTO os_settings (workspace_id, key, value, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(workspace_id, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at')
+    .run(workspaceId, ACTION_BUDGET_KEY, JSON.stringify(next), nowIso());
+  audit(db, { workspaceId, actor, action: 'settings.action_budget', subject: ACTION_BUDGET_KEY, detail: next });
+  return next;
+}
 
 /* ─── Autonomy policy ───────────────────────────────────── */
 export function getAutonomyPolicy(workspaceId: string): AutonomyPolicy {
@@ -34,36 +107,69 @@ export function setAutonomyPolicy(workspaceId: string, policy: AutonomyPolicy, a
   return policy;
 }
 
-/** Balanced policy gates every high-risk tool; autopilot opts out explicitly. */
-export function requiresHumanApproval(workspaceId: string, risk: string): boolean {
-  if (risk !== 'high') return false;
-  return getAutonomyPolicy(workspaceId) !== 'autopilot';
+/** High-risk actions always require approval. Autopilot cannot bypass class C. */
+export function requiresHumanApproval(workspaceId: string, risk: string, action?: Omit<ActionClassificationInput, 'risk'>): boolean {
+  void workspaceId;
+  const normalized: ActionRisk = risk === 'high' || risk === 'medium' || risk === 'low' ? risk : 'high';
+  if (normalized === 'high') return true;
+  if (!action) return false;
+  return classifyAction({ ...action, risk: normalized }).class === 'C';
 }
 
 /* ─── Approvals ─────────────────────────────────────────── */
 export interface ApprovalRecord {
   id: string; kind: string; missionId: string | null; taskId: string | null; toolId: string | null;
-  actionSummary: string; risk: string; toolInput: Record<string, unknown>; requestedBy: string;
-  status: ApprovalStatus; decisionNote: string; decidedBy: string | null; decidedAt: string | null; createdAt: string;
+  actionSummary: string; risk: string; actionClass: ActionClass; scope: string; payloadDigest: string;
+  expiresAt: string | null; amountUsd: number | null; toolInput: Record<string, unknown>; requestedBy: string;
+  status: ApprovalStatus; decisionNote: string; decidedBy: string | null; decidedAt: string | null;
+  consumedAt: string | null; consumedBy: string | null; createdAt: string;
 }
 
 const approvalView = (row: Record<string, string | null>): ApprovalRecord => ({
   id: String(row['id']), kind: String(row['kind']), missionId: row['mission_id'] ?? null, taskId: row['task_id'] ?? null, toolId: row['tool_id'] ?? null,
-  actionSummary: String(row['action_summary']), risk: String(row['risk']), toolInput: parseJson(row['tool_input'], {}), requestedBy: String(row['requested_by']),
-  status: String(row['status']) as ApprovalStatus, decisionNote: String(row['decision_note'] ?? ''), decidedBy: row['decided_by'] ?? null, decidedAt: row['decided_at'] ?? null, createdAt: String(row['created_at']),
+  actionSummary: String(row['action_summary']), risk: String(row['risk']),
+  actionClass: (String(row['action_class'] ?? 'C')) as ActionClass,
+  scope: String(row['scope'] ?? ''),
+  payloadDigest: String(row['payload_digest'] ?? ''),
+  expiresAt: row['expires_at'] ?? null,
+  amountUsd: row['amount_usd'] === null || row['amount_usd'] === undefined ? null : Number(row['amount_usd']),
+  toolInput: parseJson(row['tool_input'], {}), requestedBy: String(row['requested_by']),
+  status: String(row['status']) as ApprovalStatus, decisionNote: String(row['decision_note'] ?? ''), decidedBy: row['decided_by'] ?? null, decidedAt: row['decided_at'] ?? null,
+  consumedAt: row['consumed_at'] ?? null, consumedBy: row['consumed_by'] ?? null, createdAt: String(row['created_at']),
 });
 
 export function createApproval(input: {
   workspaceId: string; missionId?: string | null; taskId?: string | null; toolId?: string | null;
   actionSummary: string; risk: string; toolInput?: unknown; requestedBy?: string; kind?: string;
+  actionClass?: ActionClass; scope?: string; payloadDigest?: string; expiresAt?: string; amountUsd?: number;
 }): ApprovalRecord {
   const db = getOsDb();
   const id = newId('apr');
-  db.prepare(`INSERT INTO os_approvals (id, workspace_id, kind, mission_id, task_id, tool_id, action_summary, risk, tool_input, requested_by, status, created_at)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`)
+  const budget = getActionBudget(input.workspaceId);
+  const actionClass = input.actionClass ?? (input.risk === 'high' ? 'C' : input.risk === 'medium' ? 'B' : 'A');
+  const amountUsd = input.amountUsd ?? extractAmount(input.toolInput);
+  if (amountUsd !== undefined && amountUsd > budget.maxAmountUsd) {
+    throw new Error(`Action amount ${amountUsd} exceeds the workspace action budget ${budget.maxAmountUsd}`);
+  }
+  if (actionClass === 'C' && input.missionId) {
+    const count = db.prepare("SELECT COUNT(*) AS c FROM os_approvals WHERE workspace_id = ? AND mission_id = ? AND action_class = 'C'").get(input.workspaceId, input.missionId) as { c: number };
+    if (Number(count.c) >= budget.maxApprovalsPerMission) {
+      throw new Error(`Mission has reached the class C approval budget (${budget.maxApprovalsPerMission})`);
+    }
+  }
+  const scope = input.scope ?? actionScope(input.missionId, input.taskId, input.toolId);
+  const digest = input.payloadDigest ?? payloadDigest(input.toolInput ?? {});
+  const expiresAt = input.expiresAt ?? new Date(Date.now() + budget.approvalTtlMinutes * 60_000).toISOString();
+  if (Number.isNaN(Date.parse(expiresAt)) || Date.parse(expiresAt) <= Date.now()) {
+    throw new Error('Approval expiry must be a valid future ISO timestamp');
+  }
+  db.prepare(`INSERT INTO os_approvals
+    (id, workspace_id, kind, mission_id, task_id, tool_id, action_summary, risk, action_class, scope, payload_digest, expires_at, amount_usd, tool_input, requested_by, status, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`)
     .run(id, input.workspaceId, input.kind ?? 'tool-execution', input.missionId ?? null, input.taskId ?? null, input.toolId ?? null,
-      input.actionSummary.slice(0, 500), input.risk, JSON.stringify(input.toolInput ?? {}).slice(0, 20_000), input.requestedBy ?? 'orchestrator', nowIso());
-  audit(db, { workspaceId: input.workspaceId, actor: input.requestedBy ?? 'orchestrator', action: 'approval.request', subject: id, detail: { toolId: input.toolId ?? null, missionId: input.missionId ?? null, risk: input.risk } });
+      input.actionSummary.slice(0, 500), input.risk, actionClass, scope, digest, expiresAt, amountUsd ?? null,
+      JSON.stringify(input.toolInput ?? {}).slice(0, 20_000), input.requestedBy ?? 'orchestrator', nowIso());
+  audit(db, { workspaceId: input.workspaceId, actor: input.requestedBy ?? 'orchestrator', action: 'approval.request', subject: id, detail: { toolId: input.toolId ?? null, missionId: input.missionId ?? null, risk: input.risk, actionClass, scope, payloadDigest: digest, expiresAt, amountUsd: amountUsd ?? null } });
   return approvalView(db.prepare('SELECT * FROM os_approvals WHERE id = ?').get(id) as Record<string, string>);
 }
 
@@ -99,9 +205,35 @@ export function decideApproval(workspaceId: string, approvalId: string, decision
   if (!row) throw new Error('Approval not found');
   if (row['status'] !== 'pending') throw new Error('Approval already decided');
   if (row['requested_by'] === actor) throw new Error('The requester cannot approve or deny their own high-risk request');
+  if (row['expires_at'] && Date.parse(String(row['expires_at'])) <= Date.now()) throw new Error('Approval has expired');
   db.prepare('UPDATE os_approvals SET status = ?, decision_note = ?, decided_by = ?, decided_at = ? WHERE id = ?')
     .run(decision, note.slice(0, 500), actor, nowIso(), approvalId);
-  audit(db, { workspaceId, actor, action: decision === 'approved' ? 'approval.approve' : 'approval.deny', subject: approvalId, detail: { note: note.slice(0, 300), toolId: row['tool_id'] ?? null, missionId: row['mission_id'] ?? null } });
+  audit(db, { workspaceId, actor, action: decision === 'approved' ? 'approval.approve' : 'approval.deny', subject: approvalId, detail: { note: note.slice(0, 300), toolId: row['tool_id'] ?? null, missionId: row['mission_id'] ?? null, actionClass: row['action_class'] ?? null, scope: row['scope'] ?? null } });
+  return approvalView(db.prepare('SELECT * FROM os_approvals WHERE id = ?').get(approvalId) as Record<string, string>);
+}
+
+/**
+ * Consume an approved action exactly once. The approval is bound to the exact
+ * canonical payload, scope, mission/task and action class. Any mismatch or an
+ * expired/consumed approval fails closed.
+ */
+export function consumeApproval(workspaceId: string, approvalId: string, input: {
+  payload: unknown; scope: string; actionClass: ActionClass; actor: string;
+  missionId?: string | null; taskId?: string | null;
+}): ApprovalRecord {
+  const db = getOsDb();
+  const row = db.prepare('SELECT * FROM os_approvals WHERE workspace_id = ? AND id = ?').get(workspaceId, approvalId) as Record<string, string> | undefined;
+  if (!row) throw new Error('Approval not found');
+  if (row['status'] !== 'approved') throw new Error(`Approval is ${row['status']}, not approved`);
+  if (row['consumed_at']) throw new Error('Approval was already consumed');
+  if (row['expires_at'] && Date.parse(String(row['expires_at'])) <= Date.now()) throw new Error('Approval has expired');
+  if (String(row['action_class'] ?? 'C') !== input.actionClass) throw new Error('Approval action class does not match');
+  if (String(row['scope'] ?? '') !== input.scope) throw new Error('Approval scope does not match');
+  if (String(row['payload_digest'] ?? '') !== payloadDigest(input.payload)) throw new Error('Approval payload digest does not match');
+  if (input.missionId && row['mission_id'] !== input.missionId) throw new Error('Approval mission does not match');
+  if (input.taskId && row['task_id'] !== input.taskId) throw new Error('Approval task does not match');
+  db.prepare('UPDATE os_approvals SET consumed_at = ?, consumed_by = ? WHERE id = ?').run(nowIso(), input.actor.slice(0, 200), approvalId);
+  audit(db, { workspaceId, actor: input.actor, action: 'approval.consume', subject: approvalId, detail: { missionId: input.missionId ?? null, taskId: input.taskId ?? null, scope: input.scope, actionClass: input.actionClass } });
   return approvalView(db.prepare('SELECT * FROM os_approvals WHERE id = ?').get(approvalId) as Record<string, string>);
 }
 

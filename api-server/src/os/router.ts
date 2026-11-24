@@ -18,13 +18,17 @@ import { listPlaybooks, deletePlaybook } from './playbooks.js';
 import { listTools, runTool, getTool } from './tools.js';
 import { listAlgorithms, selectAlgorithm, PROBLEM_KINDS } from './algorithms.js';
 import { listVerifications, getVerification } from './verification.js';
+import { listTaskLeases, listTaskCheckpoints } from './task-queue.js';
+import { understandProblem, getProblemProfile } from './problem.js';
+import { listLessons, getLesson, collectCandidateLessons, evaluateLesson, promoteLesson, rejectLesson } from './lessons.js';
+import { listScientificDomains, runBenchmarkSuite, listBenchmarkRuns } from './benchmarks.js';
 import { classifyAction } from './actions.js';
 import { SPECIALIZATIONS } from './specializations.js';
 import {
   createAgent, listAgents, getAgent, updateAgent, deleteAgent, ensureSeedAgents,
 } from './registry.js';
 import {
-  createMission, executeMission, getMissionDetail, listMissions, getOsState, markInterruptedMissions,
+  createMission, executeMission, getMissionDetail, listMissions, getOsState, markInterruptedMissions, pauseMission, resumeMission, cancelMission,
 } from './orchestrator.js';
 import { addMemory, listMemories, searchMemories, deleteMemory, listMemoryVersions, MEMORY_SCOPES, type MemoryScope } from './memory.js';
 import { getWorkspaceRole, roleRank, listWorkspaceRoles, setWorkspaceRole, removeWorkspaceRole, type WorkspaceRole } from './roles.js';
@@ -35,7 +39,7 @@ import { buildOrganization, listOrganizations } from './orgs.js';
 import { solveAssignment, solveEmployeeSchedule, solveLp } from './ortools.js';
 import { sampleEmployeeInput } from './orchestrator.js';
 import {
-  getApproval, getAutonomyPolicy, setAutonomyPolicy, listApprovals, decideApproval,
+  getApproval, getAutonomyPolicy, setAutonomyPolicy, listApprovals, decideApproval, getActionBudget, setActionBudget,
   requestDevicePairing, redeemDevicePairing, revokeDevice, listDevices, deviceHeartbeat, findDeviceById,
 } from './governance.js';
 import { logger } from '../lib/logger.js';
@@ -136,6 +140,8 @@ export function createOsRouter(options: { production?: boolean } = {}): Router {
     const path2 = req.path.replace(/\/+$/, '');
     const ADMIN_MUTATIONS: Array<{ method: string; pattern: RegExp }> = [
       { method: 'POST', pattern: /^\/settings\/autonomy$/ },
+      { method: 'POST', pattern: /^\/settings\/action-budget$/ },
+      { method: 'POST', pattern: /^\/lessons\/[^/]+\/promote$/ },
       { method: 'POST', pattern: /^\/devices\/pair$/ },
       { method: 'POST', pattern: /^\/devices\/[^/]+\/revoke$/ },
       { method: 'DELETE', pattern: /^\/agents\/[^/]+$/ },
@@ -369,6 +375,36 @@ function highRiskAgentCapabilities(permissions: readonly string[], tools: readon
     res.json(getMissionDetail(workspace(res), detail.id));
   }));
 
+  router.post('/missions/:id/pause', asyncWrap((req, res) => {
+    if (!rateLimit(workspace(res), 30)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    const changed = pauseMission(workspace(res), param(req, 'id'), actor(res));
+    if (!changed) { res.status(404).json({ error: 'Mission not found or not pausable' }); return; }
+    res.json(getMissionDetail(workspace(res), param(req, 'id')));
+  }));
+
+  router.post('/missions/:id/resume', asyncWrap(async (req, res) => {
+    if (!rateLimit(workspace(res), 30)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    const changed = resumeMission(workspace(res), param(req, 'id'), actor(res));
+    if (!changed) { res.status(404).json({ error: 'Mission not found or not resumable' }); return; }
+    await executeMission(param(req, 'id'), actor(res));
+    res.json(getMissionDetail(workspace(res), param(req, 'id')));
+  }));
+
+  router.post('/missions/:id/cancel', asyncWrap((req, res) => {
+    if (!rateLimit(workspace(res), 30)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    const changed = cancelMission(workspace(res), param(req, 'id'), actor(res));
+    if (!changed) { res.status(404).json({ error: 'Mission not found or not cancellable' }); return; }
+    res.json(getMissionDetail(workspace(res), param(req, 'id')));
+  }));
+
+  router.get('/missions/:id/leases', asyncWrap((req, res) => {
+    res.json(listTaskLeases(workspace(res), param(req, 'id')));
+  }));
+
+  router.get('/tasks/:id/checkpoints', asyncWrap((req, res) => {
+    res.json(listTaskCheckpoints(workspace(res), param(req, 'id')));
+  }));
+
   /* ─── AI usage ledger (operator-facing) ─── */
   router.get('/usage', asyncWrap((req, res) => {
     const days = Math.min(Math.max(Number(req.query['days']) || 30, 1), 90);
@@ -393,6 +429,83 @@ function highRiskAgentCapabilities(permissions: readonly string[], tools: readon
   }));
 
   /* ─── Governance: approvals, autonomy policy, devices ─── */
+  router.get('/benchmarks/domains', asyncWrap((_req, res) => {
+    res.json(listScientificDomains());
+  }));
+
+  router.post('/benchmarks/run', asyncWrap(async (req, res) => {
+    if (!rateLimit(workspace(res), 5)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    res.json(await runBenchmarkSuite(workspace(res)));
+  }));
+
+  router.get('/benchmarks/runs', asyncWrap((req, res) => {
+    res.json(listBenchmarkRuns(workspace(res), 20));
+  }));
+
+  router.get('/lessons', asyncWrap((req, res) => {
+    const status = typeof req.query['status'] === 'string' ? req.query['status'] : 'all';
+    const allowed = new Set(['candidate', 'tested', 'promoted', 'rejected', 'all']);
+    if (!allowed.has(status)) { res.status(400).json({ error: 'Invalid lesson status' }); return; }
+    res.json(listLessons(workspace(res), { status: status as 'candidate' | 'tested' | 'promoted' | 'rejected' | 'all', limit: 100 }));
+  }));
+
+  router.get('/lessons/:id', asyncWrap((req, res) => {
+    const lesson = getLesson(workspace(res), param(req, 'id'));
+    if (!lesson) { res.status(404).json({ error: 'Lesson not found' }); return; }
+    res.json(lesson);
+  }));
+
+  router.post('/lessons/collect', asyncWrap((req, res) => {
+    if (!rateLimit(workspace(res), 20)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    const body = z.object({ missionId: z.string().trim().min(1).max(100) }).strict().parse(req.body ?? {});
+    res.json(collectCandidateLessons(workspace(res), body.missionId, actor(res)));
+  }));
+
+  router.post('/lessons/:id/evaluate', asyncWrap((req, res) => {
+    if (!rateLimit(workspace(res), 20)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    res.json(evaluateLesson(workspace(res), param(req, 'id'), actor(res)));
+  }));
+
+  router.post('/lessons/:id/promote', asyncWrap((req, res) => {
+    if (!rateLimit(workspace(res), 10)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    res.json(promoteLesson(workspace(res), param(req, 'id'), actor(res)));
+  }));
+
+  router.post('/lessons/:id/reject', asyncWrap((req, res) => {
+    if (!rateLimit(workspace(res), 20)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    const body = z.object({ reason: z.string().trim().max(500).optional().default('') }).strict().parse(req.body ?? {});
+    res.json(rejectLesson(workspace(res), param(req, 'id'), actor(res), body.reason));
+  }));
+
+  router.post('/problems/understand', asyncWrap((req, res) => {
+    if (!rateLimit(workspace(res), 60)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    const body = z.object({
+      objective: z.string().trim().min(1).max(4000),
+      track: z.string().trim().min(1).max(40).optional(),
+    }).strict().parse(req.body ?? {});
+    res.json(understandProblem(body));
+  }));
+
+  router.get('/missions/:id/problem', asyncWrap((req, res) => {
+    const profile = getProblemProfile(workspace(res), param(req, 'id'));
+    if (!profile) { res.status(404).json({ error: 'Problem profile not found' }); return; }
+    res.json(profile);
+  }));
+
+  router.get('/settings/action-budget', asyncWrap((_req, res) => {
+    res.json(getActionBudget(workspace(res)));
+  }));
+
+  router.post('/settings/action-budget', asyncWrap((req, res) => {
+    if (!rateLimit(workspace(res), 10)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    const body = z.object({
+      maxAmountUsd: z.number().finite().min(0).max(100_000_000).optional(),
+      maxApprovalsPerMission: z.number().int().min(1).max(100).optional(),
+      approvalTtlMinutes: z.number().int().min(1).max(10_080).optional(),
+    }).strict().parse(req.body ?? {});
+    res.json(setActionBudget(workspace(res), body, actor(res)));
+  }));
+
   router.get('/approvals', asyncWrap((req, res) => {
     const status = typeof req.query['status'] === 'string' ? req.query['status'] : 'pending';
     const allowed = new Set(['pending', 'approved', 'denied', 'all']);
