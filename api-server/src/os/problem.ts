@@ -8,7 +8,8 @@
  * missing.
  */
 import { getOsDb, nowIso, parseJson } from './db.js';
-import { selectAlgorithm, type AlgorithmSelection, type ProblemFeatures } from './algorithms.js';
+import { selectAlgorithm, type AlgorithmSelection, type ProblemFeatures, type ScientificRequirement } from './algorithms.js';
+import { describeScientificSelection, type ScientificSelection } from './science.js';
 
 export const PROBLEM_SCHEMA_VERSION = '1.0';
 
@@ -39,6 +40,7 @@ export interface ProblemProfile {
   ambiguity: string[];
   features: ProblemFeatures;
   algorithmSelection: AlgorithmSelection;
+  scientific: ScientificSelection;
   fallback: { strategy: 'deterministic-planner'; reason: string };
   source: 'deterministic-rules';
 }
@@ -69,7 +71,32 @@ function domainOf(text: string): { domain: ProblemDomain; track: string | null; 
 }
 
 function deriveFeatures(text: string): ProblemFeatures {
+  const requires: ScientificRequirement[] = [];
+  if (/optimi[sz]e|schedul|allocat|assignment|linear program|shift|employee|جدولة|توزيع|تخصيص/i.test(text)) requires.push('optimization');
+  if (/schedul|shift|employee|roster|جدولة|وردية/i.test(text)) requires.push('scheduling');
+  if (/simulat|risk|uncertain|monte carlo|محاكاة|مخاطر/i.test(text)) requires.push('simulation');
+  if (/forecast|time series|trend|تنبؤ|سلسلة زمنية/i.test(text)) requires.push('forecasting');
+  if (/statistic|describe|distribution|outlier|إحصاء/i.test(text)) requires.push('statistics');
+  if (/decision|criteria|alternative|vendor|weighted matrix|قرار|معايير/i.test(text)) requires.push('decision');
+  if (/causal|counterfactual|confound|سببية/i.test(text)) requires.push('causal_analysis');
+  if (/formal verif|model check|sat solver|smt|تحقق رسمي/i.test(text)) requires.push('formal_verification');
+  const problemType = requires.includes('causal_analysis') ? 'causal_analysis'
+    : requires.includes('formal_verification') ? 'formal_verification'
+      : requires.includes('scheduling') ? 'scheduling'
+        : requires.includes('optimization') ? 'optimization'
+          : requires.includes('simulation') ? 'simulation'
+            : requires.includes('forecasting') ? 'prediction'
+              : requires.includes('decision') ? 'decision'
+                : undefined;
   return {
+    problemType,
+    requires: [...new Set(requires)],
+    uncertaintyLevel: /uncertain|risk|unknown|مخاطر|افتراض/i.test(text) ? 'high' : 'none',
+    riskLevel: /high risk|irreversible|financial|legal|عالية المخاطر|مالي|قانوني/i.test(text) ? 'high' : 'low',
+    deterministic: !/uncertain|risk|random|stochastic|مخاطر|عشوائي/i.test(text),
+    stochastic: /uncertain|risk|random|stochastic|مخاطر|عشوائي/i.test(text),
+    constraintsCount: (text.match(/must|should|required|within|under|limit|constraint|يجب|خلال|قيد/gi) ?? []).length,
+    variableCount: (text.match(/employee|shift|task|option|alternative|متغير|موظف|وردية/gi) ?? []).length,
     hasCostMatrix: /cost matrix|matrix|مصفوفة/i.test(text) && /cost|تكلفة/i.test(text),
     hasEmployees: /employee|staff|workforce|موظف/i.test(text),
     hasShifts: /shift|schedule|وردية|جدول/i.test(text),
@@ -94,6 +121,7 @@ export function understandProblem(input: { objective: string; track?: string }):
     : domainOf(objective);
   const features = deriveFeatures(objective);
   const algorithmSelection = selectAlgorithm({ objective, features });
+  const scientific = describeScientificSelection(algorithmSelection);
   const constraints = extractMatches(objective, /must|should|required|within|under|before|deadline|budget|limit|constraint|يجب|خلال|ميزانية|قيد/i);
   const dependencies = extractMatches(objective, /depends on|after|before|requires|following|بعد|قبل|يعتمد/i);
   const resources = extractMatches(objective, /budget|team|employee|server|database|api|tool|data|ميزانية|فريق|موظف|بيانات/i);
@@ -125,6 +153,7 @@ export function understandProblem(input: { objective: string; track?: string }):
     ambiguity,
     features,
     algorithmSelection,
+    scientific,
     fallback: {
       strategy: 'deterministic-planner',
       reason: 'Rules and structured features only; no semantic model or external classifier was used.',

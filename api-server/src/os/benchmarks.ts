@@ -15,6 +15,7 @@ import { buildPlan } from './orchestrator.js';
 import { comparePlans, verifyPlanExecution } from './planning.js';
 import { verifyIndependently } from './independent-verification.js';
 import { classifyAction } from './actions.js';
+import { listScientificDomains } from './science.js';
 
 export const BENCHMARK_SUITE_VERSION = '1.1.0';
 
@@ -42,24 +43,8 @@ export interface BenchmarkRun {
   createdAt: string;
 }
 
-const DOMAIN_CAPABILITY_MAP = [
-  { domain: 'Artificial intelligence and cognitive architectures', implemented: ['deterministic planner', 'extractive summary', 'specialist registry and handoffs'], partial: ['problem-understanding profile'], missing: ['general semantic planner', 'meta-reasoning controller'] },
-  { domain: 'Mathematics and computational foundations', implemented: ['least squares', 'Monte Carlo probability', 'discrete optimization', 'descriptive statistics'], partial: ['numerical stability policy'], missing: ['general symbolic reasoning'] },
-  { domain: 'Automated planning and search', implemented: ['rule planning', 'dependency-blocked task execution'], partial: ['durable task leases and checkpoints'], missing: ['A*', 'MCTS', 'PDDL planner'] },
-  { domain: 'Decision science and causal intelligence', implemented: ['weighted decision matrix', 'Monte Carlo', 'descriptive statistics'], partial: ['sensitivity perturbation'], missing: ['Bayesian networks', 'causal inference', 'POMDP'] },
-  { domain: 'Operations research and optimization', implemented: ['HiGHS LP/MIP', 'Hungarian assignment', 'employee scheduling'], partial: ['multi-objective optimization'], missing: ['CP-SAT', 'min-cost flow', 'robust optimization'] },
-  { domain: 'Multi-agent systems and distributed intelligence', implemented: ['persistent agents', 'handoffs', 'review gates', 'durable task leases'], partial: ['multi-worker claim safety'], missing: ['consensus protocol', 'game-theoretic allocation'] },
-  { domain: 'Control theory and autonomous systems', implemented: ['retry and reassignment', 'approval pause/resume', 'checkpoint recovery'], partial: ['adaptive retry policy'], missing: ['MPC', 'adaptive control'] },
-  { domain: 'Simulation and predictive intelligence', implemented: ['seeded PERT Monte Carlo', 'digital twins', 'linear trend baseline'], partial: ['scenario comparison'], missing: ['calibrated system dynamics', 'causal forecasting'] },
-  { domain: 'Knowledge and information systems', implemented: ['scoped SQLite memory', 'deterministic retrieval', 'provenance', 'versioning'], partial: ['candidate lesson lifecycle'], missing: ['vector retrieval', 'knowledge graph'] },
-  { domain: 'Autonomous engineering and program synthesis', implemented: ['generated zero-dependency web app', 'static security scan', 'node:test verification'], partial: ['patch-based repair'], missing: ['general program synthesis'] },
-  { domain: 'Formal verification, safety and reliability', implemented: ['Zod contracts', 'TypeScript checks', 'independent verification checks'], partial: ['property-based testing'], missing: ['model checking', 'SAT/SMT'] },
-  { domain: 'Robotics and cyber-physical intelligence', implemented: ['device pairing and revocation foundation'], partial: ['local command channel'], missing: ['navigation', 'motion planning', 'sensor fusion'] },
-] as const;
+export { listScientificDomains } from './science.js';
 
-export function listScientificDomains() {
-  return DOMAIN_CAPABILITY_MAP;
-}
 
 const result = (input: Omit<BenchmarkResult, 'id'>): BenchmarkResult => ({ id: newId('bench'), ...input });
 

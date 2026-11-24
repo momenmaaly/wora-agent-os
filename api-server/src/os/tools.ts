@@ -18,9 +18,10 @@ import { getOsDb, audit, newId, nowIso } from './db.js';
 import { openWorkspaceFile, resolveInWorkspace, workspacePath } from './workspace.js';
 import { safeFetch } from '../lib/safe-fetch.js';
 import { solveAssignment, solveEmployeeSchedule, solveLp } from './ortools.js';
-import { PROBLEM_KINDS, selectAlgorithm } from './algorithms.js';
+import { PROBLEM_KINDS, selectAlgorithm, algorithmSelectionInputSchema } from './algorithms.js';
 import { classifyAction } from './actions.js';
 import { understandProblem } from './problem.js';
+import { selectScientificMethod } from './science.js';
 import { getApproval, consumeApproval, payloadDigest, actionScope, isApprovalExpired } from './governance.js';
 
 const execFileAsync = promisify(execFile);
@@ -690,23 +691,7 @@ const agentsCreateTool: ToolDefinition = {
 };
 
 /* ─── meta.select_algorithm ────────────────────────────── */
-const algorithmSelectSchema = z.object({
-  objective: z.string().trim().max(4000).optional(),
-  kind: z.enum(PROBLEM_KINDS).optional(),
-  features: z.object({
-    hasCostMatrix: z.boolean().optional(),
-    matrixRows: z.number().int().positive().max(200).optional(),
-    matrixCols: z.number().int().positive().max(200).optional(),
-    hasEmployees: z.boolean().optional(),
-    hasShifts: z.boolean().optional(),
-    hasUncertainty: z.boolean().optional(),
-    hasTimeSeries: z.boolean().optional(),
-    hasCriteria: z.boolean().optional(),
-    hasAlternatives: z.boolean().optional(),
-    integerVariables: z.boolean().optional(),
-    nonlinear: z.boolean().optional(),
-  }).strict().optional(),
-}).strict();
+const algorithmSelectSchema = algorithmSelectionInputSchema;
 
 const algorithmSelectTool: ToolDefinition = {
   id: 'meta.select_algorithm',
@@ -728,6 +713,26 @@ const algorithmSelectTool: ToolDefinition = {
   timeoutMs: 5_000,
   execute(input: z.infer<typeof algorithmSelectSchema>) {
     return selectAlgorithm(input);
+  },
+};
+
+/* ─── meta.select_scientific_method ────────────────────── */
+const scientificSelectTool: ToolDefinition = {
+  id: 'meta.select_scientific_method',
+  name: 'Scientific Method Selection',
+  description: 'Selects an implemented scientific method from structured problem features, explains the domain, assumptions, rejected alternatives and gaps. It never claims an unimplemented method is executable.',
+  inputSchema: {
+    type: 'object',
+    properties: { objective: { type: 'string' }, kind: { enum: PROBLEM_KINDS }, features: { type: 'object' } },
+    additionalProperties: false,
+  },
+  schema: algorithmSelectionInputSchema,
+  permission: null,
+  risk: 'low',
+  environment: 'host',
+  timeoutMs: 5_000,
+  execute(input: z.infer<typeof algorithmSelectionInputSchema>) {
+    return selectScientificMethod(input);
   },
 };
 
@@ -899,6 +904,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   orgBuildTool,
   agentsCreateTool,
   algorithmSelectTool,
+  scientificSelectTool,
   problemUnderstandTool,
   actionClassifyTool,
 ];
