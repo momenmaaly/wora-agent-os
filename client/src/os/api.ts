@@ -1,12 +1,14 @@
 /**
  * WORA OS — typed client for the OS core (/api/os).
- * Same-origin by default (vite dev proxy / reverse proxy); set VITE_OS_API
- * to point at an API origin. Never handles secrets — session/bearer flows are
- * owned by the existing workspace session module.
+ * Same-origin by default (vite dev proxy / reverse proxy). `VITE_API_URL` is
+ * the shared API origin; `VITE_OS_API` can override it for split deployments.
+ * Never handles secrets — session/bearer flows are owned by the existing
+ * workspace session module.
  */
 import { readSessionToken } from '../lib/session.js';
+import { resolveApiBase } from '../lib/apiBase.js';
 
-const BASE = (import.meta.env['VITE_OS_API'] as string | undefined)?.replace(/\/$/, '') ?? '';
+const BASE = resolveApiBase(import.meta.env.VITE_OS_API, import.meta.env.VITE_API_URL);
 
 export class OsApiError extends Error {
   constructor(message: string, readonly status: number) {

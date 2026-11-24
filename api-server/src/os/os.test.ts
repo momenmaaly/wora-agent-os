@@ -4,7 +4,7 @@
  */
 import { test, before } from 'node:test';
 import assert from 'node:assert/strict';
-import { rmSync, mkdirSync } from 'node:fs';
+import { rmSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
@@ -15,6 +15,7 @@ mkdirSync(TEST_WORKSPACE, { recursive: true });
 
 const { solveAssignment, solveLp, solveEmployeeSchedule } = await import('./ortools.js');
 const { runTool, listTools } = await import('./tools.js');
+const { resolveInWorkspace, workspacePath } = await import('./workspace.js');
 const { createAgent, listAgents, pickAgent, deleteAgent } = await import('./registry.js');
 const { addMemory, searchMemories, listMemories, deleteMemory } = await import('./memory.js');
 const { createMission, executeMission, getMissionDetail, getOsState, sampleEmployeeInput } = await import('./orchestrator.js');
@@ -93,10 +94,46 @@ test('unknown tool returns structured error', async () => {
   assert.match(result.error ?? '', /Unknown tool/);
 });
 
+test('workspace: traversal and symlink escapes are rejected', () => {
+  const ws = 'wora-path-test';
+  const root = workspacePath(ws);
+  const outside = path.join(os.tmpdir(), `wora-outside-${process.pid}`);
+  mkdirSync(outside, { recursive: true });
+  writeFileSync(path.join(outside, 'secret.txt'), 'outside secret');
+  try {
+    symlinkSync(outside, path.join(root, 'escape-dir'), 'dir');
+    symlinkSync(path.join(outside, 'secret.txt'), path.join(root, 'escape-file'), 'file');
+    symlinkSync(path.join(outside, 'missing.txt'), path.join(root, 'broken-link'), 'file');
+    assert.throws(() => resolveInWorkspace(ws, '../wora-outside'), /escapes the sandboxed workspace/);
+    assert.throws(() => resolveInWorkspace(ws, 'escape-dir/secret.txt'), /escapes the sandboxed workspace/);
+    assert.throws(() => resolveInWorkspace(ws, 'escape-file'), /escapes the sandboxed workspace/);
+    assert.throws(() => resolveInWorkspace(ws, 'broken-link'), /escapes the sandboxed workspace/);
+    const newFile = resolveInWorkspace(ws, 'new/subdir/file.txt');
+    assert.equal(path.relative(root, newFile), path.join('new', 'subdir', 'file.txt'));
+  } finally {
+    rmSync(outside, { recursive: true, force: true });
+    rmSync(path.join(root, 'escape-dir'), { force: true });
+    rmSync(path.join(root, 'escape-file'), { force: true });
+    rmSync(path.join(root, 'broken-link'), { force: true });
+  }
+});
+
 test('permission gate blocks tools without the grant', async () => {
   const result = await runTool('system.diagnostics', {}, { workspaceId: WS, actor: 'test', permissions: new Set() });
   assert.equal(result.ok, false);
   assert.match(result.error ?? '', /host:read/);
+});
+
+test('execution boundary enforces the agent tool allowlist even with wildcard permissions', async () => {
+  const denied = await runTool('system.diagnostics', {}, {
+    workspaceId: WS, actor: 'test', permissions: new Set(['*']), toolAllowlist: new Set(['text.extract_summary']),
+  });
+  assert.equal(denied.ok, false);
+  assert.match(denied.error ?? '', /not enabled for this agent/);
+  const allowed = await runTool('system.diagnostics', {}, {
+    workspaceId: WS, actor: 'test', permissions: new Set(['host:read']), toolAllowlist: new Set(['system.diagnostics']),
+  });
+  assert.equal(allowed.ok, true);
 });
 
 test('system.diagnostics returns real host signals', async () => {

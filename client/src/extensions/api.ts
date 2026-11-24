@@ -3,8 +3,9 @@
  * Session handling is shared with the OS client; no secret ever reaches this layer.
  */
 import { readSessionToken } from '../lib/session.js';
+import { resolveApiBase } from '../lib/apiBase.js';
 
-const BASE = (import.meta.env['VITE_OS_API'] as string | undefined)?.replace(/\/$/, '') ?? '';
+const BASE = resolveApiBase(import.meta.env.VITE_OS_API, import.meta.env.VITE_API_URL);
 
 export class ExtensionApiError extends Error {
   constructor(message: string, readonly status: number, readonly payload: unknown = null) {

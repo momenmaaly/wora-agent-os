@@ -13,6 +13,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
+import { hostname } from 'node:os';
 import path from 'node:path';
 
 export type OsDatabase = DatabaseSync;
@@ -280,6 +281,16 @@ CREATE TABLE IF NOT EXISTS os_ai_usage (
 );
 CREATE INDEX IF NOT EXISTS idx_os_ai_usage_created ON os_ai_usage(created_at);
 CREATE INDEX IF NOT EXISTS idx_os_ai_usage_provider ON os_ai_usage(provider, model);
+
+CREATE TABLE IF NOT EXISTS os_runtime_leases (
+  id TEXT PRIMARY KEY,
+  owner_id TEXT NOT NULL,
+  hostname TEXT NOT NULL,
+  pid INTEGER NOT NULL,
+  acquired_at TEXT NOT NULL,
+  heartbeat_at TEXT NOT NULL,
+  expires_at INTEGER NOT NULL
+);
 `;
 
 /** Guarded, idempotent column additions for databases created before these columns existed. */
@@ -301,7 +312,101 @@ export function newId(prefix: string): string {
   return `${prefix}_${randomUUID().replace(/-/g, '').slice(0, 16)}`;
 }
 
+const WRITER_LEASE_ID = 'os-sqlite-writer';
+const WRITER_LEASE_TTL_MS = 30_000;
+const WRITER_LEASE_HEARTBEAT_MS = 5_000;
+const WRITER_LEASE_SCHEMA = `
+CREATE TABLE IF NOT EXISTS os_runtime_leases (
+  id TEXT PRIMARY KEY,
+  owner_id TEXT NOT NULL,
+  hostname TEXT NOT NULL,
+  pid INTEGER NOT NULL,
+  acquired_at TEXT NOT NULL,
+  heartbeat_at TEXT NOT NULL,
+  expires_at INTEGER NOT NULL
+);
+`;
+
 let instance: OsDatabase | null = null;
+let writerLeaseOwner: string | null = null;
+let writerLeaseDb: OsDatabase | null = null;
+let writerLeaseTimer: NodeJS.Timeout | null = null;
+let leaseExitHookRegistered = false;
+
+export interface WriterLeaseOptions {
+  ownerId?: string;
+  host?: string;
+  pid?: number;
+  now?: number;
+  ttlMs?: number;
+}
+
+interface WriterLeaseRow {
+  owner_id: string;
+  hostname: string;
+  pid: number;
+  expires_at: number;
+}
+
+export function ensureWriterLeaseTable(db: OsDatabase): void {
+  db.exec(WRITER_LEASE_SCHEMA);
+}
+
+/**
+ * Claim the single-writer lease for a file-backed SQLite database.
+ * A second API process sharing the same database fails fast instead of
+ * competing for writes or marking another process's missions interrupted.
+ */
+export function acquireWriterLease(db: OsDatabase, options: WriterLeaseOptions = {}): string {
+  ensureWriterLeaseTable(db);
+  const owner = options.ownerId ?? `wora:${hostname()}:${process.pid}:${randomUUID().slice(0, 8)}`;
+  const host = options.host ?? hostname();
+  const pid = options.pid ?? process.pid;
+  const now = options.now ?? Date.now();
+  const ttlMs = options.ttlMs ?? WRITER_LEASE_TTL_MS;
+  const row = db.prepare('SELECT owner_id, hostname, pid, expires_at FROM os_runtime_leases WHERE id = ?').get(WRITER_LEASE_ID) as WriterLeaseRow | undefined;
+  if (row && row.owner_id !== owner && row.expires_at > now) {
+    throw new Error(
+      `SQLite writer lease is held by ${row.hostname}:${row.pid} until ${new Date(row.expires_at).toISOString()}; ` +
+      'run a single API replica with this database, or migrate to PostgreSQL before scaling out',
+    );
+  }
+  db.prepare(
+    'INSERT INTO os_runtime_leases (id, owner_id, hostname, pid, acquired_at, heartbeat_at, expires_at) ' +
+    'VALUES (?, ?, ?, ?, ?, ?, ?) ' +
+    'ON CONFLICT(id) DO UPDATE SET owner_id = excluded.owner_id, hostname = excluded.hostname, pid = excluded.pid, ' +
+    'acquired_at = excluded.acquired_at, heartbeat_at = excluded.heartbeat_at, expires_at = excluded.expires_at',
+  ).run(WRITER_LEASE_ID, owner, host, pid, new Date(now).toISOString(), new Date(now).toISOString(), now + ttlMs);
+  return owner;
+}
+
+export function renewWriterLease(db: OsDatabase, ownerId: string, now = Date.now(), ttlMs = WRITER_LEASE_TTL_MS): boolean {
+  const result = db.prepare('UPDATE os_runtime_leases SET heartbeat_at = ?, expires_at = ? WHERE id = ? AND owner_id = ?')
+    .run(new Date(now).toISOString(), now + ttlMs, WRITER_LEASE_ID, ownerId);
+  return Number(result.changes) === 1;
+}
+
+export function releaseWriterLease(db: OsDatabase, ownerId: string): void {
+  try { db.prepare('DELETE FROM os_runtime_leases WHERE id = ? AND owner_id = ?').run(WRITER_LEASE_ID, ownerId); } catch { /* best effort */ }
+}
+
+function startWriterLease(db: OsDatabase): void {
+  if (writerLeaseOwner && writerLeaseDb === db) return;
+  const owner = acquireWriterLease(db);
+  writerLeaseOwner = owner;
+  writerLeaseDb = db;
+  writerLeaseTimer = setInterval(() => {
+    if (writerLeaseDb !== db || !writerLeaseOwner) return;
+    try { renewWriterLease(db, writerLeaseOwner); } catch { /* the next boot will fail closed */ }
+  }, WRITER_LEASE_HEARTBEAT_MS);
+  writerLeaseTimer.unref();
+  if (!leaseExitHookRegistered) {
+    leaseExitHookRegistered = true;
+    process.once('exit', () => {
+      if (writerLeaseDb && writerLeaseOwner) releaseWriterLease(writerLeaseDb, writerLeaseOwner);
+    });
+  }
+}
 
 export function getOsDb(): OsDatabase {
   if (instance) return instance;
@@ -312,12 +417,20 @@ export function getOsDb(): OsDatabase {
   db.exec('PRAGMA foreign_keys = ON;');
   db.exec(SCHEMA);
   migrate(db);
+  if (target !== ':memory:') startWriterLease(db);
   instance = db;
   return db;
 }
 
 /** Reset the singleton (tests only). */
 export function resetOsDbForTests(): void {
+  if (writerLeaseTimer) {
+    clearInterval(writerLeaseTimer);
+    writerLeaseTimer = null;
+  }
+  if (writerLeaseDb && writerLeaseOwner) releaseWriterLease(writerLeaseDb, writerLeaseOwner);
+  writerLeaseDb = null;
+  writerLeaseOwner = null;
   if (instance) {
     try { instance.close(); } catch { /* ignore */ }
     instance = null;

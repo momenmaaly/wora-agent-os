@@ -477,24 +477,25 @@ export async function executeMission(missionId: string, actor = 'orchestrator'):
 
       // Resolve on every attempt: disabling a plugin or revoking a permission
       // takes effect immediately, including for an already-running mission.
-      lastProfile = resolveAndSnapshot(mission.workspace_id, agent.id, { missionId, taskId: task.id, actor: agent.name });
-      const scopedTool = task.tool ? getTool(task.tool, mission.workspace_id) : null;
-      if (task.tool && scopedTool?.source === 'plugin') {
-        const decision = authorizeTool(mission.workspace_id, lastProfile, task.tool);
+      const profile = resolveAndSnapshot(mission.workspace_id, agent.id, { missionId, taskId: task.id, actor: agent.name });
+      lastProfile = profile;
+      if (task.tool) {
+        const decision = authorizeTool(mission.workspace_id, profile, task.tool);
         if (!decision.allowed) {
           const reason = decision.reason ?? 'Capability is not available to this agent';
           lastIssues = [reason];
-          lastEvidence = [{ capabilityDenied: reason, digest: lastProfile.digest }];
+          lastEvidence = [{ capabilityDenied: reason, digest: profile.digest }];
           db.prepare('UPDATE os_runs SET status = ?, finished_at = ?, summary = ?, evidence = ?, issues = ? WHERE id = ?')
             .run('failed', nowIso(), `Capability denied: ${reason}`, JSON.stringify(lastEvidence), JSON.stringify(lastIssues), runId);
-          audit(db, { workspaceId: mission.workspace_id, actor: agent.name, action: 'capability.denied', subject: task.tool, detail: { missionId, taskId: task.id, reason, digest: lastProfile.digest } });
+          audit(db, { workspaceId: mission.workspace_id, actor: agent.name, action: 'capability.denied', subject: task.tool, detail: { missionId, taskId: task.id, reason, digest: profile.digest } });
           break;
         }
       }
       const ctx: ToolContext = {
         workspaceId: mission.workspace_id,
         actor: agent.name,
-        permissions: new Set([...lastProfile.permissions, 'memory:read', 'memory:write']),
+        permissions: new Set([...profile.permissions, 'memory:read', 'memory:write']),
+        toolAllowlist: new Set(profile.tools),
         missionId,
         taskId: task.id,
       };

@@ -15,6 +15,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { getOsDb, audit, newId, nowIso } from './db.js';
 import { resolveInWorkspace, workspacePath } from './workspace.js';
+import { safeFetch } from '../lib/safe-fetch.js';
 import { solveAssignment, solveEmployeeSchedule, solveLp } from './ortools.js';
 
 const execFileAsync = promisify(execFile);
@@ -25,6 +26,8 @@ export interface ToolContext {
   workspaceId: string;
   actor: string;
   permissions: Set<string>;
+  /** When present, the tool must be explicitly enabled for the executing agent. */
+  toolAllowlist?: ReadonlySet<string>;
   missionId?: string;
   taskId?: string;
 }
@@ -533,14 +536,8 @@ const fetchReadTool: ToolDefinition = {
   environment: 'host',
   timeoutMs: 12_000,
   async execute(input: z.infer<typeof fetchReadSchema>) {
-    if (!/^https?:\/\//i.test(input.url)) throw new Error('Only http(s) URLs are allowed');
-    const response = await fetch(input.url, {
-      redirect: 'follow',
-      signal: AbortSignal.timeout(8_000),
-      headers: { 'user-agent': 'WORA-OS/1.0 (+authorized-research)', accept: 'text/html,text/plain,application/json' },
-    });
-    const bytes = await response.arrayBuffer();
-    const text = Buffer.from(bytes).toString('utf8').slice(0, 512_000);
+    const response = await safeFetch(input.url, { timeoutMs: 8_000, maxBytes: 512 * 1024 });
+    const text = response.body.toString('utf8');
     const title = /<title[^>]*>([^<]*)<\/title>/i.exec(text)?.[1]?.trim() ?? null;
     const stripped = text
       .replace(/<script[\s\S]*?<\/script>/gi, ' ')
@@ -773,6 +770,10 @@ export async function runTool(id: string, rawInput: unknown, ctx: ToolContext): 
   const started = Date.now();
   const tool = getTool(id, ctx.workspaceId);
   if (!tool) return { ok: false, tool: id, error: `Unknown tool "${id}"`, durationMs: 0 };
+  if (ctx.toolAllowlist && !ctx.toolAllowlist.has(id)) {
+    audit(getOsDb(), { workspaceId: ctx.workspaceId, actor: ctx.actor, action: 'tool.denied', subject: id, detail: { reason: 'not_enabled_for_agent', missionId: ctx.missionId ?? null, taskId: ctx.taskId ?? null } });
+    return { ok: false, tool: id, error: `Tool "${id}" is not enabled for this agent`, durationMs: Date.now() - started };
+  }
   if (tool.permission && !ctx.permissions.has(tool.permission) && !ctx.permissions.has('*')) {
     return { ok: false, tool: id, error: `Permission "${tool.permission}" is required for ${id}`, durationMs: Date.now() - started };
   }

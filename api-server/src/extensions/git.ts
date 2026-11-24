@@ -8,7 +8,7 @@
  * process list. Only bounded manifest files are read; symlinks are skipped.
  */
 import { execFile } from 'node:child_process';
-import { mkdtempSync, readFileSync, readdirSync, lstatSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, lstatSync, realpathSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -58,13 +58,17 @@ export function classifySource(url: string): 'git' | 'local' {
   throw new MarketplaceError('INVALID_REPOSITORY', 'Repository URLs must be https://, file:// or an absolute local path');
 }
 
+function canonicalPath(value: string): string {
+  try { return realpathSync(value); } catch { return path.resolve(value); }
+}
+
 function allowedLocalRoots(): string[] {
   const configured = (process.env['WORA_EXTENSIONS_LOCAL_ROOTS'] ?? '').split(',').map((value) => value.trim()).filter(Boolean);
-  return configured.map((root) => path.resolve(root));
+  return configured.map(canonicalPath);
 }
 
 function assertLocalRoot(target: string): void {
-  const resolved = path.resolve(target);
+  const resolved = canonicalPath(target);
   const allowed = allowedLocalRoots();
   if (!allowed.some((root) => resolved === root || resolved.startsWith(root + path.sep))) {
     throw new MarketplaceError('LOCAL_ROOT_DENIED', 'Local marketplace paths must be inside WORA_EXTENSIONS_LOCAL_ROOTS');
@@ -72,9 +76,12 @@ function assertLocalRoot(target: string): void {
 }
 
 function safeJoin(root: string, relative: string): string {
-  const target = path.resolve(root, relative);
-  if (target !== root && !target.startsWith(root + path.sep)) throw new MarketplaceError('INVALID_PATH', 'Path escapes the repository root');
-  return target;
+  const base = canonicalPath(root);
+  const target = path.resolve(base, relative);
+  if (target !== base && !target.startsWith(base + path.sep)) throw new MarketplaceError('INVALID_PATH', 'Path escapes the repository root');
+  const resolved = canonicalPath(target);
+  if (resolved !== base && !resolved.startsWith(base + path.sep)) throw new MarketplaceError('INVALID_PATH', 'Path escapes the repository root');
+  return resolved;
 }
 
 function walk(root: string, maxDepth = 5, limit = 2_000): string[] {
@@ -105,8 +112,9 @@ function relative(root: string, file: string): string {
 /** Discover `wora/skills/<name>/skill.json`, `wora/plugins/<name>/plugin.json` (root-level folders also accepted). */
 export function discoverManifests(root: string): RepositoryFile[] {
   const found: RepositoryFile[] = [];
-  for (const file of walk(root)) {
-    const rel = relative(root, file);
+  const canonicalRoot = canonicalPath(root);
+  for (const file of walk(canonicalRoot)) {
+    const rel = relative(canonicalRoot, file);
     if (!/^(?:wora\/)?(?:skills|plugins)\/(?:[A-Za-z0-9._-]+\/)*(?:skill|plugin)\.json$/u.test(rel)) continue;
     const kind: PackageKind = rel.endsWith('plugin.json') ? 'plugin' : 'skill';
     const expected = rel.startsWith('wora/plugins/') || rel.startsWith('plugins/') ? 'plugin' : rel.startsWith('wora/skills/') || rel.startsWith('skills/') ? 'skill' : kind;
@@ -191,7 +199,8 @@ export async function fetchGitRepository(options: FetchOptions): Promise<Reposit
 export function fetchLocalRepository(options: FetchOptions): RepositorySnapshot {
   if (!path.isAbsolute(options.url)) throw new MarketplaceError('INVALID_REPOSITORY', 'Local paths must be absolute');
   assertLocalRoot(options.url);
-  const root = options.subPath ? safeJoin(path.resolve(options.url), options.subPath) : path.resolve(options.url);
+  const base = canonicalPath(options.url);
+  const root = options.subPath ? safeJoin(base, options.subPath) : base;
   const files = discoverManifests(root);
   return { commit: null, files, log: [`local ${root} · ${files.length} manifest(s)`] };
 }

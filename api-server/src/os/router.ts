@@ -38,6 +38,7 @@ import {
 import { logger } from '../lib/logger.js';
 import { createExtensionsRouter } from '../extensions/router.js';
 import { ensureWorkspaceExtensions } from '../extensions/index.js';
+import { executeForAgent } from '../extensions/capabilities.js';
 
 const AUTH_SECRET = sanitizeEnv(process.env['AUTH_SECRET']);
 const ADMIN_API_KEY = sanitizeEnv(process.env['ADMIN_API_KEY']);
@@ -149,7 +150,13 @@ export function createOsRouter(options: { production?: boolean } = {}): Router {
   const roleOf = (res: Response) => (res.locals['role'] as WorkspaceRole) ?? 'viewer';
 
   // Interrupted-mission recovery runs once per process boot (idempotent).
-  try { markInterruptedMissions(); } catch (err) { logger.warn({ err }, 'interrupted-mission recovery failed'); }
+  // A writer-lease conflict is fatal: another process owns this database.
+  try {
+    markInterruptedMissions();
+  } catch (err) {
+    if (err instanceof Error && err.message.includes('SQLite writer lease')) throw err;
+    logger.warn({ err }, 'interrupted-mission recovery failed');
+  }
 
   router.get('/state', asyncWrap((_req, res) => {
     res.json(getOsState(workspace(res)));
@@ -174,13 +181,26 @@ export function createOsRouter(options: { production?: boolean } = {}): Router {
     if (!tool) { res.status(404).json({ error: 'Unknown tool' }); return; }
     if (tool.source === 'plugin') { res.status(403).json({ error: 'Plugin tools execute only through an agent capability profile', code: 'CAPABILITY_REQUIRED' }); return; }
     if (tool.risk === 'high') { res.status(403).json({ error: 'High-risk tools execute only through the orchestrator under agent permissions' }); return; }
-    const body = z.object({ input: z.unknown().optional() }).strict().parse(req.body ?? {});
-    const result = await runTool(tool.id, body.input ?? {}, {
+    const body = z.object({
+      input: z.unknown().optional(),
+      agentId: z.string().trim().min(1).max(80),
+    }).strict().parse(req.body ?? {});
+    const agent = getAgent(workspace(res), body.agentId);
+    if (!agent) { res.status(404).json({ error: 'Unknown agent', code: 'AGENT_NOT_FOUND' }); return; }
+    if (agent.status !== 'active') { res.status(403).json({ error: 'Agent is not active', code: 'AGENT_INACTIVE' }); return; }
+    const result = await executeForAgent({
       workspaceId: workspace(res),
+      agentId: body.agentId,
+      toolId: tool.id,
+      toolInput: body.input ?? {},
       actor: actor(res),
-      permissions: new Set(['*']),
     });
-    res.status(result.ok ? 200 : 422).json(result);
+    if (!result.ok) {
+      const invalidInput = (result.error ?? '').startsWith('Invalid input');
+      res.status(invalidInput ? 422 : 403).json(result);
+      return;
+    }
+    res.json(result);
   }));
 
   /* ─── Agents ─── */

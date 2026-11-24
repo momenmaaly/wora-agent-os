@@ -8,7 +8,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, symlinkSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
@@ -26,6 +26,7 @@ mkdirSync(process.env['WORA_WORKSPACE']!, { recursive: true });
 const { validateManifest, satisfies, permissionSensitivity } = await import('./manifest.js');
 const store = await import('./store.js');
 const { registerMarketplace, syncMarketplace, previewMarketplace } = await import('./marketplace.js');
+const { fetchLocalRepository } = await import('./git.js');
 const { buildInstallPlan, applyInstallPlan, planToView, uninstallPackage } = await import('./resolver.js');
 const { resolveCapabilities, resolveAndSnapshot, executeForAgent } = await import('./capabilities.js');
 const { createExtensionsRouter } = await import('./router.js');
@@ -152,6 +153,28 @@ after(() => {
 });
 
 /* ─── Manifest validation ─── */
+test('marketplace: local roots and subpaths reject symlink escapes', () => {
+  const outside = mkdtempSync(path.join(os.tmpdir(), 'wora-outside-market-'));
+  const safe = path.join(TMP, 'safe-market');
+  mkdirSync(safe, { recursive: true });
+  try {
+    symlinkSync(outside, path.join(TMP, 'escape-market'), 'dir');
+    assert.throws(
+      () => fetchLocalRepository({ url: path.join(TMP, 'escape-market'), ref: 'main', refType: 'branch' }),
+      /LOCAL_ROOT_DENIED|inside WORA_EXTENSIONS_LOCAL_ROOTS|Path escapes/,
+    );
+    symlinkSync(outside, path.join(safe, 'escape'), 'dir');
+    assert.throws(
+      () => fetchLocalRepository({ url: safe, subPath: 'escape', ref: 'main', refType: 'branch' }),
+      /INVALID_PATH|Path escapes/,
+    );
+  } finally {
+    rmSync(path.join(TMP, 'escape-market'), { force: true });
+    rmSync(path.join(safe, 'escape'), { force: true });
+    rmSync(outside, { recursive: true, force: true });
+  }
+});
+
 test('manifest: a valid skill validates, unknown fields are rejected, instructions are required', () => {
   const ok = validateManifest('skill', skill());
   assert.equal(ok.ok, true, JSON.stringify(ok.errors));
@@ -648,6 +671,23 @@ test('api: install → assign → enable → execute → mission → disable →
     // The generic tool endpoint must not bypass capability authorization.
     const bypass = await api('/tools/wora.echo-mcp.echo/execute', { method: 'POST', body: JSON.stringify({ input: { text: 'bypass' } }) });
     assert.equal(bypass.status, 403);
+
+    // Core tools now require an explicit agent profile and the agent's allowlist.
+    const diagnosticsAgent = (agents.body as unknown as Array<{ id: string; specialization: string }>).find((agent) => agent.specialization === 'computer_diagnostics');
+    const productAgent = (agents.body as unknown as Array<{ id: string; specialization: string }>).find((agent) => agent.specialization === 'product_manager');
+    const qaAgent = (agents.body as unknown as Array<{ id: string; specialization: string }>).find((agent) => agent.specialization === 'qa_engineer');
+    assert.ok(diagnosticsAgent && productAgent && qaAgent);
+    const noAgent = await api('/tools/system.diagnostics/execute', { method: 'POST', body: JSON.stringify({ input: {} }) });
+    assert.equal(noAgent.status, 400);
+    const deniedTool = await api('/tools/system.diagnostics/execute', { method: 'POST', body: JSON.stringify({ agentId: productAgent.id, input: {} }) });
+    assert.equal(deniedTool.status, 403);
+    assert.match(String(deniedTool.body['error']), /not enabled/);
+    const allowedTool = await api('/tools/system.diagnostics/execute', { method: 'POST', body: JSON.stringify({ agentId: diagnosticsAgent.id, input: {} }) });
+    assert.equal(allowedTool.status, 200, JSON.stringify(allowedTool.body));
+    assert.equal(allowedTool.body['ok'], true);
+    assert.equal(typeof (allowedTool.body['output'] as Record<string, unknown>)['cpus'], 'number');
+    const highRisk = await api('/tools/host.exec/execute', { method: 'POST', body: JSON.stringify({ agentId: qaAgent.id, input: { command: 'node', args: ['--test', 'x'] } }) });
+    assert.equal(highRisk.status, 403);
 
     // A mission uses the same tool under the resolved profile.
     const mission = await api('/missions', { method: 'POST', body: JSON.stringify({ objective: 'run tool wora.echo-mcp.echo with {"text":"mission-http"}' }) });

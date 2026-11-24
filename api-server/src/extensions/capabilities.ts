@@ -249,8 +249,14 @@ export function authorizeTool(workspaceId: string, profile: CapabilityProfile, t
   const definition = getTool(toolId, workspaceId);
   if (!definition) return { allowed: false, reason: `Unknown tool "${toolId}"`, pluginTool: false };
   const pluginTool = definition.source === 'plugin';
-  if (pluginTool && !profile.tools.includes(toolId)) {
-    return { allowed: false, reason: `Tool "${toolId}" is not assigned to this agent`, pluginTool };
+  if (!profile.tools.includes(toolId)) {
+    return {
+      allowed: false,
+      reason: pluginTool
+        ? `Tool "${toolId}" is not assigned to this agent`
+        : `Tool "${toolId}" is not enabled for this agent`,
+      pluginTool,
+    };
   }
   if (pluginTool && !profile.plugins.some((plugin) => plugin.tools.includes(toolId))) {
     return { allowed: false, reason: `Tool "${toolId}" belongs to a plugin that is not active for this agent`, pluginTool };
@@ -281,6 +287,7 @@ export async function executeForAgent(input: {
     workspaceId: input.workspaceId,
     actor: profile.agentName,
     permissions: new Set(profile.permissions),
+    toolAllowlist: new Set(profile.tools),
     missionId: input.missionId,
     taskId: input.taskId,
   };
