@@ -2,9 +2,9 @@
 
 **Updated:** 2026-11-24 (production readiness phase)
 **Branch:** `feat/extensions-subsystem`
-**HEAD at audit:** `a5a4e0a` — Remediate Phase 1 security findings F1–F13
-**Latest committed units:** `883efd7` audit hardening, concurrent scheduler, formal planning, expanded verification, lesson lifecycle, expanded benchmarks and UI; `a221fec` class C tool-boundary guard; `1fe32e4` governance enforcement, durable runtime, problem understanding, independent verification, learning and benchmarks; `07d34f1` algorithm catalog; `6b5c483` verification records; `f965594` action classification
-**Working tree:** clean after the workstreams 1–6 commit
+**HEAD at audit:** `321d69b` — Production readiness and adversarial validation
+**Latest committed units:** `321d69b` production readiness, adversarial and browser validation; `883efd7` audit hardening, concurrent scheduler, formal planning, expanded verification, lesson lifecycle, expanded benchmarks and UI; `a221fec` class C tool-boundary guard; `1fe32e4` governance enforcement, durable runtime, problem understanding, independent verification, learning and benchmarks; `07d34f1` algorithm catalog; `6b5c483` verification records; `f965594` action classification
+**Working tree:** clean after the production-readiness commit
 **Remote main at audit:** `a1ca08c`
 **Rule:** this file records only work verified by source inspection, commands, tests or live HTTP probes. It is not a marketing status page.
 
