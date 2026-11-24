@@ -465,6 +465,17 @@ CREATE TABLE IF NOT EXISTS os_task_leases (
 CREATE INDEX IF NOT EXISTS idx_os_task_leases_expiry ON os_task_leases(expires_at);
 CREATE INDEX IF NOT EXISTS idx_os_task_leases_mission ON os_task_leases(workspace_id, mission_id);
 
+CREATE TABLE IF NOT EXISTS os_mission_leases (
+  mission_id TEXT PRIMARY KEY REFERENCES os_missions(id) ON DELETE CASCADE,
+  workspace_id TEXT NOT NULL,
+  owner_id TEXT NOT NULL,
+  acquired_at TEXT NOT NULL,
+  heartbeat_at TEXT NOT NULL,
+  expires_at INTEGER NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_os_mission_leases_expiry ON os_mission_leases(expires_at);
+
 CREATE TABLE IF NOT EXISTS os_task_checkpoints (
   id TEXT PRIMARY KEY,
   task_id TEXT NOT NULL REFERENCES os_tasks(id) ON DELETE CASCADE,
@@ -703,9 +714,13 @@ export function getOsDb(): OsDatabase {
   if (target !== ':memory:') mkdirSync(path.dirname(target), { recursive: true });
   const db = new DatabaseSync(target);
   try {
-    // Take the lease before application schema/migration writes. The lease
-    // table itself is the only bootstrap write and is idempotent.
-    if (target !== ':memory:') {
+    db.exec('PRAGMA busy_timeout = 5000;');
+    // The API takes the advisory singleton writer lease. Workers are separate
+    // write clients: SQLite WAL serializes their transactions, and task/mission
+    // leases prevent duplicate side effects. This lets an API and one or more
+    // workers share the file without the API lease blocking every worker.
+    const role = (process.env['WORA_OS_ROLE'] ?? 'api').trim().toLowerCase();
+    if (target !== ':memory:' && role !== 'worker') {
       ensureWriterLeaseTable(db);
       startWriterLease(db);
     }

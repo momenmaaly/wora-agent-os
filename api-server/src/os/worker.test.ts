@@ -51,17 +51,17 @@ test('the worker resumes an interrupted mission without re-running completed wor
 
 test('worker status is honest about single-process durability and exposes runtime HTTP state', async () => {
   const status = workerStatus();
-  assert.equal(status.mode, 'opt-in-single-process');
+  assert.equal(status.mode, 'opt-in-worker');
   assert.equal(status.durableStore, false);
   assert.equal(status.taskLeases, true);
-  assert.equal(status.missionLease, false);
+  assert.equal(status.missionLease, true);
   assert.ok(status.limitations.length >= 2);
   assert.ok(workerSnapshot(WS).recovery);
 
   const response = await fetch(`${baseUrl}/runtime/status`);
   assert.equal(response.status, 200);
   const body = await response.json() as { mode?: string; taskLeases?: boolean; limits?: unknown };
-  assert.equal(body.mode, 'opt-in-single-process');
+  assert.equal(body.mode, 'opt-in-worker');
   assert.equal(body.taskLeases, true);
   assert.ok(body.limits);
 });

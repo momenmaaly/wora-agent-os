@@ -9,16 +9,16 @@
  */
 import { getOsDb } from './db.js';
 import { executeMission } from './orchestrator.js';
-import { getExecutionLimits, listTaskLeases } from './task-queue.js';
+import { getExecutionLimits, listTaskLeases, claimMissionLease, releaseMissionLease, listMissionLeases } from './task-queue.js';
 import { recoveryReport } from './recovery.js';
 
 export interface WorkerStatus {
-  mode: 'opt-in-single-process';
+  mode: 'opt-in-worker';
   durableStore: boolean;
-  missionLease: false;
+  missionLease: true;
   taskLeases: true;
   checkpoints: true;
-  independentWorkers: 'opt-in';
+  independentWorkers: 'supported-with-sqlite-serialization';
   limitations: string[];
 }
 
@@ -32,15 +32,16 @@ export interface WorkerRunResult {
 
 export function workerStatus(): WorkerStatus {
   return {
-    mode: 'opt-in-single-process',
+    mode: 'opt-in-worker',
     durableStore: process.env['WORA_OS_DB'] !== ':memory:',
-    missionLease: false,
+    missionLease: true,
     taskLeases: true,
     checkpoints: true,
-    independentWorkers: 'opt-in',
+    independentWorkers: 'supported-with-sqlite-serialization',
     limitations: [
-      'SQLite is a single-writer store; use one worker process per database file unless you accept serialized writes.',
-      'There is no distributed mission lease; task leases prevent duplicate task side effects, not duplicate finalization.',
+      'SQLite WAL serializes writes; workers are separate write clients protected by mission and task leases, not a distributed queue.',
+      'Mission leases prevent two workers from executing the same mission, but there is no cross-host consensus or queue.',
+      'A worker process killed mid-tool leaves a started checkpoint; idempotent tools may retry, side-effecting tools require manual review.',
       'No paid queue or external service is required or configured.',
     ],
   };
@@ -49,8 +50,8 @@ export function workerStatus(): WorkerStatus {
 function runnableMissions(workspaceId: string | null): Array<{ id: string; workspace_id: string; status: string }> {
   const db = getOsDb();
   const rows = workspaceId
-    ? db.prepare("SELECT id, workspace_id, status FROM os_missions WHERE workspace_id = ? AND status = 'failed' ORDER BY updated_at ASC LIMIT 50").all(workspaceId)
-    : db.prepare("SELECT id, workspace_id, status FROM os_missions WHERE status = 'failed' ORDER BY updated_at ASC LIMIT 50").all();
+    ? db.prepare("SELECT id, workspace_id, status FROM os_missions WHERE workspace_id = ? AND status IN ('failed', 'running', 'planning') ORDER BY updated_at ASC LIMIT 50").all(workspaceId)
+    : db.prepare("SELECT id, workspace_id, status FROM os_missions WHERE status IN ('failed', 'running', 'planning') ORDER BY updated_at ASC LIMIT 50").all();
   return rows as Array<{ id: string; workspace_id: string; status: string }>;
 }
 
@@ -63,20 +64,29 @@ export async function runWorkerOnce(options: { workspaceId?: string | null; acto
   for (const mission of candidates) {
     const db = getOsDb();
     const tasks = db.prepare('SELECT status, detail FROM os_tasks WHERE mission_id = ?').all(mission.id) as Array<{ status: string; detail: string }>;
-    const resumable = tasks.some((task) => task.status === 'blocked' && /interrupted|orphaned_assignment/u.test(task.detail))
+    const resumable = tasks.some((task) => ['created', 'planned', 'assigned', 'running'].includes(task.status))
+      || tasks.some((task) => task.status === 'blocked' && /interrupted|orphaned_assignment|lease_expired/u.test(task.detail))
       || tasks.some((task) => task.status === 'failed');
     if (!resumable) {
       result.skipped.push(mission.id);
       continue;
     }
+    const owner = options.actor === 'os-worker' ? `os-worker:${process.pid}:${mission.id}` : `${options.actor ?? 'worker'}:${process.pid}:${mission.id}`;
+    const lease = claimMissionLease({ workspaceId: mission.workspace_id, missionId: mission.id, ownerId: owner, ttlMs: getExecutionLimits(mission.workspace_id).leaseTtlMs });
+    if (!lease) { result.skipped.push(mission.id); continue; }
     result.attempted.push(mission.id);
     try {
-      await executeMission(mission.id, options.actor ?? 'os-worker');
+      await executeMission(mission.id, options.actor ?? 'os-worker', {
+        missionLeaseOwner: owner, skipMissionLease: true,
+        missionLeaseTtlMs: getExecutionLimits(mission.workspace_id).leaseTtlMs,
+      });
       const status = (db.prepare('SELECT status FROM os_missions WHERE id = ?').get(mission.id) as { status?: string } | undefined)?.status;
       if (status === 'completed') result.completed.push(mission.id);
       else result.failed.push(mission.id);
     } catch {
       result.failed.push(mission.id);
+    } finally {
+      releaseMissionLease({ workspaceId: mission.workspace_id, missionId: mission.id, ownerId: owner });
     }
   }
   return result;
@@ -114,6 +124,7 @@ export function workerSnapshot(workspaceId: string): Record<string, unknown> {
     limits: getExecutionLimits(workspaceId),
     recovery: recoveryReport(workspaceId),
     activeLeases: listTaskLeases(workspaceId).length,
+    activeMissionLeases: listMissionLeases(workspaceId).length,
     runnableMissions: runnableMissions(workspaceId).map((mission) => ({ id: mission.id, status: mission.status })),
   };
 }

@@ -7,7 +7,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -28,6 +28,8 @@ const { listLessons, collectCandidateLessons, evaluateLesson, promoteLesson, rev
 const { getWorkspaceRole, setWorkspaceRole } = await import('./roles.js');
 const { createOsRouter } = await import('./router.js');
 const { getOsDb } = await import('./db.js');
+const { runTool } = await import('./tools.js');
+const { resolveInWorkspace } = await import('./workspace.js');
 const express = (await import('express')).default;
 
 const A = 'wora-security-a';
@@ -155,4 +157,39 @@ test('secret-shaped output is redacted from mission views, evidence, verificatio
   assert.ok(!JSON.stringify(audit).includes(token), 'audit detail leaked the token');
   const approval = createApproval({ workspaceId: A, actionSummary: `token ${token}`, risk: 'high', toolDescription: 'Test action', toolInput: { target: 'test', token }, requestedBy: 'agent' });
   assert.ok(!JSON.stringify(getApproval(A, approval.id)).includes(token), 'approval view leaked the token');
+});
+
+
+test('allowlisted test execution cannot read outside the workspace or inherit host secrets', async () => {
+  const ws = 'wora-isolation';
+  const { id: missionId, taskId } = mission(ws, 'Run an allowlisted isolation test');
+  const root = resolveInWorkspace(ws, '.');
+  writeFileSync(path.join(root, 'isolation.test.mjs'), `import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+test('outside read is denied', () => {
+  assert.throws(() => readFileSync('/etc/passwd'), /restricted|permission|EACCES/i);
+});
+test('host secret is not inherited', () => {
+  assert.equal(process.env.WORA_TEST_SECRET, undefined);
+});
+`, 'utf8');
+  const payload = { command: 'node', args: ['--test', 'isolation.test.mjs'] };
+  const approval = createApproval({
+    workspaceId: ws, missionId, taskId, toolId: 'host.exec', actionSummary: 'Run an isolation test',
+    risk: 'high', toolInput: payload, requestedBy: 'agent', actionClass: 'C',
+  });
+  decideApproval(ws, approval.id, 'approved', 'reviewed for isolation test', 'reviewer');
+  process.env['WORA_TEST_SECRET'] = 'must-not-reach-child';
+  const result = await runTool('host.exec', payload, {
+    workspaceId: ws, actor: 'agent', permissions: new Set(['host:exec', 'workspace:read', 'workspace:write']),
+    toolAllowlist: new Set(['host.exec']), missionId, taskId, actionClass: 'C',
+    approvedAction: { approvalId: approval.id, payloadDigest: approval.payloadDigest, scope: approval.scope },
+  });
+  delete process.env['WORA_TEST_SECRET'];
+  assert.equal(result.ok, true);
+  const output = result.output as { passed?: boolean; isolation?: { filesystem?: string; childProcesses?: string } };
+  assert.equal(output.passed, true);
+  assert.equal(output.isolation?.filesystem, 'workspace-only');
+  assert.equal(output.isolation?.childProcesses, 'denied');
 });

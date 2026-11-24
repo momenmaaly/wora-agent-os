@@ -244,3 +244,110 @@ export function setExecutionLimits(workspaceId: string, input: Partial<Execution
   audit(db, { workspaceId, actor, action: 'settings.execution_limits', subject: EXECUTION_LIMITS_KEY, detail: next });
   return next;
 }
+
+/* ─── Mission-level leases ─────────────────────────────── */
+export interface MissionLease {
+  missionId: string;
+  workspaceId: string;
+  ownerId: string;
+  acquiredAt: string;
+  heartbeatAt: string;
+  expiresAt: number;
+  updatedAt: string;
+}
+
+const missionLeaseView = (row: Record<string, string | number>): MissionLease => ({
+  missionId: String(row['mission_id']), workspaceId: String(row['workspace_id']), ownerId: String(row['owner_id']),
+  acquiredAt: String(row['acquired_at']), heartbeatAt: String(row['heartbeat_at']),
+  expiresAt: Number(row['expires_at']), updatedAt: String(row['updated_at']),
+});
+
+/**
+ * Claim a mission before an executor starts it. This is the mission-level
+ * duplicate-execution boundary above task leases. It is safe across processes
+ * sharing SQLite because the SELECT and conditional upsert run in one
+ * BEGIN IMMEDIATE transaction.
+ */
+export function claimMissionLease(input: { workspaceId: string; missionId: string; ownerId: string; ttlMs?: number }): MissionLease | null {
+  const db = getOsDb();
+  const ttlMs = Math.min(Math.max(input.ttlMs ?? 30_000, 1_000), 10 * 60_000);
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const mission = db.prepare('SELECT status FROM os_missions WHERE workspace_id = ? AND id = ?')
+      .get(input.workspaceId, input.missionId) as { status?: string } | undefined;
+    if (!mission || ['completed', 'cancelled', 'paused'].includes(mission.status ?? '')) { db.exec('ROLLBACK'); return null; }
+    const existing = db.prepare('SELECT * FROM os_mission_leases WHERE mission_id = ?').get(input.missionId) as Record<string, string | number> | undefined;
+    const now = Date.now();
+    if (existing && Number(existing['expires_at']) > now && String(existing['owner_id']) !== input.ownerId) {
+      db.exec('ROLLBACK');
+      return null;
+    }
+    if (existing && Number(existing['expires_at']) > now && String(existing['owner_id']) === input.ownerId) {
+      db.exec('COMMIT');
+      return missionLeaseView(existing);
+    }
+    const ts = nowIso();
+    const lease: MissionLease = {
+      missionId: input.missionId, workspaceId: input.workspaceId, ownerId: input.ownerId,
+      acquiredAt: ts, heartbeatAt: ts, expiresAt: now + ttlMs, updatedAt: ts,
+    };
+    db.prepare(`INSERT INTO os_mission_leases (mission_id, workspace_id, owner_id, acquired_at, heartbeat_at, expires_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(mission_id) DO UPDATE SET workspace_id = excluded.workspace_id, owner_id = excluded.owner_id,
+        acquired_at = excluded.acquired_at, heartbeat_at = excluded.heartbeat_at, expires_at = excluded.expires_at, updated_at = excluded.updated_at`)
+      .run(lease.missionId, lease.workspaceId, lease.ownerId, lease.acquiredAt, lease.heartbeatAt, lease.expiresAt, lease.updatedAt);
+    audit(db, { workspaceId: input.workspaceId, actor: input.ownerId, action: 'mission.lease.claim', subject: input.missionId, detail: { expiresAt: lease.expiresAt } });
+    db.exec('COMMIT');
+    return lease;
+  } catch (error) {
+    try { db.exec('ROLLBACK'); } catch { /* transaction may already be closed */ }
+    throw error;
+  }
+}
+
+export function heartbeatMissionLease(input: { workspaceId: string; missionId: string; ownerId: string; ttlMs?: number }): boolean {
+  const now = Date.now();
+  const ttlMs = Math.min(Math.max(input.ttlMs ?? 30_000, 1_000), 10 * 60_000);
+  const result = getOsDb().prepare('UPDATE os_mission_leases SET heartbeat_at = ?, expires_at = ?, updated_at = ? WHERE workspace_id = ? AND mission_id = ? AND owner_id = ? AND expires_at > ?')
+    .run(nowIso(), now + ttlMs, nowIso(), input.workspaceId, input.missionId, input.ownerId, now);
+  return Number(result.changes ?? 0) === 1;
+}
+
+export function releaseMissionLease(input: { workspaceId: string; missionId: string; ownerId: string }): boolean {
+  const db = getOsDb();
+  const result = db.prepare('DELETE FROM os_mission_leases WHERE workspace_id = ? AND mission_id = ? AND owner_id = ?')
+    .run(input.workspaceId, input.missionId, input.ownerId);
+  if (Number(result.changes ?? 0) === 1) {
+    audit(db, { workspaceId: input.workspaceId, actor: input.ownerId, action: 'mission.lease.release', subject: input.missionId, detail: {} });
+    return true;
+  }
+  return false;
+}
+
+export function getMissionLease(workspaceId: string, missionId: string): MissionLease | null {
+  const row = getOsDb().prepare('SELECT * FROM os_mission_leases WHERE workspace_id = ? AND mission_id = ?').get(workspaceId, missionId) as Record<string, string | number> | undefined;
+  return row ? missionLeaseView(row) : null;
+}
+
+export function listMissionLeases(workspaceId: string): MissionLease[] {
+  const rows = getOsDb().prepare('SELECT * FROM os_mission_leases WHERE workspace_id = ? ORDER BY acquired_at DESC LIMIT 100').all(workspaceId);
+  return (rows as unknown as Array<Record<string, string | number>>).map(missionLeaseView);
+}
+
+export function recoverExpiredMissionLeases(workspaceId?: string): number {
+  const db = getOsDb();
+  const now = Date.now();
+  const rows = workspaceId
+    ? db.prepare('SELECT * FROM os_mission_leases WHERE workspace_id = ? AND expires_at <= ?').all(workspaceId, now)
+    : db.prepare('SELECT * FROM os_mission_leases WHERE expires_at <= ?').all(now);
+  let recovered = 0;
+  for (const row of rows as unknown as Array<Record<string, string | number>>) {
+    const result = db.prepare('DELETE FROM os_mission_leases WHERE mission_id = ? AND owner_id = ? AND expires_at <= ?')
+      .run(String(row['mission_id']), String(row['owner_id']), now);
+    if (Number(result.changes ?? 0) === 1) {
+      audit(db, { workspaceId: String(row['workspace_id']), actor: 'system', action: 'mission.lease.expired', subject: String(row['mission_id']), detail: { ownerId: row['owner_id'], expiresAt: row['expires_at'] } });
+      recovered += 1;
+    }
+  }
+  return recovered;
+}

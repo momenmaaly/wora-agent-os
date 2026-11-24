@@ -11,6 +11,7 @@ import { promisify } from 'node:util';
 import { z } from 'zod';
 import { openWorkspaceFile, resolveInWorkspace, workspacePath } from './workspace.js';
 import type { ToolDefinition } from './tools.js';
+import { resourceLimitedCommand } from '../extensions/sandbox.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -272,14 +273,29 @@ export const hostExecTool: ToolDefinition = {
       if (arg.startsWith('-')) throw new Error(`Flag "${arg}" is not allowlisted`);
       resolveInWorkspace(ctx.workspaceId, path.join(input.cwd ?? '.', arg));
     }
-    const { stdout, stderr } = await execFileAsync(process.execPath, args, {
+    const workspaceRoot = workspacePath(ctx.workspaceId);
+    // Node's permission model is the available OS-level boundary here: the test
+    // process may read/write only the workspace and cannot spawn child processes
+    // or load addons. Network access is not restricted by Node permissions; a
+    // container/network namespace is still required for that guarantee.
+    const nodeArgs = [
+      '--permission',
+      `--allow-fs-read=${workspaceRoot}`,
+      `--allow-fs-write=${workspaceRoot}`,
+      '--test', '--test-isolation=none', ...args.slice(1),
+    ];
+    const launch = resourceLimitedCommand(process.execPath, nodeArgs);
+    const { stdout, stderr } = await execFileAsync(launch.command, launch.args, {
       cwd,
       timeout: 30_000,
       maxBuffer: 1024 * 1024,
-      env: { PATH: process.env.PATH, NODE_ENV: 'test' },
+      env: { PATH: process.env.PATH, NODE_ENV: 'test', HOME: process.env.HOME, TMPDIR: process.env.TMPDIR },
     });
     const output = `${stdout}${stderr}`.trim();
     const passed = testsPassed(output);
-    return { cwd: path.relative(workspacePath(ctx.workspaceId), cwd), output: output.slice(0, 4000), passed };
+    return {
+      cwd: path.relative(workspaceRoot, cwd), output: output.slice(0, 4000), passed,
+      isolation: { mode: 'node-permission-model', filesystem: 'workspace-only', childProcesses: 'denied', network: 'not-restricted', resourceLimits: launch.isolation },
+    };
   },
 };

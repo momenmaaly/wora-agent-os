@@ -338,6 +338,29 @@ export function recordTaskSelection(input: { workspaceId: string; missionId: str
 export function resolveTaskAgent(workspaceId: string, task: SelectionTask, missionId: string): { agent: AgentRecord | null; decision: SelectionDecision } {
   const requirement = requirementForTask(task, 0, workspaceId);
   const decision = selectForRequirement(workspaceId, requirement, { preferAgentId: task.agentId ?? null });
+  // A persisted assignment is attempted first when the agent is active and has
+  // the assigned tool. Authorization is still re-checked at execution; a denied
+  // capability then triggers the audited reassignment path instead of silently
+  // substituting a different specialist before the task ever runs.
+  const preferred = task.agentId ? getAgent(workspaceId, task.agentId) : null;
+  if (preferred?.status === 'active' && (!task.tool || preferred.tools.includes(task.tool))) {
+    const candidate = decision.candidates.find((entry) => entry.agentId === preferred.id);
+    if (candidate) {
+      const forced: SelectionDecision = {
+        ...decision,
+        selectedAgentId: preferred.id,
+        selectedAgentName: preferred.name,
+        gap: null,
+        explanation: {
+          ...decision.explanation,
+          summary: `Persisted assignment honored: ${preferred.name}; authorization is re-checked at execution.`,
+          unresolvedRisks: [...decision.explanation.unresolvedRisks, ...(candidate.eligible ? [] : ['persisted agent is not fully eligible; execution may deny and reassign'])],
+        },
+      };
+      if (task.id) recordTaskSelection({ workspaceId, missionId, taskId: task.id, decision: forced, reason: 'persisted team assignment attempted before reassignment' });
+      return { agent: preferred, decision: forced };
+    }
+  }
   const agent = decision.selectedAgentId ? getAgent(workspaceId, decision.selectedAgentId) : null;
   if (task.id) recordTaskSelection({ workspaceId, missionId, taskId: task.id, decision, reason: task.agentId ? 'team assignment validated' : 'dynamic selection' });
   return { agent, decision };

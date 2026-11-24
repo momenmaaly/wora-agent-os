@@ -55,6 +55,7 @@ import {
 import { logger } from '../lib/logger.js';
 import { metricsPrometheus, metricsSnapshot, newCorrelationId } from '../lib/observability.js';
 import { createExtensionsRouter } from '../extensions/router.js';
+import { applyAdaptiveReplan, alternativeForTask } from './adaptive-replan.js';
 import { ensureWorkspaceExtensions } from '../extensions/index.js';
 import { executeForAgent } from '../extensions/capabilities.js';
 import { permissionSensitivity } from '../extensions/manifest.js';
@@ -477,14 +478,16 @@ function highRiskAgentCapabilities(permissions: readonly string[], tools: readon
   const createMissionSchema = z.object({
     objective: z.string().trim().min(3).max(4000),
     track: z.string().trim().min(1).max(40).optional(),
+    execute: z.boolean().default(true),
   }).strict();
 
   router.post('/missions', asyncWrap(async (req, res) => {
     if (!rateLimit(workspace(res), 30, req.path)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
     const body = createMissionSchema.parse(req.body ?? {});
     const missionId = createMission({ workspaceId: workspace(res), objective: body.objective, actor: actor(res), track: body.track, correlationId: correlation(res) });
-    // Execute asynchronously; the client polls GET /missions/:id for lifecycle updates.
-    void executeMission(missionId, actor(res)).catch((err) => logger.error({ err, missionId }, 'mission execution failed'));
+    // Execute asynchronously by default; execute:false leaves the mission for a
+    // durable worker or an explicit POST /missions/:id/execute.
+    if (body.execute) void executeMission(missionId, actor(res)).catch((err) => logger.error({ err, missionId }, 'mission execution failed'));
     res.status(202).json(getMissionDetail(workspace(res), missionId));
   }));
 
@@ -511,6 +514,19 @@ function highRiskAgentCapabilities(permissions: readonly string[], tools: readon
     const body = z.object({ concurrency: z.number().int().min(1).max(8).optional() }).strict().parse(req.body ?? {});
     await executeMission(detail.id, actor(res), { concurrency: body.concurrency });
     res.json(getMissionDetail(workspace(res), detail.id));
+  }));
+
+  router.post('/missions/:id/tasks/:taskId/replan', asyncWrap((req, res) => {
+    if (!rateLimit(workspace(res), 20, req.path)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    const body = z.object({ reason: z.string().trim().min(3).max(500) }).strict().parse(req.body ?? {});
+    const detail = getMissionDetail(workspace(res), param(req, 'id'));
+    if (!detail) { res.status(404).json({ error: 'Mission not found' }); return; }
+    const task = detail.tasks.find((candidate) => candidate.id === param(req, 'taskId'));
+    if (!task) { res.status(404).json({ error: 'Task not found' }); return; }
+    const candidate = alternativeForTask({ tool: task.tool, toolInput: task.toolInput });
+    if (!candidate) { res.status(409).json({ error: 'No implemented equivalent alternative exists', code: 'NO_IMPLEMENTED_ALTERNATIVE' }); return; }
+    const transition = applyAdaptiveReplan({ workspaceId: workspace(res), missionId: detail.id, taskId: task.id, reason: body.reason, actor: actor(res) });
+    res.status(transition.applied ? 200 : 409).json({ transition, mission: getMissionDetail(workspace(res), detail.id) });
   }));
 
   router.post('/missions/:id/pause', asyncWrap((req, res) => {

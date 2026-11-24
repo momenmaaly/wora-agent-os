@@ -62,8 +62,10 @@ test('checkpoints preserve started and completed states', () => {
   assert.throws(() => checkpointTask({ workspaceId: WS, taskId, missionId, runId: 'run-a', attempt: 1, status: 'started' }), /cannot be downgraded/);
 });
 
-test('a started checkpoint without completion blocks a duplicate side effect', async () => {
+test('a started checkpoint without completion blocks a non-idempotent duplicate side effect', async () => {
   const { missionId, taskId } = missionWithTask();
+  getOsDb().prepare('UPDATE os_tasks SET tool = ?, tool_input = ?, specialization = ? WHERE id = ?')
+    .run('scaffold.webapp', JSON.stringify({ name: 'started-checkpoint' }), 'frontend_engineer', taskId);
   checkpointTask({ workspaceId: WS, taskId, missionId, runId: 'crashed-run', attempt: 1, status: 'started', checkpoint: { phase: 'before' } });
   await executeMission(missionId, 'test');
   const detail = getMissionDetail(WS, missionId)!;

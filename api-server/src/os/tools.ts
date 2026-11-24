@@ -59,6 +59,8 @@ export interface ToolDefinition {
   source?: 'core' | 'plugin';
   pluginId?: string;
   timeoutMs: number;
+  /** True only when repeating the tool after an uncertain interruption is safe. */
+  idempotent?: boolean;
   // `any` because tools are stored heterogeneously; runTool validates via `schema` before invoking.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   execute(input: any, ctx: ToolContext): unknown | Promise<unknown>;
@@ -843,6 +845,7 @@ export interface PluginToolDefinition {
   permissions: string[];
   risk: ToolRisk;
   timeoutMs: number;
+  idempotent?: boolean;
   pluginId: string;
 }
 
@@ -875,6 +878,7 @@ function pluginToolAsDefinition(tool: PluginToolDefinition): ToolDefinition {
     risk: tool.risk,
     environment: 'host',
     timeoutMs: tool.timeoutMs,
+    idempotent: tool.idempotent === true,
     source: 'plugin',
     pluginId: tool.pluginId,
     async execute(input, ctx) {
@@ -910,6 +914,22 @@ const ALL_TOOLS: ToolDefinition[] = [
 ];
 
 const toolMap = new Map(ALL_TOOLS.map((tool) => [tool.id, tool]));
+
+/** Tools with no external side effect may be safely retried after a crash. */
+const IDEMPOTENT_TOOL_IDS = new Set([
+  'system.diagnostics', 'fs.workspace_list', 'fs.workspace_read',
+  'or.assignment', 'or.employee_schedule', 'or.solve_lp', 'sim.monte_carlo',
+  'stats.describe', 'forecast.linear', 'decision.weighted_matrix', 'text.extract_summary',
+  'web.fetch_read', 'security.scan', 'meta.select_algorithm', 'meta.select_scientific_method',
+  'meta.understand_problem', 'meta.classify_action',
+]);
+
+export function isIdempotentTool(id: string | null, workspaceId?: string): boolean {
+  if (!id) return true;
+  if (toolMap.has(id)) return IDEMPOTENT_TOOL_IDS.has(id);
+  const plugin = workspaceId ? pluginTools(workspaceId).find((tool) => tool.id === id) : null;
+  return plugin?.idempotent === true;
+}
 
 export function listTools(workspaceId?: string) {
   const core = ALL_TOOLS.map(({ id, name, description, inputSchema, permission, risk, environment, timeoutMs }) =>

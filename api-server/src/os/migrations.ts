@@ -104,6 +104,22 @@ export const MIGRATIONS: Migration[] = [
       db.exec('CREATE INDEX IF NOT EXISTS idx_os_decision_records_mission ON os_decision_records(workspace_id, mission_id, created_at)');
     },
   },
+  {
+    version: 7,
+    name: 'mission-leases-and-worker-coordination',
+    up(db) {
+      db.exec(`CREATE TABLE IF NOT EXISTS os_mission_leases (
+        mission_id TEXT PRIMARY KEY REFERENCES os_missions(id) ON DELETE CASCADE,
+        workspace_id TEXT NOT NULL,
+        owner_id TEXT NOT NULL,
+        acquired_at TEXT NOT NULL,
+        heartbeat_at TEXT NOT NULL,
+        expires_at INTEGER NOT NULL,
+        updated_at TEXT NOT NULL
+      )`);
+      db.exec('CREATE INDEX IF NOT EXISTS idx_os_mission_leases_expiry ON os_mission_leases(expires_at)');
+    },
+  },
 ];
 
 function tableExists(db: OsDatabase, name: string): boolean {
