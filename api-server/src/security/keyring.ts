@@ -11,7 +11,7 @@
  * configured. Production should configure an explicit keyring; the status
  * endpoint reports the source and key IDs, never key material.
  */
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { sanitizeEnv } from '../lib/config.js';
@@ -62,6 +62,11 @@ function loadFile(file: string): Keyring {
     writeFileSync(file, body, { mode: 0o600 });
     try { chmodSync(file, 0o600); } catch { /* best effort on non-POSIX filesystems */ }
     return { ...parseKeyringJson(body), source: 'generated-file' };
+  }
+  const mode = statSync(file).mode & 0o777;
+  if ((mode & 0o077) !== 0) {
+    if (process.env['NODE_ENV'] === 'production') throw new Error('Secret keyring file must not be readable by group or others');
+    chmodSync(file, 0o600);
   }
   const body = readFileSync(file, 'utf8').trim();
   return { ...parseKeyringJson(body), source: 'file' };
