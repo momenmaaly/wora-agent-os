@@ -3,8 +3,8 @@
 **Updated:** 2026-11-24
 **Branch:** `feat/extensions-subsystem`
 **HEAD at audit:** `a5a4e0a` — Remediate Phase 1 security findings F1–F13
-**Latest committed units:** `07d34f1` algorithm catalog; `6b5c483` verification records; `f965594` action classification
-**Working tree:** workstreams 1–6 implemented, pending final commit
+**Latest committed units:** `1fe32e4` governance enforcement, durable runtime, problem understanding, independent verification, learning and benchmarks; `07d34f1` algorithm catalog; `6b5c483` verification records; `f965594` action classification
+**Working tree:** clean after the workstreams 1–6 commit
 **Remote main at audit:** `a1ca08c`
 **Rule:** this file records only work verified by source inspection, commands, tests or live HTTP probes. It is not a marketing status page.
 
