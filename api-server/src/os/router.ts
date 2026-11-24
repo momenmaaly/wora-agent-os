@@ -17,7 +17,7 @@ import { getOsDb, parseJson } from './db.js';
 import { getAiUsageSummary } from './usage.js';
 import { listPlaybooks, deletePlaybook } from './playbooks.js';
 import { listTools, runTool, getTool } from './tools.js';
-import { listAlgorithms, selectAlgorithm, PROBLEM_KINDS } from './algorithms.js';
+import { listAlgorithms, selectAlgorithm, PROBLEM_KINDS, algorithmSelectionInputSchema } from './algorithms.js';
 import { listVerifications, getVerification } from './verification.js';
 import { listTaskLeases, listTaskCheckpoints, getExecutionLimits, setExecutionLimits } from './task-queue.js';
 import { understandProblem, getProblemProfile } from './problem.js';
@@ -25,10 +25,13 @@ import { listPlanVersions, replanMission } from './planning.js';
 import { previewTeam, getTeamPlan, listSelectionDecisions, performanceReport, requirementsForPlan } from './selection.js';
 import { listLessons, getLesson, collectCandidateLessons, evaluateLesson, promoteLesson, rejectLesson, revokeLesson, recordLessonOutcome, listLessonEvents } from './lessons.js';
 import { redactSecrets } from './secrets.js';
-import { listScientificDomains, runBenchmarkSuite, listBenchmarkRuns } from './benchmarks.js';
+import { runBenchmarkSuite, listBenchmarkRuns } from './benchmarks.js';
+import { listScientificDomains, scientificCatalogSummary, selectScientificMethod } from './science.js';
+import { compareSolutionStrategies, assessReplan, listDecisionRecords, saveDecisionRecord } from './decision.js';
 import { classifyAction } from './actions.js';
 import { repairRepository, inspectRepository } from './code-repair.js';
 import { recoveryReport, recoverWorkspace } from './recovery.js';
+import { workerSnapshot } from './worker.js';
 import { migrationStatus } from './migrations.js';
 import { SPECIALIZATIONS } from './specializations.js';
 import {
@@ -221,6 +224,9 @@ export function createOsRouter(options: { production?: boolean } = {}): Router {
   router.get('/recovery', asyncWrap((_req, res) => {
     res.json(recoveryReport(workspace(res)));
   }));
+  router.get('/runtime/status', asyncWrap((_req, res) => {
+    res.json(workerSnapshot(workspace(res)));
+  }));
   router.post('/recovery', asyncWrap((req, res) => {
     if (roleRank(roleOf(res)) < roleRank('admin')) { res.status(403).json({ error: 'Admin role required' }); return; }
     if (!rateLimit(workspace(res), 5, req.path)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
@@ -289,17 +295,50 @@ export function createOsRouter(options: { production?: boolean } = {}): Router {
 
   router.post('/algorithms/select', asyncWrap((req, res) => {
     if (!rateLimit(workspace(res), 60, req.path)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    res.json(selectAlgorithm(algorithmSelectionInputSchema.parse(req.body ?? {})));
+  }));
+
+  router.get('/science/domains', asyncWrap((_req, res) => {
+    res.json({ ...scientificCatalogSummary(), domains: listScientificDomains() });
+  }));
+
+  router.post('/science/select', asyncWrap((req, res) => {
+    if (!rateLimit(workspace(res), 60, req.path)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    const body = algorithmSelectionInputSchema.parse(req.body ?? {});
+    res.json(selectScientificMethod(body));
+  }));
+
+  router.post('/decisions/compare', asyncWrap((req, res) => {
+    if (!rateLimit(workspace(res), 60, req.path)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
     const body = z.object({
-      objective: z.string().trim().max(4000).optional(),
-      kind: z.enum(PROBLEM_KINDS).optional(),
-      features: z.object({
-        hasCostMatrix: z.boolean().optional(), matrixRows: z.number().int().positive().max(200).optional(), matrixCols: z.number().int().positive().max(200).optional(),
-        hasEmployees: z.boolean().optional(), hasShifts: z.boolean().optional(), hasUncertainty: z.boolean().optional(),
-        hasTimeSeries: z.boolean().optional(), hasCriteria: z.boolean().optional(), hasAlternatives: z.boolean().optional(),
-        integerVariables: z.boolean().optional(), nonlinear: z.boolean().optional(),
-      }).strict().optional(),
+      objective: z.string().trim().min(3).max(4000),
+      track: z.string().trim().min(1).max(40).optional(),
     }).strict().parse(req.body ?? {});
-    res.json(selectAlgorithm(body));
+    const problem = understandProblem({ objective: body.objective, track: body.track });
+    const plan = buildPlan(body.objective, body.track, workspace(res));
+    res.json({ problem, plan, decision: compareSolutionStrategies(plan, workspace(res), problem) });
+  }));
+
+  router.post('/decisions/replan-check', asyncWrap((req, res) => {
+    if (!rateLimit(workspace(res), 60, req.path)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    const body = z.object({
+      failureCategory: z.string().trim().max(80).optional(),
+      methodFailed: z.boolean().optional(),
+      toolUnavailable: z.boolean().optional(),
+      specialistUnavailable: z.boolean().optional(),
+      costExceeded: z.boolean().optional(),
+      assumptionInvalidated: z.boolean().optional(),
+      newEvidence: z.boolean().optional(),
+      alternativesAvailable: z.boolean().optional(),
+      previousReplans: z.number().int().min(0).max(20).optional(),
+    }).strict().parse(req.body ?? {});
+    res.json(assessReplan(body));
+  }));
+
+  router.get('/missions/:id/decisions', asyncWrap((req, res) => {
+    const detail = getMissionDetail(workspace(res), param(req, 'id'));
+    if (!detail) { res.status(404).json({ error: 'Mission not found' }); return; }
+    res.json({ decisions: listDecisionRecords(workspace(res), detail.id) });
   }));
 
   router.post('/actions/classify', asyncWrap((req, res) => {
@@ -619,7 +658,13 @@ function highRiskAgentCapabilities(permissions: readonly string[], tools: readon
   router.post('/missions/:id/replan', asyncWrap((req, res) => {
     if (!rateLimit(workspace(res), 20, req.path)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
     const body = z.object({ reason: z.string().trim().min(3).max(500) }).strict().parse(req.body ?? {});
-    res.json(replanMission(workspace(res), param(req, 'id'), body.reason, actor(res)));
+    const version = replanMission(workspace(res), param(req, 'id'), body.reason, actor(res));
+    saveDecisionRecord({
+      workspaceId: workspace(res), missionId: version.missionId, kind: 'replan',
+      comparison: { version: version.version, strategy: version.strategy, plan: version.plan, comparison: version.comparison },
+      reason: body.reason, actor: actor(res),
+    });
+    res.json(version);
   }));
 
   router.get('/settings/action-budget', asyncWrap((_req, res) => {

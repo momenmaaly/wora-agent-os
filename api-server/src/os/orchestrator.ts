@@ -29,6 +29,7 @@ import { redactSecrets } from './secrets.js';
 import { openTaskToolInput, sealTaskToolInput } from '../security/task-fields.js';
 import { collectCandidateLessons } from './lessons.js';
 import { comparePlans, savePlanVersion, listPlanVersions, verifyPlanExecution } from './planning.js';
+import { compareSolutionStrategies, saveDecisionRecord, listDecisionRecords, assessReplan } from './decision.js';
 import { persistTeamPlan, resolveTaskAgent, selectReplacement, recordAgentPerformance, getTeamPlan, listSelectionDecisions } from './selection.js';
 import { logger } from '../lib/logger.js';
 
@@ -337,6 +338,7 @@ export function createMission(input: { workspaceId: string; objective: string; a
   const problem = understandProblem({ objective, track: input.track });
   const plan = buildPlan(objective, input.track, input.workspaceId);
   const planComparison = comparePlans(plan, input.workspaceId, problem);
+  const decision = compareSolutionStrategies(plan, input.workspaceId, problem);
   const missionId = newId('msn');
   const ts = nowIso();
   db.exec('BEGIN');
@@ -359,7 +361,9 @@ export function createMission(input: { workspaceId: string; objective: string; a
       if (task.dependsOn.length) updateDeps.run(JSON.stringify(task.dependsOn.map((i) => taskIds[i]!)), taskIds[index]!);
     }
     saveProblemProfile(input.workspaceId, missionId, problem);
-    savePlanVersion({ workspaceId: input.workspaceId, missionId, plan: planComparison.preferred, comparison: planComparison, reason: 'initial deterministic plan', actor: input.actor ?? 'user' });
+    const chosenPlan = planComparison.plans.find((candidate) => candidate.strategy === decision.preferredPlan.planStrategy) ?? planComparison.preferred;
+    savePlanVersion({ workspaceId: input.workspaceId, missionId, plan: chosenPlan, comparison: { ...planComparison, decision }, reason: 'initial deterministic plan with scientific method comparison', actor: input.actor ?? 'user' });
+    saveDecisionRecord({ workspaceId: input.workspaceId, missionId, kind: 'initial', comparison: decision, reason: decision.reason, actor: input.actor ?? 'user' });
     try {
       persistTeamPlan({ workspaceId: input.workspaceId, missionId, plan, taskIds, problem, actor: input.actor ?? 'user' });
     } catch (err) {
@@ -625,6 +629,24 @@ export async function executeMission(missionId: string, actor = 'orchestrator', 
             checks: [{ id: 'capability-authorization', kind: 'authorization', description: 'The agent is authorized for the assigned tool', status: 'failed', evidence: reason }],
             result: 'blocked', failureReason: reason, verifier: 'wora.orchestrator/capability-check',
           });
+          if (reassignments < 1) {
+            const replacement = selectReplacement(mission.workspace_id, {
+              id: task.id, title: task.title, objective: task.objective, specialization: task.specialization,
+              tool: task.tool, acceptance: parseJson<string[]>(task.acceptance, []), dependsOn: [], agentId: agent.id,
+            }, missionId, agent.id);
+            if (replacement.agent) {
+              audit(db, { workspaceId: mission.workspace_id, actor: 'orchestrator', action: 'task.reassign', subject: task.id, detail: { missionId, from: agent.id, to: replacement.agent.id, reason: `authorization: ${reason}`.slice(0, 300) } });
+              saveDecisionRecord({
+                workspaceId: mission.workspace_id, missionId, kind: 'authorization-reassignment',
+                comparison: { from: agent.id, to: replacement.agent.id, reason, selectedBy: 'dynamic-selection' },
+                reason: 'Authorization failed; a qualified alternate agent was available.', actor: 'orchestrator',
+              });
+              agent = replacement.agent;
+              reassignments += 1;
+              attempt = 1;
+              continue;
+            }
+          }
           break;
         }
       }
@@ -721,7 +743,22 @@ export async function executeMission(missionId: string, actor = 'orchestrator', 
           continue;
         }
       }
-      if (!reviewPassed) attempt += 1;
+      if (!reviewPassed) {
+        const profile = getProblemProfile(mission.workspace_id, missionId);
+        const assessment = assessReplan({
+          failureCategory: classifyFailure(lastIssues),
+          methodFailed: true,
+          alternativesAvailable: Boolean(profile?.algorithmSelection.alternatives.length),
+          previousReplans: 0,
+        });
+        saveDecisionRecord({
+          workspaceId: mission.workspace_id, missionId, kind: 'failure-assessment',
+          comparison: assessment,
+          reason: assessment.reason,
+          actor: 'orchestrator',
+        });
+        attempt += 1;
+      }
     }
     if (cancelledMidRun) continue;
     const liveBeforeHandoff = db.prepare('SELECT status FROM os_missions WHERE id = ?').get(missionId) as { status?: string } | undefined;
@@ -991,6 +1028,7 @@ export function getMissionDetail(workspaceId: string, missionId: string) {
     planVerification: verifyPlanExecution(tasks.map((task) => ({ id: task.id, status: task.status, dependsOn: parseJson<string[]>(task.depends_on, []) }))),
     teamPlan: getTeamPlan(workspaceId, missionId),
     selectionDecisions: listSelectionDecisions(workspaceId, missionId),
+    decisions: listDecisionRecords(workspaceId, missionId),
     verifications: listVerifications(workspaceId, { missionId, limit: 100 }),
     capabilitySnapshots: listCapabilitySnapshots(workspaceId, { missionId, limit: 100 }),
     id: mission.id,

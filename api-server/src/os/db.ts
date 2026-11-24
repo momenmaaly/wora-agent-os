@@ -440,6 +440,18 @@ CREATE TABLE IF NOT EXISTS os_agent_performance (
 );
 CREATE INDEX IF NOT EXISTS idx_os_agent_performance_agent ON os_agent_performance(workspace_id, agent_id);
 
+CREATE TABLE IF NOT EXISTS os_decision_records (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  mission_id TEXT NOT NULL REFERENCES os_missions(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL,
+  payload TEXT NOT NULL DEFAULT '{}',
+  reason TEXT NOT NULL DEFAULT '',
+  actor TEXT NOT NULL DEFAULT 'system',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_os_decision_records_mission ON os_decision_records(workspace_id, mission_id, created_at);
+
 CREATE TABLE IF NOT EXISTS os_task_leases (
   task_id TEXT PRIMARY KEY REFERENCES os_tasks(id) ON DELETE CASCADE,
   mission_id TEXT NOT NULL,
