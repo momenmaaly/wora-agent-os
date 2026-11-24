@@ -3,8 +3,8 @@
 **Updated:** 2026-11-24
 **Branch:** `feat/extensions-subsystem`
 **HEAD at audit:** `a5a4e0a` — Remediate Phase 1 security findings F1–F13
-**Latest committed units:** `07d34f1` algorithm catalog; `6b5c483` verification records
-**Working tree:** action-classification unit implemented, pending final commit
+**Latest committed units:** `07d34f1` algorithm catalog; `6b5c483` verification records; `f965594` action classification
+**Working tree:** clean after the third unit
 **Remote main at audit:** `a1ca08c`
 **Rule:** this file records only work verified by source inspection, commands, tests or live HTTP probes. It is not a marketing status page.
 
@@ -87,7 +87,7 @@ Acceptance evidence:
 
 ## 4b. Second implementation unit — verification records
 
-**Status:** implemented and locally tested. Pending final commit.
+**Status:** implemented, tested and committed as `f965594`.
 
 Added `api-server/src/os/verification.ts` and `os_verifications`:
 
@@ -102,7 +102,7 @@ Limitations: deterministic review only, not external audit; no signed artifact b
 
 ## 4c. Third implementation unit — action classification
 
-**Status:** implemented and locally tested. Pending final commit.
+**Status:** implemented, tested and committed as `f965594`.
 
 Added `api-server/src/os/actions.ts`:
 
