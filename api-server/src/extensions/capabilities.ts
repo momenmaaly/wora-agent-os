@@ -14,7 +14,7 @@ import {
   saveCapabilitySnapshot, extensionAudit, type InstallationRecord,
 } from './store.js';
 import { secretExists } from './secrets.js';
-import { permissionSensitivity, type PluginManifest, type SkillManifest } from './manifest.js';
+import { permissionSensitivity, type PluginManifest, type SkillExecutionPolicy, type SkillManifest } from './manifest.js';
 
 export interface ResolvedSkill {
   packageId: string;
@@ -23,6 +23,10 @@ export interface ResolvedSkill {
   name: string;
   version: string;
   type: SkillManifest['type'];
+  category: string;
+  tags: string[];
+  capabilities: string[];
+  description: string;
   scope: string;
   scopeId: string;
   instructions: string;
@@ -30,6 +34,8 @@ export interface ResolvedSkill {
   permissions: string[];
   tools: string[];
   autoLoad: boolean;
+  verification: string[];
+  executionPolicy: SkillExecutionPolicy;
 }
 
 export interface ResolvedPlugin {
@@ -147,9 +153,12 @@ export function resolveCapabilities(workspaceId: string, agentId: string, option
       const instructions = version.instructions || manifest.instructions;
       skills.push({
         packageId: pkg.id, installationId: installation.id, key: pkg.key, name: manifest.name,
-        version: installation.version, type: manifest.type, scope: installation.scope, scopeId: installation.scopeId,
+        version: installation.version, type: manifest.type, category: manifest.category, tags: manifest.tags,
+        capabilities: manifest.capabilities, description: manifest.description,
+        scope: installation.scope, scopeId: installation.scopeId,
         instructions, instructionDigest: instructionsDigest(instructions), permissions: required,
         tools: manifest.requirements.tools, autoLoad: installation.autoLoad && policy.autoLoad,
+        verification: manifest.verification, executionPolicy: manifest.execution_policy ?? {},
       });
       installationIds.push(installation.id);
       continue;
@@ -230,8 +239,10 @@ export function resolveAndSnapshot(workspaceId: string, agentId: string, options
     permissions: profile.permissions,
     tools: profile.tools,
     skills: profile.skills.map((skill) => ({
-      key: skill.key, version: skill.version, type: skill.type, scope: skill.scope, scopeId: skill.scopeId,
+      key: skill.key, version: skill.version, type: skill.type, category: skill.category, tags: skill.tags,
+      capabilities: skill.capabilities, scope: skill.scope, scopeId: skill.scopeId,
       instructionDigest: skill.instructionDigest, permissions: skill.permissions, tools: skill.tools, autoLoad: skill.autoLoad,
+      executionPolicy: skill.executionPolicy,
     })),
     plugins: profile.plugins.map((plugin) => ({
       key: plugin.key, version: plugin.version, type: plugin.type, executionMode: plugin.executionMode,

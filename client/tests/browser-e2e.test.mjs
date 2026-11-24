@@ -131,6 +131,38 @@ test('browser journeys: mission, plan, workers, pause/resume/cancel, approval, e
     await page.getByRole('button', { name: /تشغيل المجموعة/ }).click();
     await page.getByText(/14\/14 ناجح/).first().waitFor({ timeout: 60_000 });
 
+    // 6) Extensions: install, inspect and uninstall a real built-in skill through the UI.
+    await page.goto(`${WEB}/#extensions`, { waitUntil: 'domcontentloaded' });
+    await page.getByRole('heading', { name: /المهارات والإضافات/ }).waitFor({ timeout: 20_000 });
+    await page.getByRole('tab', { name: /المهارات/ }).click();
+    const skillCard = page.locator('.ext-card').filter({ hasText: 'wora.software-architecture' }).first();
+    await skillCard.waitFor({ timeout: 20_000 });
+    await skillCard.getByRole('button', { name: 'التفاصيل', exact: true }).click();
+    const details = page.getByRole('dialog');
+    await details.waitFor({ timeout: 10_000 });
+    await details.getByRole('button', { name: 'تثبيت', exact: true }).click();
+    const installDialog = page.getByRole('dialog');
+    await installDialog.getByRole('heading', { name: /تثبيت الحزمة/ }).waitFor({ timeout: 10_000 });
+    await installDialog.getByLabel('النطاق').selectOption('instance');
+    const autoLoadBox = installDialog.locator('label.ext-check input[type="checkbox"]').first();
+    if (await autoLoadBox.count()) await autoLoadBox.check();
+    await installDialog.getByRole('button', { name: 'تثبيت', exact: true }).click();
+    await page.getByText('تم التثبيت.').waitFor({ timeout: 20_000 });
+
+    const installedCard = page.locator('.ext-card').filter({ hasText: 'wora.software-architecture' }).first();
+    await installedCard.getByRole('button', { name: 'التفاصيل', exact: true }).click();
+    const installedDetails = page.getByRole('dialog');
+    page.once('dialog', (dialog) => void dialog.accept());
+    await installedDetails.getByRole('button', { name: 'إلغاء التثبيت', exact: true }).click();
+    await installedDetails.getByText('غير مثبّتة بعد.').waitFor({ timeout: 20_000 });
+    await page.keyboard.press('Escape');
+
+    // 7) Capability intelligence calls the real matcher and renders a selected capability or an honest gap.
+    await page.getByRole('tab', { name: /ذكاء القدرات/ }).click();
+    await page.getByLabel('صف المشكلة أو القدرة التي تحتاجها').fill('Analyze requirements and produce a verified data report');
+    await page.getByRole('button', { name: 'تقييم القدرة', exact: true }).click();
+    await page.getByRole('heading', { name: /القدرة المختارة|فجوة القدرات/ }).waitFor({ timeout: 20_000 });
+
     assert.deepEqual(pageErrors.filter((entry) => !/favicon|socket|WebSocket/i.test(entry)), []);
   } finally {
     if (browser) await browser.close();

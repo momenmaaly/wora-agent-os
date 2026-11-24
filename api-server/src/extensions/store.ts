@@ -8,7 +8,8 @@ import { getOsDb, newId, nowIso, parseJson, audit } from '../os/db.js';
 import { ensureExtensionSchema } from './schema.js';
 import {
   checksumOf, compareSemver, parseSemver, readStoredManifest, satisfies,
-  type PackageKind, type PackageManifest, type PackageScope, type PluginManifest, type SkillManifest, type TrustLevel,
+  type PackageKind, type PackageManifest, type PackageScope, type PluginManifest, type SkillExecutionPolicy,
+  type SkillManifest, type TrustLevel,
 } from './manifest.js';
 
 export interface MarketplaceRecord {
@@ -752,15 +753,83 @@ export function saveCapabilitySnapshot(input: {
 
 export function listCapabilitySnapshots(workspaceId: string, filter: { missionId?: string; agentId?: string; limit?: number } = {}): CapabilitySnapshotRecord[] {
   ensureExtensionSchema();
-  const rows = getOsDb().prepare('SELECT * FROM ext_capability_snapshots WHERE workspace_id = ? ORDER BY created_at DESC LIMIT ?')
-    .all(workspaceId, Math.min(filter.limit ?? 50, 200)) as Array<Record<string, string | null>>;
-  return rows.filter((row) => (!filter.missionId || row['mission_id'] === filter.missionId)
-    && (!filter.agentId || row['agent_id'] === filter.agentId))
-    .map((row) => ({
+  const clauses = ['workspace_id = ?'];
+  const values: Array<string | number> = [workspaceId];
+  if (filter.missionId) { clauses.push('mission_id = ?'); values.push(filter.missionId); }
+  if (filter.agentId) { clauses.push('agent_id = ?'); values.push(filter.agentId); }
+  values.push(Math.min(Math.max(filter.limit ?? 50, 1), 200));
+  const rows = getOsDb().prepare(`SELECT * FROM ext_capability_snapshots WHERE ${clauses.join(' AND ')} ORDER BY created_at DESC LIMIT ?`)
+    .all(...values) as Array<Record<string, string | null>>;
+  return rows.map((row) => ({
       id: String(row['id']), missionId: row['mission_id'] ?? null, taskId: row['task_id'] ?? null,
       agentId: String(row['agent_id']), digest: String(row['digest']),
       profile: parseJson<Record<string, unknown>>(String(row['profile']), {}), createdAt: String(row['created_at']),
     }));
+}
+
+/* ─── Skill context provenance ─────────────────────────── */
+export interface SkillContextSelected {
+  key: string; version: string; instructionDigest: string; score: number; tokens: number;
+  matched: string[]; reason: string; scope: string; scopeId: string; autoLoad: boolean;
+}
+export interface SkillContextOmitted { key: string; reason: string }
+export interface SkillContextRecord {
+  id: string;
+  workspaceId: string;
+  missionId: string | null;
+  taskId: string | null;
+  agentId: string;
+  digest: string;
+  tokenBudget: number;
+  tokensUsed: number;
+  selected: SkillContextSelected[];
+  omitted: SkillContextOmitted[];
+  contextText: string;
+  policy: SkillExecutionPolicy;
+  createdAt: string;
+}
+
+export function saveSkillContext(input: {
+  workspaceId: string; missionId?: string | null; taskId?: string | null; agentId: string;
+  digest: string; tokenBudget: number; tokensUsed: number;
+  selected: SkillContextSelected[]; omitted: SkillContextOmitted[]; contextText: string;
+  policy: SkillExecutionPolicy;
+}): string {
+  ensureExtensionSchema();
+  const id = newId('skc');
+  getOsDb().prepare(
+    `INSERT INTO ext_skill_contexts (id, workspace_id, mission_id, task_id, agent_id, digest, token_budget, tokens_used, selected, omitted, context_text, policy, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(id, input.workspaceId, input.missionId ?? null, input.taskId ?? null, input.agentId, input.digest,
+    input.tokenBudget, input.tokensUsed, JSON.stringify(input.selected), JSON.stringify(input.omitted),
+    input.contextText.slice(0, 24_000), JSON.stringify(input.policy), nowIso());
+  return id;
+}
+
+export function listSkillContexts(workspaceId: string, filter: {
+  missionId?: string; taskId?: string; agentId?: string; limit?: number;
+} = {}): SkillContextRecord[] {
+  ensureExtensionSchema();
+  const clauses = ['workspace_id = ?'];
+  const values: Array<string | number> = [workspaceId];
+  if (filter.missionId) { clauses.push('mission_id = ?'); values.push(filter.missionId); }
+  if (filter.taskId) { clauses.push('task_id = ?'); values.push(filter.taskId); }
+  if (filter.agentId) { clauses.push('agent_id = ?'); values.push(filter.agentId); }
+  values.push(Math.min(Math.max(filter.limit ?? 100, 1), 500));
+  const rows = getOsDb().prepare(`SELECT * FROM ext_skill_contexts WHERE ${clauses.join(' AND ')} ORDER BY created_at DESC LIMIT ?`)
+    .all(...values) as Array<Record<string, string | number | null>>;
+  return rows.map((row) => ({
+    id: String(row['id']), workspaceId: String(row['workspace_id']),
+    missionId: row['mission_id'] ? String(row['mission_id']) : null,
+    taskId: row['task_id'] ? String(row['task_id']) : null,
+    agentId: String(row['agent_id']), digest: String(row['digest']),
+    tokenBudget: Number(row['token_budget'] ?? 0), tokensUsed: Number(row['tokens_used'] ?? 0),
+    selected: parseJson<SkillContextSelected[]>(String(row['selected'] ?? '[]'), []),
+    omitted: parseJson<SkillContextOmitted[]>(String(row['omitted'] ?? '[]'), []),
+    contextText: String(row['context_text'] ?? ''),
+    policy: parseJson<SkillExecutionPolicy>(String(row['policy'] ?? '{}'), {}),
+    createdAt: String(row['created_at']),
+  }));
 }
 
 /* ─── Summary & audit ───────────────────────────────────── */

@@ -19,7 +19,8 @@ import { listAgents, getAgent, ensureSeedAgents, type AgentRecord } from './regi
 import { addMemory } from './memory.js';
 import { workspacePath } from './workspace.js';
 import { resolveAndSnapshot, authorizeTool } from '../extensions/capabilities.js';
-import { listRegisteredTools, listCapabilitySnapshots } from '../extensions/store.js';
+import { listRegisteredTools, listCapabilitySnapshots, listSkillContexts } from '../extensions/store.js';
+import { applySkillPolicy, persistSkillContext, selectSkillsForTask, skillContextForTool } from '../extensions/skill-intelligence.js';
 import { selectAlgorithm } from './algorithms.js';
 import { recordVerification, listVerifications } from './verification.js';
 import { claimTask, heartbeatTask, releaseTaskLease, checkpointTask, latestTaskCheckpoint, listTaskLeases, clearMissionLeases, recoverExpiredTaskLeases, getExecutionLimits, getTaskLease, claimMissionLease, heartbeatMissionLease, releaseMissionLease, getMissionLease, recoverExpiredMissionLeases } from './task-queue.js';
@@ -31,6 +32,7 @@ import { collectCandidateLessons } from './lessons.js';
 import { comparePlans, savePlanVersion, listPlanVersions, verifyPlanExecution } from './planning.js';
 import { compareSolutionStrategies, saveDecisionRecord, listDecisionRecords, assessReplan } from './decision.js';
 import { applyAdaptiveReplan, alternativeForTask } from './adaptive-replan.js';
+import { matchCapabilities } from '../extensions/capability-intelligence.js';
 import { persistTeamPlan, resolveTaskAgent, selectReplacement, recordAgentPerformance, getTeamPlan, listSelectionDecisions } from './selection.js';
 import { logger } from '../lib/logger.js';
 
@@ -46,6 +48,8 @@ export interface PlanTask {
   dependsOn: number[];
   acceptance: string[];
   detail: string;
+  /** Optional persisted assignment for capability-guided plans. */
+  agentId?: string;
 }
 
 /* ─── Sample optimization data (clearly labeled) ────────── */
@@ -129,6 +133,49 @@ export function buildPlan(objective: string, track?: string, workspaceId = 'wora
     ];
   }
   const explicit = text;
+
+  // Capability-guided mission: derive required capability, search the existing
+  // registry, check trust/permissions, then either select one executable
+  // capability or record an honest gap. Never installs or invokes a package.
+  if (track === 'capability' || /\b(?:find|select|discover|use)\b.{0,40}\b(?:capability|extension|best\s+(?:tool|skill|plugin)|missing\s+capability)\b/i.test(text)) {
+    const match = matchCapabilities({ workspaceId, objective: text });
+    const selectedTool = match.selected?.tool ?? null;
+    if (selectedTool) {
+      const selected = match.selected!;
+      const rawJson = /with\s+(\{[\s\S]+\})/u.exec(text)?.[1];
+      let toolInput: Record<string, unknown> = {};
+      if (rawJson) { try { toolInput = JSON.parse(rawJson) as Record<string, unknown>; } catch { toolInput = { text: text.slice(0, 4_000) }; } }
+      else if (/\.echo$/u.test(selectedTool) || selectedTool.includes('echo')) toolInput = { text: text.slice(0, 4_000) };
+      return [{
+        title: `Use ${selected.kind} capability ${selectedTool}`,
+        objective: text,
+        specialization: selected.specialization ?? 'generalist',
+        agentId: selected.agentId ?? undefined,
+        tool: selectedTool,
+        toolInput,
+        dependsOn: [],
+        acceptance: [
+          'The selected capability is approved, enabled and authorized for the assigned agent',
+          'The capability is executable (not just discoverable)',
+          'Execution is recorded in the audit trail and independently verified',
+        ],
+        detail: `${match.explanation} Trust=${selected.trust}; permissions=${selected.permissions.join(', ') || 'none'}; health=${selected.health}.`,
+      }];
+    }
+    return [{
+      title: 'Report the capability gap honestly',
+      objective: text,
+      specialization: 'generalist',
+      tool: 'text.extract_summary',
+      toolInput: {
+        text: `CAPABILITY GAP — no approved executable capability matched this objective. Missing/requested: ${(match.gap?.missing ?? []).join(', ') || 'unknown'}. Search terms for an operator: ${(match.gap?.searchTerms ?? []).join(', ') || 'none'}. No extension was installed or invoked.`,
+        sentences: 3,
+      },
+      dependsOn: [],
+      acceptance: ['The gap is stated explicitly', 'No unverified extension is installed or invoked', 'The missing capability and search terms are recorded'],
+      detail: match.explanation,
+    }];
+  }
 
   // Plugin tool execution: "run tool <plugin.tool> with {json}"
   const pluginToolMatch = /(?:run|execute|call)\s+(?:the\s+)?(?:plugin\s+)?tool\s+([a-z0-9][a-z0-9._-]{1,80})(?:\s+with\s+([\s\S]+))?/iu.exec(text);
@@ -348,13 +395,13 @@ export function createMission(input: { workspaceId: string; objective: string; a
       .run(missionId, input.workspaceId, objective, 'planning', input.requestedBy ?? 'user', input.correlationId ?? null, ts, ts);
     const taskIds: string[] = [];
     const insertTask = db.prepare(
-      `INSERT INTO os_tasks (id, mission_id, workspace_id, order_index, title, objective, specialization, status, depends_on, acceptance, tool, tool_input, detail, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'planned', ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO os_tasks (id, mission_id, workspace_id, order_index, title, objective, specialization, agent_id, status, depends_on, acceptance, tool, tool_input, detail, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'planned', ?, ?, ?, ?, ?, ?, ?)`
     );
     for (const [index, task] of plan.entries()) {
       const taskId = newId('tsk');
       taskIds.push(taskId);
-      insertTask.run(taskId, missionId, input.workspaceId, index, task.title, task.objective, task.specialization, JSON.stringify(task.dependsOn), JSON.stringify(task.acceptance), task.tool, sealTaskToolInput(input.workspaceId, taskId, task.toolInput), task.detail, ts, ts);
+      insertTask.run(taskId, missionId, input.workspaceId, index, task.title, task.objective, task.specialization, task.agentId ?? null, JSON.stringify(task.dependsOn), JSON.stringify(task.acceptance), task.tool, sealTaskToolInput(input.workspaceId, taskId, task.toolInput), task.detail, ts, ts);
     }
     // Store resolved dependency ids
     const updateDeps = db.prepare('UPDATE os_tasks SET depends_on = ? WHERE id = ?');
@@ -720,6 +767,13 @@ async function executeMissionInner(missionId: string, actor = 'orchestrator', op
           break;
         }
       }
+      // Select only task-relevant, approved and auto-loadable skills. The
+      // context is untrusted data with a strict token budget and is recorded
+      // with versions/digests before the tool runs. Revocation is re-evaluated
+      // on every attempt because the profile is resolved above.
+      const skillSelection = selectSkillsForTask(profile, task, { missionId, taskId: task.id });
+      const policyResult = applySkillPolicy(task, taskInput, skillSelection);
+      const skillContextId = persistSkillContext(skillSelection, agent.name);
       const ctx: ToolContext = {
         workspaceId: mission.workspace_id,
         actor: agent.name,
@@ -730,8 +784,9 @@ async function executeMissionInner(missionId: string, actor = 'orchestrator', op
         actionClass: actionClass?.class,
         approvedAction,
         correlationId: mission.correlation_id ?? undefined,
+        skillContext: skillSelection.selected.length ? skillContextForTool(skillSelection) : undefined,
       };
-      const toolInput = taskInput;
+      const toolInput = policyResult.input;
       const result = task.tool
         ? await runTool(task.tool, toolInput, ctx)
         : { ok: false, tool: 'none', error: 'No tool assigned to task', durationMs: 0 } as Awaited<ReturnType<typeof runTool>>;
@@ -750,8 +805,17 @@ async function executeMissionInner(missionId: string, actor = 'orchestrator', op
         artifactDigest: independent.artifactDigest,
         independentChecks: redactSecrets(independent.checks).value,
         capabilityDigest: lastProfile?.digest ?? null,
-        skills: lastProfile?.skills.map((skill) => `${skill.key}@${skill.version}`) ?? [],
+        skills: skillSelection.selected.map((entry) => `${entry.skill.key}@${entry.skill.version}`),
         plugins: lastProfile?.plugins.map((plugin) => `${plugin.key}@${plugin.version}`) ?? [],
+        skillContext: skillSelection.selected.length ? {
+          id: skillContextId, digest: skillSelection.digest, tokensUsed: skillSelection.tokensUsed,
+          tokenBudget: skillSelection.tokenBudget, appliedPolicy: policyResult.applied,
+          selected: skillSelection.selected.map((entry) => ({
+            key: entry.skill.key, version: entry.skill.version,
+            instructionDigest: entry.skill.instructionDigest, score: entry.score,
+          })),
+          omitted: skillSelection.omitted,
+        } : null,
       }];
 
       const liveAfterRun = db.prepare('SELECT status FROM os_missions WHERE id = ?').get(missionId) as { status?: string } | undefined;
@@ -791,6 +855,14 @@ async function executeMissionInner(missionId: string, actor = 'orchestrator', op
           { id: 'dependency-satisfaction', kind: 'planning', description: 'Every dependency was completed before this task ran', status: deps.every((id) => (db.prepare('SELECT status FROM os_tasks WHERE id = ?').get(id) as { status?: string } | undefined)?.status === 'completed') ? 'passed' : 'failed', evidence: deps.length ? deps.join(', ') : 'No dependencies declared.' },
           { id: 'lease-ownership', kind: 'concurrency', description: 'The executing worker held the durable lease for this task', status: getTaskLease(mission.workspace_id, task.id)?.ownerId === workerId ? 'passed' : 'failed', evidence: `worker ${workerId}` },
           { id: 'checkpoint-continuity', kind: 'recovery', description: 'The run did not silently continue an uncertain prior side effect', status: 'passed', evidence: priorCheckpoint ? `prior checkpoint ${priorCheckpoint.status}` : 'no prior checkpoint' },
+          {
+            id: 'skill-context-provenance', kind: 'provenance',
+            description: 'Approved skill knowledge was selected with version and instruction digest, within the token budget',
+            status: skillSelection.selected.length ? 'passed' : 'not_run',
+            evidence: skillSelection.selected.length
+              ? `${skillSelection.selected.map((entry) => `${entry.skill.key}@${entry.skill.version}:${entry.skill.instructionDigest}`).join(', ')} (${skillSelection.tokensUsed}/${skillSelection.tokenBudget} tokens)`
+              : 'No task-relevant auto-load skill was selected.',
+          },
           ...independent.checks,
         ],
         result: reviewPassed ? 'passed' : 'failed',
@@ -1146,6 +1218,7 @@ export function getMissionDetail(workspaceId: string, missionId: string) {
     decisions: listDecisionRecords(workspaceId, missionId),
     verifications: listVerifications(workspaceId, { missionId, limit: 100 }),
     capabilitySnapshots: listCapabilitySnapshots(workspaceId, { missionId, limit: 100 }),
+    skillContexts: listSkillContexts(workspaceId, { missionId, limit: 100 }),
     id: mission.id,
     objective: mission.objective,
     status: mission.status,

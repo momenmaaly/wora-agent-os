@@ -120,6 +120,29 @@ export const MIGRATIONS: Migration[] = [
       db.exec('CREATE INDEX IF NOT EXISTS idx_os_mission_leases_expiry ON os_mission_leases(expires_at)');
     },
   },
+  {
+    version: 8,
+    name: 'skill-context-provenance',
+    up(db) {
+      db.exec(`CREATE TABLE IF NOT EXISTS ext_skill_contexts (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        mission_id TEXT,
+        task_id TEXT,
+        agent_id TEXT NOT NULL,
+        digest TEXT NOT NULL,
+        token_budget INTEGER NOT NULL,
+        tokens_used INTEGER NOT NULL,
+        selected TEXT NOT NULL DEFAULT '[]',
+        omitted TEXT NOT NULL DEFAULT '[]',
+        context_text TEXT NOT NULL DEFAULT '',
+        policy TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL
+      )`);
+      db.exec('CREATE INDEX IF NOT EXISTS idx_ext_skill_contexts_mission ON ext_skill_contexts(workspace_id, mission_id, created_at)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_ext_skill_contexts_task ON ext_skill_contexts(workspace_id, task_id, created_at)');
+    },
+  },
 ];
 
 function tableExists(db: OsDatabase, name: string): boolean {

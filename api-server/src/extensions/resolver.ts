@@ -218,39 +218,55 @@ export function applyInstallPlan(input: {
   if (!plan.canInstall) throw new ResolverError('PLAN_INVALID', 'The installation plan has unresolved problems', 422);
   const approved = plan.requiresApproval ? input.approvePermissions : true;
   const deps: InstallationDependency[] = [];
-  for (const node of plan.nodes) {
-    const existing = listInstallations(workspaceId, { packageId: node.packageId }).find((row) => row.scope === plan.scope && row.scopeId === plan.scopeId);
-    const needsSecrets = node.kind === 'plugin' && node.missingSecrets.length > 0;
-    const record = createInstallation({
-      workspaceId,
-      packageId: node.packageId,
-      version: node.version,
-      scope: plan.scope,
-      scopeId: plan.scopeId,
-      enabled: !node.isRoot ? false : approved && !needsSecrets,
-      autoLoad: input.autoLoad ?? node.manifest.auto_load,
-      status: approved ? 'installed' : 'pending_approval',
-      permissionsApproved: approved,
-      actor,
-    });
-    if (node.isRoot) {
-      if (record.id !== existing?.id) {
-        extensionAudit(workspaceId, actor, 'extension.install', record.id, {
-          package: node.key, version: node.version, scope: plan.scope, scopeId: plan.scopeId,
-          approved, requiresApproval: plan.requiresApproval, autoLoad: input.autoLoad ?? node.manifest.auto_load,
-        });
+  const created: string[] = [];
+  try {
+    for (const node of plan.nodes) {
+      const existing = listInstallations(workspaceId, { packageId: node.packageId }).find((row) => row.scope === plan.scope && row.scopeId === plan.scopeId);
+      const needsSecrets = node.kind === 'plugin' && node.missingSecrets.length > 0;
+      const record = createInstallation({
+        workspaceId,
+        packageId: node.packageId,
+        version: node.version,
+        scope: plan.scope,
+        scopeId: plan.scopeId,
+        enabled: !node.isRoot ? false : approved && !needsSecrets,
+        autoLoad: input.autoLoad ?? node.manifest.auto_load,
+        status: approved ? 'installed' : 'pending_approval',
+        permissionsApproved: approved,
+        actor,
+      });
+      if (!existing) created.push(record.id);
+      if (node.isRoot) {
+        if (record.id !== existing?.id) {
+          extensionAudit(workspaceId, actor, 'extension.install', record.id, {
+            package: node.key, version: node.version, scope: plan.scope, scopeId: plan.scopeId,
+            approved, requiresApproval: plan.requiresApproval, autoLoad: input.autoLoad ?? node.manifest.auto_load,
+          });
+        }
       }
+      deps.push({
+        depKey: node.key, constraint: `=${node.version}`, resolvedVersion: node.version, satisfied: true,
+        detail: node.isRoot ? 'root package' : 'resolved dependency',
+      });
     }
-    deps.push({
-      depKey: node.key, constraint: `=${node.version}`, resolvedVersion: node.version, satisfied: true,
-      detail: node.isRoot ? 'root package' : 'resolved dependency',
+    const rootInstallation = listInstallations(workspaceId, { packageId: plan.root.packageId })
+      .find((row) => row.scope === plan.scope && row.scopeId === plan.scopeId);
+    if (!rootInstallation) throw new ResolverError('INSTALL_FAILED', 'Installation record was not created', 500);
+    replaceDependencies(workspaceId, rootInstallation.id, deps);
+    return rootInstallation;
+  } catch (error) {
+    // A failed multi-package install must not leave a dependency enabled or
+    // visible as an active capability. Mark created rows removed and clear
+    // their resources; existing installations are never touched.
+    for (const id of created) {
+      try { removeInstallation(workspaceId, id, 'install-rollback'); } catch { /* best-effort cleanup */ }
+    }
+    extensionAudit(workspaceId, actor, 'extension.install.rollback', plan.root.key, {
+      scope: plan.scope, scopeId: plan.scopeId, cleaned: created.length,
+      error: error instanceof Error ? error.message.slice(0, 300) : 'unknown',
     });
+    throw error;
   }
-  const rootInstallation = listInstallations(workspaceId, { packageId: plan.root.packageId })
-    .find((row) => row.scope === plan.scope && row.scopeId === plan.scopeId);
-  if (!rootInstallation) throw new ResolverError('INSTALL_FAILED', 'Installation record was not created', 500);
-  replaceDependencies(workspaceId, rootInstallation.id, deps);
-  return rootInstallation;
 }
 
 export function assertNoDependents(workspaceId: string, installation: InstallationRecord, packageKey: string): void {

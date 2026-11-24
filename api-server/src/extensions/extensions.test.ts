@@ -948,3 +948,52 @@ test('api: manifest validation is exposed and invalid packages are refused', { t
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 });
+
+test('api: capability match and skill provenance endpoints are authenticated and RBAC-aware', { timeout: 20_000 }, async () => {
+  const ws = 'wora-owneruser';
+  seedBuiltinCatalog(ws);
+  const agent = createAgent({ workspaceId: ws, name: 'API Capability Agent', role: 'Generalist', specialization: 'generalist', actor: 'owneruser' });
+  const echo = store.findPackageByKey(ws, 'plugin', 'wora.echo-mcp')!;
+  const plan = buildInstallPlan({ workspaceId: ws, packageId: echo.id, scope: 'agent', scopeId: agent.id });
+  const installation = applyInstallPlan({ workspaceId: ws, plan, actor: 'owneruser', approvePermissions: true });
+  syncInstallationResources(ws, installation.id);
+
+  const app = express();
+  app.use('/api/os', createOsRouter({ production: true }));
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise<void>((resolve) => server.once('listening', () => resolve()));
+  const address = server.address();
+  const port = typeof address === 'object' && address ? address.port : 0;
+  const token = issueSessionToken('owneruser', SECRET, 60);
+  const viewer = issueSessionToken('vieweruser', SECRET, 60);
+  setWorkspaceRole('wora-vieweruser', 'vieweruser', 'viewer', 'owneruser');
+  const api = async (route: string, init: RequestInit = {}, who = token) => {
+    const response = await fetch(`http://127.0.0.1:${port}/api/os${route}`, {
+      ...init,
+      headers: { 'content-type': 'application/json', ...(who ? { authorization: `Bearer ${who}` } : {}), ...(init.headers ?? {}) },
+    });
+    return { status: response.status, body: (await response.json()) as Record<string, unknown> };
+  };
+  try {
+    const anonymous = await api('/extensions/capabilities/match', { method: 'POST', body: JSON.stringify({ objective: 'echo' }) }, '');
+    assert.equal(anonymous.status, 401);
+
+    const matched = await api('/extensions/capabilities/match', {
+      method: 'POST', body: JSON.stringify({ objective: 'Echo an API capability message', agentId: agent.id }),
+    });
+    assert.equal(matched.status, 200, JSON.stringify(matched.body));
+    assert.equal((matched.body['selected'] as { tool?: string }).tool, 'wora.echo-mcp.echo');
+    assert.equal(matched.body['gap'], null);
+
+    const contexts = await api(`/extensions/skill-contexts?agentId=${agent.id}`);
+    assert.equal(contexts.status, 200);
+    assert.ok(Array.isArray(contexts.body));
+
+    const viewerRead = await api('/extensions/skill-contexts', {}, viewer);
+    assert.equal(viewerRead.status, 200);
+    const viewerMatch = await api('/extensions/capabilities/match', { method: 'POST', body: JSON.stringify({ objective: 'echo' }) }, viewer);
+    assert.equal(viewerMatch.status, 403);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});

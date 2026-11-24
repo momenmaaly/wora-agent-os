@@ -100,6 +100,7 @@ export function skillTemplate(): string {
     scope: ['instance', 'project', 'agent'],
     dependencies: [],
     auto_load: false,
+    execution_policy: {},
     instructions: '# My Skill\n\n## Responsibility\nState what this skill owns.\n\n## Workflow\n1. First verifiable step.\n2. Second verifiable step.\n\n## Verification\nState how completion is proven.',
     requirements: { tools: [], permissions: ['memory:read'], secrets: [] },
     verification: ['Completion is proven by evidence, not by assertion'],

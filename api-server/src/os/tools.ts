@@ -43,6 +43,12 @@ export interface ToolContext {
   /** Set only after a class C approval was consumed by the orchestrator. */
   approvedAction?: { approvalId: string; payloadDigest: string; scope: string };
   correlationId?: string;
+  /** Untrusted, approved skill knowledge selected for this task. Never authority. */
+  skillContext?: {
+    digest: string; tokensUsed: number; tokenBudget: number;
+    governance: string; text: string; policy: Record<string, unknown>;
+    selected: Array<{ key: string; version: string; instructionDigest: string; scope: string; scopeId: string; score: number }>;
+  };
 }
 
 export interface ToolDefinition {

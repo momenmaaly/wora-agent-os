@@ -21,7 +21,7 @@ import {
   getMcpServerForInstallation, getPackage, listCapabilitySnapshots, listExtensionAudit,
   listInstallations, listMarketplaces, listMcpServers, listPackages, listRegisteredTools, listSyncs, listVersions,
   setAgentPolicy, getAgentPolicy, setPackageStatus, updateInstallation, updateMarketplace, getMarketplace,
-  upsertPackage, extensionAudit,
+  upsertPackage, extensionAudit, listSkillContexts,
   type InstallationRecord, type PackageRecord,
 } from './store.js';
 import { MarketplaceError, normalizePath, normalizeRef, previewMarketplace, registerMarketplace, syncMarketplace } from './marketplace.js';
@@ -37,6 +37,7 @@ import {
 } from './capabilities.js';
 import { deleteSecret, listSecrets, migrateLegacySecrets, putSecret, rotateSecrets, secretKeyStatus } from './secrets.js';
 import { builtinSkillCount, BUILTIN_MARKETPLACE_URL } from './builtin.js';
+import { matchCapabilities } from './capability-intelligence.js';
 import { logger } from '../lib/logger.js';
 
 const SCOPES_SCHEMA = z.enum(SCOPES);
@@ -211,6 +212,34 @@ export function createExtensionsRouter(): Router {
     return listMarketplaces(ws).find((row) => row.url === url)
       ?? createMarketplace({ workspaceId: ws, name: 'Workspace packages', url, provider: 'builtin', ref: 'local', refType: 'tag', trust: 'community', actor: who });
   }
+
+  /* ─── Capability intelligence & skill provenance ─── */
+  const capabilityMatchSchema = z.strictObject({
+    objective: z.string().trim().min(3).max(4_000),
+    agentId: agentIdSchema.optional(),
+    requiredCapabilities: z.array(z.string().trim().min(1).max(80)).max(12).optional(),
+  });
+
+  router.post('/capabilities/match', asyncWrap((req, res) => {
+    if (!mutationAllowed(res, 60)) return;
+    const body = capabilityMatchSchema.parse(req.body ?? {});
+    const match = matchCapabilities({ workspaceId: workspace(res), objective: body.objective, agentId: body.agentId, requiredCapabilities: body.requiredCapabilities });
+    extensionAudit(workspace(res), actor(res), 'extension.capability.match', body.agentId ?? 'auto', {
+      objective: body.objective.slice(0, 300), selected: match.selected?.tool ?? null,
+      kind: match.selected?.kind ?? null, gap: match.gap?.missing ?? null, score: match.selected?.score ?? null,
+    });
+    res.json(match);
+  }));
+
+  router.get('/skill-contexts', asyncWrap((req, res) => {
+    const query = z.object({
+      missionId: z.string().trim().max(80).optional(),
+      taskId: z.string().trim().max(80).optional(),
+      agentId: agentIdSchema.optional(),
+      limit: z.coerce.number().int().min(1).max(500).optional(),
+    }).parse(req.query ?? {});
+    res.json(listSkillContexts(workspace(res), query));
+  }));
 
   /* ─── Summary & catalogs ─── */
   router.get('/', asyncWrap((_req, res) => {

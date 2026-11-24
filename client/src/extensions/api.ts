@@ -179,6 +179,31 @@ export interface CapabilityProfile {
   digest: string; resolvedAt: string;
 }
 
+export interface CapabilityCandidate {
+  id: string; kind: 'core_tool' | 'skill' | 'plugin' | 'mcp' | 'solver' | 'specialist' | 'combination';
+  name: string; description: string; agentId: string | null; specialization: string | null;
+  tool: string | null; version: string | null; source: string; trust: TrustLevel | 'core';
+  permissions: string[]; network: boolean; filesystem: boolean; health: 'healthy' | 'error' | 'unknown';
+  available: boolean; reasons: string[]; score: number;
+  reliability: { executions: number; successes: number; averageLatencyMs: number | null };
+  cost: { class: 'free' | 'local' | 'external'; latencyClass: 'low' | 'medium' | 'high' };
+}
+
+export interface CapabilityMatch {
+  workspaceId: string; objective: string; agentId: string | null;
+  selected: CapabilityCandidate | null; candidates: CapabilityCandidate[];
+  gap: { missing: string[]; message: string; searchTerms: string[] } | null;
+  explanation: string; evaluatedAt: string;
+}
+
+export interface SkillContextRecord {
+  id: string; workspaceId: string; missionId: string | null; taskId: string | null; agentId: string;
+  digest: string; tokenBudget: number; tokensUsed: number;
+  selected: Array<{ key: string; version: string; instructionDigest: string; score: number; tokens: number; matched: string[]; reason: string; scope: string; scopeId: string; autoLoad: boolean }>;
+  omitted: Array<{ key: string; reason: string }>;
+  contextText: string; policy: Record<string, unknown>; createdAt: string;
+}
+
 export interface ValidationResponse {
   ok: boolean; kind: 'skill' | 'plugin'; errors: Array<{ path: string; message: string }>;
   warnings: string[]; security: SecurityReview | null; checksum: string | null;
@@ -235,6 +260,13 @@ export const extensionsApi = {
   mcp: () => request<McpServer[]>('/mcp'),
   mcpHealth: (id: string) => request<{ ok: boolean; error?: string | null; tools: Array<{ name: string }> }>(`/mcp/${encodeURIComponent(id)}/health`, { method: 'POST' }),
 
+  capabilityMatch: (body: { objective: string; agentId?: string; requiredCapabilities?: string[] }) => request<CapabilityMatch>('/capabilities/match', json(body)),
+  skillContexts: (query: { missionId?: string; taskId?: string; agentId?: string; limit?: number } = {}) => {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(query)) if (value !== undefined && value !== '') params.set(key, String(value));
+    const suffix = params.toString();
+    return request<SkillContextRecord[]>(`/skill-contexts${suffix ? `?${suffix}` : ''}`);
+  },
   validate: (kind: 'skill' | 'plugin', manifest: unknown) => request<ValidationResponse>('/validate', json({ kind, manifest })),
   createPackage: (kind: 'skill' | 'plugin', manifest: unknown) => request<ExtensionPackage>('/packages/create', json({ kind, manifest })),
 

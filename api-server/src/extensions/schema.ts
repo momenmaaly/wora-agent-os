@@ -215,6 +215,24 @@ CREATE TABLE IF NOT EXISTS ext_capability_snapshots (
 );
 CREATE INDEX IF NOT EXISTS idx_ext_snapshots_mission ON ext_capability_snapshots(workspace_id, mission_id);
 CREATE INDEX IF NOT EXISTS idx_ext_snapshots_agent ON ext_capability_snapshots(workspace_id, agent_id, created_at);
+
+CREATE TABLE IF NOT EXISTS ext_skill_contexts (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  mission_id TEXT,
+  task_id TEXT,
+  agent_id TEXT NOT NULL,
+  digest TEXT NOT NULL,
+  token_budget INTEGER NOT NULL,
+  tokens_used INTEGER NOT NULL,
+  selected TEXT NOT NULL DEFAULT '[]',
+  omitted TEXT NOT NULL DEFAULT '[]',
+  context_text TEXT NOT NULL DEFAULT '',
+  policy TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ext_skill_contexts_mission ON ext_skill_contexts(workspace_id, mission_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_ext_skill_contexts_task ON ext_skill_contexts(workspace_id, task_id, created_at);
 `;
 
 let ready = false;

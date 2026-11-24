@@ -212,12 +212,24 @@ const requirementsSchema = z.strictObject({
   runtime: z.string().trim().max(120).optional(),
 }).default({ tools: [], permissions: [], secrets: [] });
 
+/**
+ * A deliberately small, non-executable execution policy. A skill may influence
+ * presentation and evidence requirements, but it can never name a tool,
+ * permission, path, command, or approval bypass. Unknown keys are rejected.
+ */
+export const skillExecutionPolicySchema = z.strictObject({
+  summary_sentences: z.number().int().min(1).max(5).optional(),
+  require_evidence: z.boolean().optional(),
+}).default({});
+export type SkillExecutionPolicy = z.infer<typeof skillExecutionPolicySchema>;
+
 export const skillManifestSchema = z.strictObject({
   ...commonShape,
   kind: z.literal('skill').optional(),
   type: z.enum(SKILL_TYPES),
   instructions: z.string().trim().min(40).max(MAX_INSTRUCTIONS_CHARS),
   requirements: requirementsSchema,
+  execution_policy: skillExecutionPolicySchema,
   inputs: z.array(ioFieldSchema).max(20).default([]),
   outputs: z.array(ioFieldSchema).max(20).default([]),
   verification: z.array(z.string().trim().min(3).max(400)).min(1).max(20),

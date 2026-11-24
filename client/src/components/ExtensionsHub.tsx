@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Boxes, CheckCircle2, CircleAlert, Download, LoaderCircle, Package, Plug2, Plus, RefreshCw,
-  Search, ShieldAlert, ShieldCheck, Store, Trash2, Wrench, X,
+  Search, ShieldAlert, ShieldCheck, Sparkles, Store, Trash2, Wrench, X,
 } from 'lucide-react';
 import { Dialog, EmptyState, Notice, PageHeader } from './ui.js';
 import { useI18n } from '../i18n/I18nContext.js';
 import { osApi, type Agent } from '../os/api.js';
 import {
   ExtensionApiError, extensionsApi,
-  type CapabilityProfile, type ExtensionPackage, type ExtensionSummary, type InstallPlanView,
+  type CapabilityMatch, type CapabilityProfile, type ExtensionPackage, type ExtensionSummary, type InstallPlanView,
   type Installation, type Marketplace, type McpServer, type PluginToolRecord, type ScopeName,
   type SecretMetadata, type TrustLevel, type ValidationResponse,
 } from '../extensions/api.js';
@@ -17,7 +17,7 @@ import {
   pluginTemplate, scopeKey, skillTemplate, summarizeProfile,
 } from '../extensions/model.js';
 
-type Tab = 'skills' | 'plugins' | 'marketplaces' | 'tools';
+type Tab = 'skills' | 'plugins' | 'marketplaces' | 'tools' | 'intelligence';
 const SCOPES: ScopeName[] = ['instance', 'organization', 'project', 'agent', 'user'];
 const TRUSTS: TrustLevel[] = ['official', 'verified', 'community', 'untrusted'];
 
@@ -439,6 +439,10 @@ export function ExtensionsHub() {
   const [createKind, setCreateKind] = useState<'skill' | 'plugin' | null>(null);
   const [secretName, setSecretName] = useState('');
   const [secretValue, setSecretValue] = useState('');
+  const [matchObjective, setMatchObjective] = useState('');
+  const [match, setMatch] = useState<CapabilityMatch | null>(null);
+  const [matchBusy, setMatchBusy] = useState(false);
+  const [matchError, setMatchError] = useState<string | null>(null);
 
   const role = summary?.role;
   const member = isMember(role);
@@ -521,6 +525,15 @@ export function ExtensionsHub() {
     finally { setBusy(null); }
   }
 
+  async function runCapabilityMatch(event: React.FormEvent) {
+    event.preventDefault();
+    if (!matchObjective.trim() || matchBusy) return;
+    setMatchBusy(true); setMatchError(null);
+    try { setMatch(await extensionsApi.capabilityMatch({ objective: matchObjective.trim() })); }
+    catch (err) { setMatch(null); setMatchError(errorText(err, t('ext.errorGeneric'))); }
+    finally { setMatchBusy(false); }
+  }
+
   async function addSecret(event: React.FormEvent) {
     event.preventDefault();
     if (!secretName.trim() || !secretValue) return;
@@ -539,6 +552,7 @@ export function ExtensionsHub() {
     { id: 'plugins', label: t('ext.tabPlugins'), icon: Plug2, count: summary?.plugins ?? 0 },
     { id: 'marketplaces', label: t('ext.tabMarketplaces'), icon: Store, count: summary?.marketplaces ?? 0 },
     { id: 'tools', label: t('ext.tabTools'), icon: Wrench, count: summary?.tools ?? 0 },
+    { id: 'intelligence', label: t('ext.tabIntelligence'), icon: Sparkles, count: match?.candidates.length ?? 0 },
   ];
 
   return <div className="os-page ext-page">
@@ -708,6 +722,58 @@ export function ExtensionsHub() {
         </section>}
       </div>}
     </>}
+
+    {tab === 'intelligence' && <div className="ext-intelligence">
+      <section className="panel panel-pad">
+        <h2>{t('ext.tabIntelligence')}</h2>
+        <p className="subtle">{t('ext.intObjectiveHint')}</p>
+        <form className="ext-form" onSubmit={(event) => void runCapabilityMatch(event)}>
+          <label className="os-field">{t('ext.intObjective')}
+            <textarea value={matchObjective} onChange={(event) => setMatchObjective(event.target.value)} rows={3} maxLength={4000} dir="auto" />
+          </label>
+          <button type="submit" className="button primary" disabled={matchBusy || !matchObjective.trim()}>
+            {matchBusy ? <LoaderCircle size={15} className="os-spin" aria-hidden="true" /> : <Sparkles size={15} aria-hidden="true" />}{t('ext.intMatch')}
+          </button>
+        </form>
+        {matchError && <div className="os-alert" role="alert"><CircleAlert size={15} aria-hidden="true" />{matchError}</div>}
+      </section>
+
+      {match && <section className="panel panel-pad" aria-live="polite">
+        <h2>{match.selected ? t('ext.intSelected') : t('ext.intGap')}</h2>
+        {match.selected ? <div className="ext-capability-selected">
+          <div className="ext-installation-head">
+            <strong>{match.selected.name}</strong>
+            <span className="subtle">{match.selected.kind} · {match.selected.tool ?? t('ext.none')}</span>
+            <span className={`ext-trust ext-trust-${match.selected.trust}`}>{match.selected.trust}</span>
+            <span className={`ext-health ext-health-${match.selected.health}`}>{match.selected.health}</span>
+          </div>
+          <p dir="auto">{match.selected.description}</p>
+          <div className="ext-meta-grid">
+            <div><span className="subtle">{t('ext.intScore')}</span><strong>{match.selected.score}</strong></div>
+            <div><span className="subtle">{t('ext.intAgent')}</span><strong>{match.selected.agentId}</strong></div>
+            <div><span className="subtle">{t('ext.intReliability')}</span><strong>{match.selected.reliability.successes}/{match.selected.reliability.executions}</strong></div>
+            <div><span className="subtle">{t('ext.intCost')}</span><strong>{match.selected.cost.class} · {match.selected.cost.latencyClass}</strong></div>
+            <div><span className="subtle">{t('ext.permissions')}</span><strong>{match.selected.permissions.join(', ') || t('ext.none')}</strong></div>
+          </div>
+        </div> : <>
+          <div className="os-alert" role="alert"><CircleAlert size={15} aria-hidden="true" />{match.gap?.message ?? t('ext.intNoMatch')}</div>
+          <p className="subtle">{t('ext.intGapHint')}</p>
+          {match.gap && <div className="ext-chips"><span className="subtle">{t('ext.intSearchTerms')}:</span>{match.gap.searchTerms.map((term) => <span key={term} className="os-chip small">{term}</span>)}</div>}
+        </>}
+        <h3>{t('ext.intCandidates')}</h3>
+        <div className="ext-table-wrap"><table className="ext-table">
+          <thead><tr><th>{t('ext.intTool')}</th><th>{t('ext.intTrust')}</th><th>{t('ext.intScore')}</th><th>{t('ext.intHealth')}</th><th>{t('ext.intAvailable')}</th><th>{t('ext.intReasons')}</th></tr></thead>
+          <tbody>{match.candidates.slice(0, 20).map((candidate) => <tr key={candidate.id}>
+            <td><code>{candidate.tool ?? candidate.name}</code><div className="subtle">{candidate.kind}</div></td>
+            <td><span className={`ext-trust ext-trust-${candidate.trust}`}>{candidate.trust}</span></td>
+            <td>{candidate.score}</td>
+            <td><span className={`ext-health ext-health-${candidate.health}`}>{candidate.health}</span></td>
+            <td>{candidate.available ? t('ext.yes') : t('ext.no')}</td>
+            <td>{candidate.reasons.length ? candidate.reasons.join('; ') : t('ext.none')}</td>
+          </tr>)}</tbody>
+        </table></div>
+      </section>}
+    </div>}
 
     {details && <PackageDetails pkg={details} role={role} agents={agents} organizations={organizations} onClose={() => setDetailsId(null)}
       onChanged={async () => { await refreshAfterChange(t('ext.updated')); }}
