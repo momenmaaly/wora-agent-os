@@ -21,7 +21,7 @@
 .ext-chip-ok { border-color: color-mix(in srgb, var(--mint) 55%, transparent); color: var(--mint); }
 .ext-chip-bad { border-color: color-mix(in srgb, var(--danger) 55%, transparent); color: var(--danger); }
 
-.ext-trust { display: inline-flex; align-items: center; padding: 2px 9px; border-radius: 999px; font-size: 11px; font-weight: 600; border: 1px solid var(--line); background: var(--raised); color: var(--subtle); text-transform: capitalize; }
+.ext-trust { display: inline-flex; align-items: center; white-space: nowrap; padding: 2px 9px; border-radius: 999px; font-size: 11px; font-weight: 600; border: 1px solid var(--line); background: var(--raised); color: var(--subtle); text-transform: capitalize; }
 .ext-trust-official { border-color: color-mix(in srgb, var(--accent) 55%, transparent); color: var(--accent); }
 .ext-trust-verified { border-color: color-mix(in srgb, var(--mint) 55%, transparent); color: var(--mint); }
 .ext-trust-untrusted { border-color: color-mix(in srgb, var(--danger) 55%, transparent); color: var(--danger); }
@@ -32,7 +32,7 @@
 .ext-perm-high { border-color: color-mix(in srgb, var(--danger) 55%, transparent); color: var(--danger); }
 .ext-perm-unknown { border-style: dashed; border-color: color-mix(in srgb, var(--gold) 55%, transparent); color: var(--gold); }
 
-.ext-status { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); background: var(--raised); font-size: 11px; color: var(--subtle); text-transform: capitalize; }
+.ext-status { display: inline-flex; align-items: center; white-space: nowrap; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); background: var(--raised); font-size: 11px; color: var(--subtle); text-transform: capitalize; }
 .ext-status-enabled, .ext-status-installed, .ext-status-ready, .ext-status-ok { border-color: color-mix(in srgb, var(--mint) 50%, transparent); color: var(--mint); }
 .ext-status-disabled, .ext-status-pending, .ext-status-pending_approval, .ext-status-error, .ext-status-failed { border-color: color-mix(in srgb, var(--danger) 45%, transparent); color: var(--danger); }
 

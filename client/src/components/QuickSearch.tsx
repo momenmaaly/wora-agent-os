@@ -5,7 +5,7 @@ import { useWoraStore } from '../store/useWoraStore.js';
 import { OFFICE_ROOMS } from '../office/layout.js';
 import { ROOM_DISPLAY } from '../office/presentation.js';
 import { DIRECTOR_ROOM_ID } from '../office/work.js';
-import { NAV_ITEMS, SETTINGS_ITEMS, type PageId } from '../pages.js';
+import { LEGACY_ITEMS, NAV_ITEMS, SETTINGS_ITEMS, type PageId } from '../pages.js';
 import { useI18n } from '../i18n/I18nContext.js';
 import { Dialog, EmptyState } from './ui.js';
 
@@ -25,9 +25,10 @@ export function QuickSearch({ onClose, onNavigate, onAgent, onRoom }: { onClose:
   const all: Result[] = [
     ...NAV_ITEMS.map((item) => ({ key: item.id, title: t(`nav.${item.id}`), context: t('quickSearch.page'), icon: item.icon, activate: () => onNavigate(item.id) })),
     ...SETTINGS_ITEMS.map((item) => ({ key: item.id, title: t(`nav.${item.id}`), context: t('quickSearch.settings'), icon: item.icon, activate: () => onNavigate(item.id) })),
-    ...OFFICE_ROOMS.filter((room) => room.id !== DIRECTOR_ROOM_ID).map((room) => ({ key: room.id, title: room.nameAr, context: `قسم · ${ROOM_DISPLAY[room.id]!.label}`, icon: ROOM_DISPLAY[room.id]!.icon, activate: () => onRoom(room.id) })),
+    ...LEGACY_ITEMS.map((item) => ({ key: item.id, title: t(`nav.${item.id}`), context: t('quickSearch.page'), icon: item.icon, activate: () => onNavigate(item.id) })),
+    ...OFFICE_ROOMS.filter((room) => room.id !== DIRECTOR_ROOM_ID).map((room) => ({ key: room.id, title: room.nameAr, context: `${t('quickSearch.department')} · ${ROOM_DISPLAY[room.id]!.label}`, icon: ROOM_DISPLAY[room.id]!.icon, activate: () => onRoom(room.id) })),
     ...Object.values(agents).map((agent) => ({ key: agent.id, title: agent.displayName, context: agent.profile.customRole, icon: UsersRound, activate: () => onAgent(agent.id) })),
-    ...projects.map((project) => ({ key: project.id, title: project.name, context: 'مشروع', icon: Folder, activate: () => { setProject(project.id); onNavigate('projects'); } })),
+    ...projects.map((project) => ({ key: project.id, title: project.name, context: t('quickSearch.project'), icon: Folder, activate: () => { setProject(project.id); onNavigate('projects'); } })),
   ];
   const keywords = normalize(query).split(/\s+/u).filter(Boolean);
   const results = keywords.length ? all.filter((result) => keywords.every((keyword) => normalize(`${result.title} ${result.context}`).includes(keyword))) : all.slice(0, NAV_ITEMS.length);
@@ -35,11 +36,11 @@ export function QuickSearch({ onClose, onNavigate, onAgent, onRoom }: { onClose:
   const pick = (result: Result) => { onClose(); result.activate(); };
 
   return (
-    <Dialog title="بحث سريع" icon={Search} onClose={onClose} variant="search"
-      footer={<div className="search-hints" aria-hidden="true"><span><kbd><ArrowUp size={13} /></kbd> <kbd><ArrowDown size={13} /></kbd> للتنقل</span><span><kbd>Enter</kbd> للفتح</span><span><kbd>Esc</kbd> للإغلاق</span></div>}>
+    <Dialog title={t('quickSearch.title')} icon={Search} onClose={onClose} variant="search"
+      footer={<div className="search-hints" aria-hidden="true"><span><kbd><ArrowUp size={13} /></kbd> <kbd><ArrowDown size={13} /></kbd> {t('quickSearch.navigate')}</span><span><kbd>Enter</kbd> {t('quickSearch.open')}</span><span><kbd>Esc</kbd> {t('quickSearch.close')}</span></div>}>
       <div className="search-field">
         <Search size={19} aria-hidden="true" />
-        <input data-initial-focus aria-label="ابحث عن قسم، وكيل أو مشروع" placeholder="ابحث عن قسم، وكيل أو مشروع..." value={query}
+        <input data-initial-focus aria-label={t('quickSearch.aria')} placeholder={t('quickSearch.placeholder')} value={query}
           onChange={(event) => { setQuery(event.target.value); setCursor(0); }}
           onKeyDown={(event) => {
             if (event.nativeEvent.isComposing || !results.length) return;
@@ -57,7 +58,7 @@ export function QuickSearch({ onClose, onNavigate, onAgent, onRoom }: { onClose:
           <button type="button" key={result.key} data-result-index={index} data-highlighted={index === active} onMouseEnter={() => setCursor(index)} onClick={() => pick(result)}>
             <result.icon size={17} aria-hidden="true" /><bdi>{result.title}</bdi><small>{result.context}</small><CornerDownLeft size={14} aria-hidden="true" />
           </button>
-        )) : <EmptyState icon={Search} title="لا توجد نتائج مطابقة">جرّب كلمة أقصر أو ابحث باسم الوكيل.</EmptyState>}
+        )) : <EmptyState icon={Search} title={t('quickSearch.empty')}><p>{t('quickSearch.emptyBody')}</p></EmptyState>}
       </div>
     </Dialog>
   );

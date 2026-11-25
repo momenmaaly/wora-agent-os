@@ -27,7 +27,7 @@ export default defineConfig({
   },
   server: {
     host: '0.0.0.0',
-    allowedHosts: ['.e2b.app'],
+    allowedHosts: ['.e2b.app', '.all-hands.dev'],
     proxy: {
       '/api':       { target: apiTarget, changeOrigin: true },
       '/health':    { target: apiTarget, changeOrigin: true },
@@ -37,7 +37,7 @@ export default defineConfig({
   },
   preview: {
     host: '0.0.0.0',
-    allowedHosts: ['.e2b.app'],
+    allowedHosts: ['.e2b.app', '.all-hands.dev'],
     proxy: {
       '/api':       { target: apiTarget, changeOrigin: true },
       '/health':    { target: apiTarget, changeOrigin: true },

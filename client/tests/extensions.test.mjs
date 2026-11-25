@@ -86,6 +86,6 @@ test('every extension label exists in both dictionaries with the same shape', ()
   deepEqual(Object.keys(ar.ext).sort(), Object.keys(en.ext).sort());
   for (const key of Object.keys(ar.ext)) ok(ar.ext[key].length > 0, `ar.ext.${key} is empty`);
   for (const key of Object.keys(en.ext)) ok(en.ext[key].length > 0, `en.ext.${key} is empty`);
-  equal(ar.nav.extensions, 'المهارات والإضافات');
-  equal(en.nav.extensions, 'Skills & Plugins');
+  equal(ar.nav.extensions, 'القدرات');
+  equal(en.nav.extensions, 'Capabilities');
 });
