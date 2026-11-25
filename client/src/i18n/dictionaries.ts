@@ -21,6 +21,7 @@ export const ar = {
     lightMode: 'تفعيل المظهر الفاتح',
     darkMode: 'تفعيل المظهر الداكن',
     loading: 'جارٍ التحميل…',
+    close: 'إغلاق',
   },
   nav: {
     home: 'الرئيسية',
@@ -358,6 +359,7 @@ export const en: Dictionary = {
     lightMode: 'Switch to light theme',
     darkMode: 'Switch to dark theme',
     loading: 'Loading…',
+    close: 'Close',
   },
   nav: {
     home: 'Home',

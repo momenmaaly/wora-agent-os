@@ -4,6 +4,7 @@ import {
 } from 'lucide-react';
 import { OsApiError, osApi, type AiUsageSummary, type ApprovalRecord, type DeviceRecord, type ExecutionLimits, type OsState } from '../os/api.js';
 import { Users } from 'lucide-react';
+import { Button, RiskBadge } from './ui.js';
 
 type Tab = 'overview' | 'memory' | 'audit' | 'governance' | 'roles';
 const SCOPES = ['workspace', 'user', 'project', 'agent', 'organization', 'execution', 'episodic', 'semantic'] as const;
@@ -326,10 +327,11 @@ export function SystemConsole() {
                   <div className="os-approval-head">
                     <ShieldCheck size={14} aria-hidden="true" />
                     <strong dir="auto">{approval.actionSummary}</strong>
+                    <RiskBadge risk={approval.risk} label={approval.risk} />
                   </div>
                   <div className="os-approval-actions">
-                    <button type="button" className="button primary small" onClick={() => void decideApproval(approval.id, 'approved')}><Check size={13} aria-hidden="true" /> وافق</button>
-                    <button type="button" className="button ghost small danger" onClick={() => void decideApproval(approval.id, 'denied')}><X size={13} aria-hidden="true" /> ارفض</button>
+                    <Button variant="primary" size="small" icon={Check} onClick={() => void decideApproval(approval.id, 'approved')}>وافق</Button>
+                    <Button variant="destructive" size="small" icon={X} onClick={() => void decideApproval(approval.id, 'denied')}>ارفض</Button>
                   </div>
                 </li>
               ))}

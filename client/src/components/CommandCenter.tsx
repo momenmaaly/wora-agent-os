@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react
 import { ArrowLeft, Bot, BrainCircuit, CheckCircle2, ChevronRight, CircleAlert, CircleDashed, LoaderCircle, Network, SendHorizonal, Waypoints } from 'lucide-react';
 import { osApi, OsApiError, type Agent, type MissionSummary } from '../os/api.js';
 import { useI18n } from '../i18n/I18nContext.js';
+import { Button } from './ui.js';
 import type { PageId } from '../pages.js';
 
 const STATUS_KEY: Record<string, string> = {
@@ -73,10 +74,9 @@ export function CommandCenter({ onNavigate }: { onNavigate: (page: PageId) => vo
         />
         <div className="cc-launch-foot">
           <span className="cc-examples"><small>{t('home.examplesLabel')}</small>{examples.map((example) => <button key={example} type="button" className="cc-example" dir="auto" onClick={() => setDraft(example)}>{example}</button>)}</span>
-          <button type="submit" className="button cc-run" disabled={launching || !draft.trim()}>
-            {launching ? <LoaderCircle size={17} className="os-spin" aria-hidden="true" /> : <SendHorizonal size={17} aria-hidden="true" />}
+          <Button type="submit" variant="primary" className="cc-run" loading={launching} icon={SendHorizonal} disabled={!draft.trim()}>
             {launching ? t('home.running') : t('home.runNow')}
-          </button>
+          </Button>
         </div>
       </form>
       {error && <p role="alert" className="cc-error"><CircleAlert size={15} aria-hidden="true" />{error}</p>}

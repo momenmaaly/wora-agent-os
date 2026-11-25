@@ -1,5 +1,5 @@
 /* WORA — Command Center (home), organizations, workspaces.
-   Tokens only; no gradients, no glows. White surfaces + near-black ink + lime. */
+   Tokens only; no gradients, no glows. White surfaces + near-black ink + burgundy. */
 
 .cc-page { display: flex; flex-direction: column; gap: 20px; max-width: 1180px; margin: 0 auto; padding: clamp(16px, 2.6vw, 32px) clamp(14px, 2vw, 24px) 40px; }
 

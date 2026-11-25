@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  ArrowRight, Ban, Bot, CheckCircle2, ChevronDown, ChevronLeft, Circle, CircleAlert,
+  Activity, ArrowRight, Ban, Bot, CheckCircle2, ChevronDown, ChevronLeft, Circle, CircleAlert,
   Check, Download, FileText, FlaskConical, GitBranch, LoaderCircle, Network, Pause, Play, RefreshCw, Rocket, ScrollText, ShieldAlert, ShieldCheck, Wrench, X, XCircle,
+  type LucideIcon,
 } from 'lucide-react';
 import { OsApiError, osApi, type ApprovalRecord, type MissionDetail, type MissionSummary, type OsTask, type TaskLease, type VerificationRecord } from '../os/api.js';
+import { Button, RiskBadge, StateMessage, StatusBadge } from './ui.js';
 
 const STATUS_LABEL: Record<MissionSummary['status'], string> = {
   planning: 'يخطط', running: 'قيد التنفيذ', paused: 'متوقفة مؤقتًا', awaiting_approval: 'بانتظار موافقتك', completed: 'مكتملة', failed: 'متعثرة', cancelled: 'ملغاة',
@@ -32,8 +34,16 @@ function relTime(iso: string): string {
   return `منذ ${Math.floor(diff / 86_400_000)} ي`;
 }
 
+function missionTone(status: MissionSummary['status']) {
+  if (status === 'completed') return 'success' as const;
+  if (status === 'failed' || status === 'cancelled') return 'danger' as const;
+  if (status === 'awaiting_approval') return 'warning' as const;
+  if (status === 'running' || status === 'planning') return 'brand' as const;
+  return 'neutral' as const;
+}
+
 function StatusPill({ status }: { status: MissionSummary['status'] }) {
-  return <span className={`os-pill os-pill-${status}`}>{STATUS_LABEL[status]}</span>;
+  return <StatusBadge tone={missionTone(status)} dot>{STATUS_LABEL[status]}</StatusBadge>;
 }
 
 function TaskRow({ task }: { task: OsTask }) {
@@ -94,7 +104,7 @@ function PendingApproval({ approval, onDecide }: { approval: ApprovalRecord; onD
       <div className="os-approval-head">
         <ShieldAlert size={16} aria-hidden="true" />
         <strong>بانتظار موافقتك</strong>
-        <span className="os-risk-chip">{approval.toolId ?? approval.kind} · {approval.risk === 'high' ? 'خطورة عالية' : approval.risk}</span>
+        <RiskBadge risk={approval.risk} label={`${approval.toolId ?? approval.kind} · ${approval.risk === 'high' ? 'خطورة عالية' : approval.risk}`} />
       </div>
       <p dir="auto">{approval.actionSummary}</p>
       <dl className="os-approval-review">
@@ -115,15 +125,109 @@ function PendingApproval({ approval, onDecide }: { approval: ApprovalRecord; onD
         <pre className="os-pre">{JSON.stringify(approval.toolInput, null, 2).slice(0, 2500)}</pre>
       </details>
       <div className="os-approval-actions">
-        <button type="button" className="button primary small" disabled={busy} onClick={() => void decide('approved')}>
-          {busy ? <LoaderCircle size={13} className="os-spin" aria-hidden="true" /> : <Check size={13} aria-hidden="true" />} وافق ونفّذ
-        </button>
-        <button type="button" className="button ghost small danger" disabled={busy} onClick={() => void decide('denied')}>
-          <X size={13} aria-hidden="true" /> ارفض
-        </button>
+        <Button variant="primary" size="small" loading={busy} icon={Check} onClick={() => void decide('approved')}>وافق ونفّذ</Button>
+        <Button variant="destructive" size="small" icon={X} disabled={busy} onClick={() => void decide('denied')}>ارفض</Button>
       </div>
     </div>
   );
+}
+
+type ActivityTone = 'neutral' | 'brand' | 'success' | 'warning' | 'danger';
+interface MissionActivityEvent {
+  id: string;
+  at: string;
+  title: string;
+  detail?: string;
+  tone: ActivityTone;
+  icon: LucideIcon;
+}
+
+function buildMissionActivity(detail: MissionDetail): MissionActivityEvent[] {
+  const events: MissionActivityEvent[] = [];
+  for (const task of detail.tasks) {
+    events.push({
+      id: `task-${task.id}`,
+      at: task.createdAt,
+      title: `مهمة: ${task.title}`,
+      detail: `${task.specialization}${task.agent ? ` · ${task.agent.name}` : ''}`,
+      tone: 'neutral',
+      icon: Circle,
+    });
+    for (const run of task.runs) {
+      const tone: ActivityTone = run.status === 'completed' ? 'success' : run.status === 'failed' ? 'danger' : 'brand';
+      events.push({
+        id: `run-${run.id}`,
+        at: run.finishedAt ?? run.startedAt,
+        title: `محاولة ${run.attempt}: ${run.summary || task.title}`,
+        detail: `${run.evidence.length} دليل · ${task.tool ?? 'بدون أداة'}`,
+        tone,
+        icon: run.status === 'completed' ? CheckCircle2 : run.status === 'failed' ? XCircle : LoaderCircle,
+      });
+    }
+  }
+  for (const handoff of detail.handoffs) {
+    events.push({
+      id: `handoff-${handoff.id}`,
+      at: handoff.createdAt,
+      title: `تسليم من ${handoff.from} إلى ${handoff.to}`,
+      detail: 'عقد تسليم موثق',
+      tone: 'brand',
+      icon: GitBranch,
+    });
+  }
+  for (const approval of detail.approvals) {
+    const tone: ActivityTone = approval.status === 'approved' ? 'success' : approval.status === 'denied' ? 'danger' : 'warning';
+    events.push({
+      id: `approval-${approval.id}`,
+      at: approval.decidedAt ?? approval.createdAt,
+      title: `موافقة: ${approval.actionSummary}`,
+      detail: `${approval.risk} · ${approval.status}`,
+      tone,
+      icon: ShieldAlert,
+    });
+  }
+  for (const verification of detail.verifications ?? []) {
+    events.push({
+      id: `verification-${verification.id}`,
+      at: verification.createdAt,
+      title: `تحقق: ${verification.result}`,
+      detail: `${verification.verifier} · ${verification.independence}`,
+      tone: verification.result === 'passed' ? 'success' : 'danger',
+      icon: ShieldCheck,
+    });
+  }
+  if (detail.outcomeVerification) {
+    events.push({
+      id: 'outcome',
+      at: detail.outcomeVerification.generatedAt,
+      title: `نتيجة المهمة: ${detail.outcomeStatus ?? detail.outcomeVerification.status}`,
+      detail: detail.outcomeVerification.reasons.slice(0, 2).join(' · ') || 'تم تسجيل التحقق النهائي',
+      tone: detail.outcomeVerification.status === 'verified' ? 'success' : detail.outcomeVerification.status === 'failed' ? 'danger' : 'warning',
+      icon: FlaskConical,
+    });
+  }
+  return events.sort((a, b) => a.at.localeCompare(b.at));
+}
+
+function MissionActivity({ detail }: { detail: MissionDetail }) {
+  const events = useMemo(() => buildMissionActivity(detail), [detail]);
+  if (events.length === 0) return null;
+  return <details className="os-handoffs mission-activity" open>
+    <summary><Activity size={14} aria-hidden="true" /> سجل النشاط ({events.length})</summary>
+    <ol className="activity-timeline" aria-label="سجل نشاط المهمة">
+      {events.map((event) => {
+        const Icon = event.icon;
+        return <li className="activity-item" data-tone={event.tone} key={event.id}>
+          <span className="activity-marker"><Icon size={12} aria-hidden="true" /></span>
+          <div className="activity-copy">
+            <strong>{event.title}</strong>
+            {event.detail && <small>{event.detail}</small>}
+            <time dateTime={event.at}>{new Date(event.at).toLocaleString('ar')}</time>
+          </div>
+        </li>;
+      })}
+    </ol>
+  </details>;
 }
 
 export function ExecutionCenter() {
@@ -318,12 +422,11 @@ export function ExecutionCenter() {
       <div className="os-exec-layout">
         <aside className="os-mission-list panel" aria-label="المهمات">
           <h2>المهمات</h2>
-          {missions === null && <p className="os-loading"><LoaderCircle size={16} className="os-spin" aria-hidden="true" /> جارٍ التحميل…</p>}
+          {missions === null && <StateMessage variant="loading" title="جارٍ تحميل المهمات…" />}
           {missions?.length === 0 && (
-            <div className="os-empty">
-              <FlaskConical size={26} aria-hidden="true" />
-              <p>لا توجد مهمات بعد. اكتب هدفًا أعلاه — كل مهمة تُنفذ وتحفظ هنا بحالة حقيقية وأدلة.</p>
-            </div>
+            <StateMessage variant="empty" icon={FlaskConical} title="لا توجد مهمات بعد">
+              اكتب هدفًا أعلاه — كل مهمة تُنفذ وتحفظ هنا بحالة حقيقية وأدلة.
+            </StateMessage>
           )}
           {missions?.map((mission) => (
             <button key={mission.id} type="button" className={`os-mission-item${mission.id === selectedId ? ' is-active' : ''}`} onClick={() => setSelectedId(mission.id)} aria-pressed={mission.id === selectedId}>
@@ -334,7 +437,7 @@ export function ExecutionCenter() {
         </aside>
 
         <section className="os-mission-detail panel" aria-label="تفاصيل المهمة">
-          {!selected && <div className="os-empty"><ArrowRight size={22} aria-hidden="true" /><p>اختر مهمة من القائمة لعرض خطتها ومراحل تنفيذها وأدلتها.</p></div>}
+          {!selected && <StateMessage variant="empty" icon={ArrowRight} title="اختر مهمة من القائمة">لعرض خطتها ومراحل تنفيذها وأدلتها.</StateMessage>}
           {selected && detail && (
             <>
               <div className="os-detail-head">
@@ -342,26 +445,20 @@ export function ExecutionCenter() {
                 <div className="os-detail-meta">
                   <StatusPill status={detail.status} />
                   {(detail.status === 'failed' || detail.status === 'awaiting_approval' || detail.status === 'planning' || detail.status === 'paused') && (
-                    <button type="button" className="button ghost small" onClick={() => void resumeMission()} disabled={busy}>
-                      <Play size={12} aria-hidden="true" /> استئناف
-                    </button>
+                    <Button variant="ghost" size="small" icon={Play} onClick={() => void resumeMission()} disabled={busy}>استئناف</Button>
                   )}
                   {(detail.status === 'running' || detail.status === 'planning' || detail.status === 'awaiting_approval') && (
-                    <button type="button" className="button ghost small" onClick={() => void pauseMission()} disabled={busy}>
-                      <Pause size={12} aria-hidden="true" /> إيقاف مؤقت
-                    </button>
+                    <Button variant="ghost" size="small" icon={Pause} onClick={() => void pauseMission()} disabled={busy}>إيقاف مؤقت</Button>
                   )}
                   {detail.status !== 'completed' && detail.status !== 'cancelled' && (
-                    <button type="button" className="button ghost small danger" onClick={() => void cancelMission()} disabled={busy}>
-                      <Ban size={12} aria-hidden="true" /> إلغاء
-                    </button>
+                    <Button variant="destructive" size="small" icon={Ban} onClick={() => void cancelMission()} disabled={busy}>إلغاء</Button>
                   )}
                   <label className="os-inline-control">
                     <Network size={12} aria-hidden="true" />
                     <select value={concurrency} onChange={(event) => setConcurrency(Number(event.target.value))} aria-label="عدد العمال المتوازيين" disabled={busy}>
                       {[1, 2, 3, 4, 5, 6, 7, 8].map((value) => <option key={value} value={value}>{value}</option>)}
                     </select>
-                    <button type="button" className="button ghost small" onClick={() => void executeParallel()} disabled={busy}>تشغيل</button>
+                    <Button variant="ghost" size="small" icon={Play} onClick={() => void executeParallel()} disabled={busy}>تشغيل</Button>
                   </label>
                   {taskProgress && <span className="subtle">{taskProgress.done}/{taskProgress.total} مهام مكتملة</span>}
                   <small className="subtle mono">{detail.id}</small>
@@ -379,6 +476,7 @@ export function ExecutionCenter() {
                 {(detail.approvals ?? []).filter((a) => a.status === 'pending').map((approval) => (
                   <PendingApproval key={approval.id} approval={approval} onDecide={decideApproval} />
                 ))}
+                <MissionActivity detail={detail} />
               </div>
               <ol className="os-task-list">
                 {detail.tasks.map((task) => <li key={task.id}><TaskRow task={task} /></li>)}
