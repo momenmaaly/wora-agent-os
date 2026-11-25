@@ -187,8 +187,8 @@
 .tech-filter[aria-pressed='true'] { border-color: var(--accent-line); background: var(--accent-wash); color: var(--accent); }
 .tech-log-body {
   min-height: 190px; max-height: 430px; overflow: auto; resize: vertical;
-  border: 1px solid var(--ink); border-radius: var(--radius-control);
-  background: var(--ink); color: #F7F5F3;
+  border: 1px solid var(--terminal-border); border-radius: var(--radius-control);
+  background: var(--terminal-bg); color: #F7F5F3;
 }
 .tech-log-line {
   display: grid; grid-template-columns: 142px 62px 78px minmax(0, 1fr); gap: 8px; align-items: baseline;

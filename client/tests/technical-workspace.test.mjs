@@ -114,3 +114,11 @@ test('technical surfaces use dictionary keys and expose no hardcoded Arabic copy
   ok(log.includes('disabled={visible.length === 0}'), 'copy action is disabled when the log is empty');
   ok(log.includes("role=\"log\""), 'the event stream is announced as a log');
 });
+
+test('execution log keeps a dark terminal surface in both themes', () => {
+  const css = read('styles/technical-workspace.css');
+  const block = css.match(/\.tech-log-body \{([\s\S]*?)\}/)?.[1] ?? '';
+  ok(block.includes('background: var(--terminal-bg)'), 'log uses the dedicated terminal background token');
+  ok(block.includes('border: 1px solid var(--terminal-border)'), 'log uses the dedicated terminal border token');
+  ok(!block.includes('var(--ink)'), 'log contrast must not invert with the active theme');
+});

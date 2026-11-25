@@ -35,6 +35,8 @@ svg.inline-icon { display: inline-block; vertical-align: middle; margin-inline-e
   --muted: #77716F;
   --text-secondary: #6F6967;
   --error: #A83C3C;
+  --terminal-bg: #171719;
+  --terminal-border: #2C2A2E;
 
   /* Semantic surfaces */
   --bg: var(--canvas);
