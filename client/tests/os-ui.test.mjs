@@ -17,13 +17,13 @@ test('execution UI controls are wired to real mission, lease and verification en
   assert.match(ui, /expiresAt/);
   assert.match(ui, /problemModel/);
   assert.match(ui, /composition/);
-  assert.match(ui, /تركيب القدرات/);
+  assert.match(ui, /execution\.composite/);
   assert.match(ui, /'composite'/);
   assert.match(ui, /outcomeVerification/);
-  assert.match(ui, /التحقق المستقل من النتيجة/);
+  assert.match(ui, /execution\.outcomeVerificationTitle/);
   assert.match(ui, /capability-gap|outcomeStatus/);
   assert.match(ui, /detail\.reasoning/);
-  assert.match(ui, /الفهم الاستدلالي/);
+  assert.match(ui, /execution\.reasoningTitle/);
   assert.match(ui, /hypotheses/);
   assert.match(ui, /causalGraph/);
   assert.match(ui, /informationNeeds/);
