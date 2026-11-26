@@ -7,6 +7,7 @@
  */
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
+import { isDangerousMcpEnv } from './sandbox.js';
 
 export const SCHEMA_VERSION = '1.0' as const;
 /** WORA API version this build implements; compared against manifest compatibility ranges. */
@@ -400,12 +401,15 @@ export function validateManifest(kind: PackageKind, raw: unknown, trust: TrustLe
       else if (!SAFE_COMMAND.test(command) || !allowedCommands().has(command)) {
         errors.push({ path: 'entrypoint.command', message: `Command "${command}" is not in the MCP command allowlist` });
       }
-      // Inline evaluation would turn a manifest into arbitrary code without a script on disk.
-      const inlineFlag = /^(?:-e|--eval|-p|--print|-c|--command|--interactive|-i)$/u;
+      // Inline evaluation and loader flags would turn a manifest into arbitrary code.
+      const inlineFlag = /^(?:-e|--eval|-p|--print|-c|--command|--interactive|-i|-r|--require|--import|--loader|--experimental-loader|--run)$/u;
       for (const arg of plugin.entrypoint.args) {
-        if (inlineFlag.test(arg) || arg.startsWith('--eval=')) {
+        if (inlineFlag.test(arg) || arg.startsWith('--eval=') || arg.startsWith('--require=') || arg.startsWith('--import=') || arg.startsWith('--loader=')) {
           errors.push({ path: 'entrypoint.args', message: `Inline evaluation flag "${arg}" is not allowed in an MCP command` });
         }
+      }
+      for (const name of [...plugin.entrypoint.env, ...plugin.required_secrets]) {
+        if (isDangerousMcpEnv(name)) errors.push({ path: 'entrypoint.env', message: `Environment variable ${name} is reserved by the MCP runtime` });
       }
     }
     if (plugin.type === 'mcp' && plugin.entrypoint.transport === 'http' && !plugin.entrypoint.url) {

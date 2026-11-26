@@ -72,7 +72,9 @@ export function normalizeMarketplaceInput(input: MarketplaceInput) {
   const ref = normalizeRef(input.ref, refType);
   const path = normalizePath(input.path);
   const name = input.name.trim().slice(0, 120) || url.split('/').slice(-1)[0]?.replace(/\.git$/u, '') || 'Marketplace';
-  return { url, provider, refType, ref, path, name, trust: input.trust ?? 'community' as TrustLevel };
+  const trust = input.trust ?? 'community' as TrustLevel;
+  if (trust === 'official') throw new MarketplaceError('TRUST_DENIED', 'Official trust is reserved for the bundled WORA catalog');
+  return { url, provider, refType, ref, path, name, trust };
 }
 
 async function readSnapshot(input: { url: string; ref: string; refType: 'branch' | 'tag' | 'commit'; path: string; secret: string | null }) {

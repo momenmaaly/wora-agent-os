@@ -58,7 +58,7 @@ export interface ApprovalRecord {
   summaryVersion?: string; reviewDigest?: string; risk: string; actionClass?: 'A' | 'B' | 'C'; scope?: string; payloadDigest?: string;
   expiresAt?: string | null; amountUsd?: number | null;
   toolInput: Record<string, unknown>; requestedBy: string;
-  status: 'pending' | 'approved' | 'denied';
+  status: 'pending' | 'approved' | 'denied' | 'expired';
   decisionNote: string; decidedBy: string | null; decidedAt: string | null;
   consumedAt?: string | null; consumedBy?: string | null; createdAt: string;
 }
@@ -408,7 +408,7 @@ export const osApi = {
 
   audit: (limit = 50) => request<Array<{ id: string; actor: string; action: string; subject: string; detail: Record<string, unknown>; createdAt: string }>>(`/audit?limit=${limit}`),
 
-  approvals: (status: 'pending' | 'approved' | 'denied' | 'all' = 'pending') =>
+  approvals: (status: 'pending' | 'approved' | 'denied' | 'expired' | 'all' = 'pending') =>
     request<ApprovalRecord[]>(`/approvals?status=${status}`),
   decideApproval: (id: string, decision: 'approved' | 'denied', note = '') =>
     request<ApprovalRecord>(`/approvals/${encodeURIComponent(id)}/decide`, { method: 'POST', body: JSON.stringify({ decision, note }) }),

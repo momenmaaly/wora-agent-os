@@ -4,9 +4,17 @@ import assert from 'node:assert/strict';
 process.env['WORA_OS_DB'] = ':memory:';
 process.env['NODE_ENV'] = 'test';
 const { getOsDb, resetOsDbForTests, nowIso } = await import('./db.js');
-const { MIGRATIONS, migrationStatus, rollbackLastMigration, runVersionedMigrations } = await import('./migrations.js');
+const { MIGRATIONS, migrationStatus, rollbackLastMigration, runVersionedMigrations, validateMigrationRegistry } = await import('./migrations.js');
 
 after(() => resetOsDbForTests());
+
+
+test('migration registry versions are unique and strictly ordered', () => {
+  validateMigrationRegistry();
+  const versions = MIGRATIONS.map((migration) => migration.version);
+  assert.equal(new Set(versions).size, versions.length);
+  assert.deepEqual(versions, [...versions].sort((a, b) => a - b));
+});
 
 test('fresh databases record every versioned migration', () => {
   const db = getOsDb();

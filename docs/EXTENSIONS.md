@@ -215,7 +215,9 @@ All actions call real endpoints. There are no decorative controls.
 - Marketplace Git operations require the `git` binary on the host.
 - Native in-process plugins are refused by design; use MCP or HTTP adapters.
 - MCP stdio plugins are spawned as child processes without an OS-level sandbox (no seccomp/container).
-  They receive a filtered environment. Run WORA in a container if stronger isolation is required.
+  They receive a filtered environment; process-control variables and runtime loader flags are rejected.
+  Stdio is disabled by default and only the bundled official catalog may run. Run WORA in a container
+  if stronger isolation is required.
 - HTTP plugin credentials use a single bearer secret per plugin, not per-tool OAuth flows.
 - Lifecycle hooks are not supported.
 - Auto-load is metadata-only; there is no background auto-update.

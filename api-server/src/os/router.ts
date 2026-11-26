@@ -876,8 +876,8 @@ function highRiskAgentCapabilities(permissions: readonly string[], tools: readon
 
   router.get('/approvals', asyncWrap((req, res) => {
     const status = typeof req.query['status'] === 'string' ? req.query['status'] : 'pending';
-    const allowed = new Set(['pending', 'approved', 'denied', 'all']);
-    res.json(listApprovals(workspace(res), { status: (allowed.has(status) ? status : 'pending') as 'pending' | 'approved' | 'denied' | 'all', limit: 50 }));
+    const allowed = new Set(['pending', 'approved', 'denied', 'expired', 'all']);
+    res.json(listApprovals(workspace(res), { status: (allowed.has(status) ? status : 'pending') as 'pending' | 'approved' | 'denied' | 'expired' | 'all', limit: 50 }));
   }));
 
   router.post('/approvals/:id/decide', asyncWrap(async (req, res) => {

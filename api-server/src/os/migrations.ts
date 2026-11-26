@@ -78,6 +78,39 @@ export function scrubLegacySecrets(db: OsDatabase): { updated: number } {
   return { updated };
 }
 
+/**
+ * Enforce the approval-expiry contract at the database edge. Kept as a shared
+ * helper because a database may have applied the cloud runtime migration under
+ * the historical version 15 before this guard existed.
+ */
+export function applyApprovalExpiryGuard(db: OsDatabase): void {
+  db.prepare(`UPDATE os_approvals
+    SET status = 'expired',
+        decision_note = 'Invalidated by approval-expiry migration: legacy approval had no usable expiry',
+        decided_by = 'system:approval-expiry-migration',
+        decided_at = ?
+    WHERE status = 'pending'
+      AND (expires_at IS NULL OR trim(expires_at) = ''
+        OR julianday(expires_at) IS NULL
+        OR julianday(expires_at) <= julianday('now'))`).run(nowIso());
+  db.exec('DROP TRIGGER IF EXISTS os_approvals_pending_expiry_required');
+  db.exec('DROP TRIGGER IF EXISTS os_approvals_pending_expiry_update_required');
+  db.exec(`CREATE TRIGGER os_approvals_pending_expiry_required
+    BEFORE INSERT ON os_approvals
+    WHEN NEW.status = 'pending'
+      AND (NEW.expires_at IS NULL OR trim(NEW.expires_at) = ''
+        OR julianday(NEW.expires_at) IS NULL
+        OR julianday(NEW.expires_at) <= julianday('now'))
+    BEGIN SELECT RAISE(ABORT, 'pending approval requires a valid future expires_at'); END`);
+  db.exec(`CREATE TRIGGER os_approvals_pending_expiry_update_required
+    BEFORE UPDATE OF status, expires_at ON os_approvals
+    WHEN NEW.status = 'pending'
+      AND (NEW.expires_at IS NULL OR trim(NEW.expires_at) = ''
+        OR julianday(NEW.expires_at) IS NULL
+        OR julianday(NEW.expires_at) <= julianday('now'))
+    BEGIN SELECT RAISE(ABORT, 'pending approval requires a valid future expires_at'); END`);
+}
+
 export const MIGRATIONS: Migration[] = [
   {
     version: 1,
@@ -325,6 +358,13 @@ export const MIGRATIONS: Migration[] = [
       scrubLegacySecrets(db);
     },
   },
+  {
+    version: 15,
+    name: 'approval-expiry-required',
+    up(db) {
+      applyApprovalExpiryGuard(db);
+    },
+  },
 ];
 
 function tableExists(db: OsDatabase, name: string): boolean {
@@ -345,7 +385,16 @@ export function migrationStatus(db: OsDatabase): { version: number; applied: Arr
   return { version, applied, pending: MIGRATIONS.filter((migration) => migration.version > version).map((migration) => migration.version) };
 }
 
+export function validateMigrationRegistry(): void {
+  const versions = new Set<number>();
+  for (const migration of MIGRATIONS) {
+    if (versions.has(migration.version)) throw new Error(`Duplicate migration version ${migration.version}`);
+    versions.add(migration.version);
+  }
+}
+
 export function runVersionedMigrations(db: OsDatabase, baseline: (db: OsDatabase) => void): { applied: number[]; version: number } {
+  validateMigrationRegistry();
   ensureRegistry(db);
   const current = Number((db.prepare('PRAGMA user_version').get() as { user_version?: number } | undefined)?.user_version ?? 0);
   const applied: number[] = [];
