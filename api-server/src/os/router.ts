@@ -76,6 +76,7 @@ import {
 } from '../runtime/browser.js';
 import { runtimeArtifactsForWorkspace, runtimeSessionsForWorkspace } from '../runtime/tools.js';
 import { financialIntent } from '../runtime/financial.js';
+import { canAccessRuntimeSession, RuntimeAccessError } from '../runtime/auth.js';
 
 const AUTH_SECRET = sanitizeEnv(process.env['AUTH_SECRET']);
 const ADMIN_API_KEY = sanitizeEnv(process.env['ADMIN_API_KEY']);
@@ -213,7 +214,7 @@ export function createOsRouter(options: { production?: boolean } = {}): Router {
   const actor = (res: Response) => (res.locals['actor'] as string) ?? 'user';
   const correlation = (res: Response) => (res.locals['correlationId'] as string) ?? undefined;
   const roleOf = (res: Response) => (res.locals['role'] as WorkspaceRole) ?? 'viewer';
-  const canControlSession = (res: Response, session: { createdBy: string }): boolean => ['admin', 'owner'].includes(roleOf(res)) || session.createdBy === actor(res);
+  const canControlSession = (res: Response, session: { workspaceId: string; createdBy: string; missionId?: string | null }): boolean => canAccessRuntimeSession(workspace(res), session, actor(res));
 
   // Interrupted-mission recovery runs once per process boot (idempotent).
   // A writer-lease conflict is fatal: another process owns this database.
@@ -1150,7 +1151,7 @@ function highRiskAgentCapabilities(permissions: readonly string[], tools: readon
   router.get('/runtime/sessions', asyncWrap(async (req, res) => {
     const missionId = typeof req.query['missionId'] === 'string' ? req.query['missionId'] : undefined;
     const kind = req.query['kind'] === 'computer' || req.query['kind'] === 'browser' ? req.query['kind'] : undefined;
-    const sessions = runtimeSessionsForWorkspace(workspace(res), missionId);
+    const sessions = runtimeSessionsForWorkspace(workspace(res), missionId, actor(res));
     res.json(kind ? { sessions: sessions[kind] } : sessions);
   }));
 
@@ -1170,7 +1171,8 @@ function highRiskAgentCapabilities(permissions: readonly string[], tools: readon
     const id = param(req, 'id');
     const session = getRuntimeSession(workspace(res), id);
     if (!session) { res.status(404).json({ error: 'Runtime session not found' }); return; }
-    res.json({ session: sessionView(session), events: listRuntimeEvents(workspace(res), id), artifacts: runtimeArtifactsForWorkspace(workspace(res)).filter((artifact) => artifact.sessionId === id) });
+    if (!canControlSession(res, session)) { res.status(403).json({ error: 'You cannot inspect a session created by another user', code: 'RUNTIME_SESSION_FORBIDDEN' }); return; }
+    res.json({ session: sessionView(session), events: listRuntimeEvents(workspace(res), id), artifacts: runtimeArtifactsForWorkspace(workspace(res), undefined, actor(res)).filter((artifact) => artifact.sessionId === id) });
   }));
 
   router.post('/runtime/sessions/:id/stop', asyncWrap(async (req, res) => {
@@ -1262,11 +1264,11 @@ function highRiskAgentCapabilities(permissions: readonly string[], tools: readon
   router.get('/runtime/artifacts', asyncWrap((req, res) => {
     const missionId = typeof req.query['missionId'] === 'string' ? req.query['missionId'] : undefined;
     const sessionId = typeof req.query['sessionId'] === 'string' ? req.query['sessionId'] : undefined;
-    res.json(listRuntimeArtifacts(workspace(res), { missionId, sessionId }).map((artifact) => ({ ...artifact, contentUrl: `/api/os/runtime/artifacts/${artifact.id}` })));
+    res.json(listRuntimeArtifacts(workspace(res), { missionId, sessionId, actor: actor(res) }).map((artifact) => ({ ...artifact, contentUrl: `/api/os/runtime/artifacts/${artifact.id}` })));
   }));
 
   router.get('/runtime/artifacts/:id', asyncWrap((req, res) => {
-    const found = getRuntimeArtifact(workspace(res), param(req, 'id'));
+    const found = getRuntimeArtifact(workspace(res), param(req, 'id'), actor(res));
     if (!found) { res.status(404).json({ error: 'Runtime artifact not found' }); return; }
     res.setHeader('Content-Type', String(found.row['mime_type'] ?? 'application/octet-stream'));
     res.setHeader('Content-Disposition', `inline; filename="${String(found.row['name']).replace(/[\r\n"\\]/g, '').slice(0, 200)}"`);
@@ -1424,6 +1426,7 @@ function highRiskAgentCapabilities(permissions: readonly string[], tools: readon
       return;
     }
     if (err instanceof SyntaxError) { res.status(400).json({ error: 'Malformed JSON body' }); return; }
+    if (err instanceof RuntimeAccessError) { res.status(err.status).json({ error: err.message, code: err.code }); return; }
     logger.error({ err }, 'os router error');
     res.status(500).json({ error: 'Internal OS router error' });
   });

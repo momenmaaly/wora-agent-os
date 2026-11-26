@@ -21,6 +21,7 @@ import net from 'node:net';
 import { startBrowserProxy, type BrowserProxyHandle } from './browser-proxy.js';
 import { financialIntent } from './financial.js';
 import { assertSafeOutboundUrl } from '../lib/safe-fetch.js';
+import { assertRuntimeSessionAccess } from './auth.js';
 
 interface Pending { resolve: (value: unknown) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }
 interface Runner { child: ChildProcessWithoutNullStreams; pending: Map<string, Pending>; buffer: string; session: RuntimeSession; lastActionAt: number; provider: BrowserProvider; containerName?: string }
@@ -300,6 +301,7 @@ function request(runner: Runner, action: string, params: Record<string, unknown>
 async function action(workspaceId: string, sessionId: string, actionName: string, params: Record<string, unknown>, timeoutMs = 30_000, actor = 'browser', financialApproved = false): Promise<Record<string, unknown>> {
   const session = getBrowserSession(workspaceId, sessionId);
   if (!session) throw new Error('Browser session not found in this workspace');
+  assertRuntimeSessionAccess(workspaceId, session, actor);
   if (session.status !== 'running') throw new Error(`Browser session is ${session.status}, not running`);
   const runner = runners.get(sessionId);
   if (!runner) {
@@ -387,9 +389,10 @@ async function closeIdleBrowserProxies(): Promise<void> {
   proxies.clear();
 }
 
-export async function closeBrowserSession(input: { workspaceId: string; sessionId: string; actor: string; reason?: string }): Promise<RuntimeSession> {
+export async function closeBrowserSession(input: { workspaceId: string; sessionId: string; actor: string; reason?: string; internal?: boolean }): Promise<RuntimeSession> {
   const session = getBrowserSession(input.workspaceId, input.sessionId);
   if (!session) throw new Error('Browser session not found in this workspace');
+  assertRuntimeSessionAccess(input.workspaceId, session, input.actor, input.internal === true);
   const runner = runners.get(session.id);
   if (runner) {
     await request(runner, 'close', {}, 10_000).catch(() => undefined);
@@ -412,7 +415,7 @@ export async function expireBrowserSessions(workspaceId?: string): Promise<numbe
   let count = 0;
   for (const row of rows as Array<Record<string, string | number | null>>) {
     const session = rowToRuntimeSession(row);
-    await closeBrowserSession({ workspaceId: session.workspaceId, sessionId: session.id, actor: 'system', reason: 'expired' }).catch(() => undefined);
+    await closeBrowserSession({ workspaceId: session.workspaceId, sessionId: session.id, actor: 'system', reason: 'expired', internal: true }).catch(() => undefined);
     count += 1;
   }
   return count;

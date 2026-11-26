@@ -68,7 +68,7 @@ test('real Docker cloud computer: create, exec, files, isolation, limits and cle
   assert.match(run.stderr, /err-ok/u);
 
   writeSessionFile({ workspaceId: WS, sessionId: session.id, actor: 'docker-test', path: 'proof.txt', content: 'workspace-only' });
-  const read = readSessionFile({ workspaceId: WS, sessionId: session.id, path: 'proof.txt' });
+  const read = readSessionFile({ workspaceId: WS, sessionId: session.id, path: 'proof.txt', actor: 'docker-test' });
   assert.equal(read.content, 'workspace-only');
   assert.throws(() => writeSessionFile({ workspaceId: WS, sessionId: session.id, actor: 'docker-test', path: '../escape.txt', content: 'x' }), /escape|outside|workspace|invalid/iu);
 
@@ -98,9 +98,9 @@ test('real Docker browser: internal network, proxy-only page access, screenshot 
   const session = await createBrowserSession({ workspaceId: WS, actor: 'docker-test', ttlMinutes: 5 });
   assert.equal(session.metadata['provider'], 'docker');
   assert.equal(session.metadata['isolated'], true);
-  const opened = await browserOpen(WS, session.id, url);
+  const opened = await browserOpen(WS, session.id, url, 'docker-test');
   assert.equal(opened['title'], 'Docker Browser Test');
-  const screenshot = await browserScreenshot(WS, session.id, { name: 'docker-browser.png' });
+  const screenshot = await browserScreenshot(WS, session.id, { name: 'docker-browser.png' }, 'docker-test');
   assert.ok(Number(screenshot['bytes']) > 0);
   const name = String(session.metadata['containerName'] ?? '');
   await assert.rejects(

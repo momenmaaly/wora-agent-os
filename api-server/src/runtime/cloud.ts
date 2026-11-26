@@ -11,6 +11,7 @@ import { getOsDb, newId, nowIso, parseJson, audit } from '../os/db.js';
 import { redactSecrets } from '../os/secrets.js';
 import { resolveSessionPath, sessionDir } from './paths.js';
 import { dockerProvider, processProvider, type RuntimeDetection, type RuntimeExecResult, type RuntimeLimits, type RuntimeProvider } from './providers.js';
+import { assertRuntimeSessionAccess, canAccessRuntimeSession } from './auth.js';
 
 export type RuntimeKind = 'computer' | 'browser';
 export type RuntimeStatus = 'starting' | 'running' | 'stopped' | 'failed' | 'expired' | 'interrupted';
@@ -190,9 +191,10 @@ export function listComputerSessions(workspaceId: string, filter: { missionId?: 
   return rows.map(rowToSession);
 }
 
-function requireRunningSession(workspaceId: string, sessionId: string): RuntimeSession {
+function requireRunningSession(workspaceId: string, sessionId: string, actor: string, internal = false): RuntimeSession {
   const session = getRuntimeSession(workspaceId, sessionId);
   if (!session) throw new Error('Cloud session not found in this workspace');
+  assertRuntimeSessionAccess(workspaceId, session, actor, internal);
   if (session.status !== 'running') throw new Error(`Cloud session is ${session.status}, not running`);
   if (session.expiresAt <= Date.now()) throw new Error('Cloud session has expired');
   return session;
@@ -201,7 +203,7 @@ function requireRunningSession(workspaceId: string, sessionId: string): RuntimeS
 export async function execComputer(input: {
   workspaceId: string; actor: string; sessionId: string; command: string; cwd?: string; timeoutMs?: number;
 }): Promise<RuntimeExecResult> {
-  const session = requireRunningSession(input.workspaceId, input.sessionId);
+  const session = requireRunningSession(input.workspaceId, input.sessionId, input.actor);
   if (session.kind === 'browser') throw new Error('Use browser tools for a browser session');
   const provider = providerFor(session.provider);
   const result = await provider.exec({ sessionId: session.id, workspaceId: input.workspaceId, command: input.command, cwd: input.cwd, timeoutMs: Math.min(input.timeoutMs ?? session.limits.timeoutMs, session.limits.timeoutMs) });
@@ -214,8 +216,8 @@ export async function execComputer(input: {
   return result;
 }
 
-export function writeSessionFile(input: { workspaceId: string; sessionId: string; path: string; content: string; actor: string }): { path: string; bytes: number } {
-  const session = requireRunningSession(input.workspaceId, input.sessionId);
+export function writeSessionFile(input: { workspaceId: string; sessionId: string; path: string; content: string; actor: string; internal?: boolean }): { path: string; bytes: number } {
+  const session = requireRunningSession(input.workspaceId, input.sessionId, input.actor, input.internal === true);
   if (Buffer.byteLength(input.content, 'utf8') > 2 * 1024 * 1024) throw new Error('File content exceeds the 2 MB cloud write limit');
   const target = resolveSessionPath(session.workspaceDir, input.path);
   mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
@@ -227,8 +229,8 @@ export function writeSessionFile(input: { workspaceId: string; sessionId: string
   return { path: input.path, bytes };
 }
 
-export function readSessionFile(input: { workspaceId: string; sessionId: string; path: string; maxBytes?: number }): { path: string; content: string; bytes: number; truncated: boolean } {
-  const session = requireRunningSession(input.workspaceId, input.sessionId);
+export function readSessionFile(input: { workspaceId: string; sessionId: string; path: string; maxBytes?: number; actor: string; internal?: boolean }): { path: string; content: string; bytes: number; truncated: boolean } {
+  const session = requireRunningSession(input.workspaceId, input.sessionId, input.actor, input.internal === true);
   const target = resolveSessionPath(session.workspaceDir, input.path);
   const stat = statSync(target);
   if (!stat.isFile()) throw new Error('Path is not a file');
@@ -238,8 +240,8 @@ export function readSessionFile(input: { workspaceId: string; sessionId: string;
   return { path: input.path, content: raw.subarray(0, cap).toString('utf8'), bytes: raw.byteLength, truncated: raw.byteLength > cap };
 }
 
-export function listSessionFiles(workspaceId: string, sessionId: string, dir = '.'): Array<{ name: string; type: string; size: number | null }> {
-  const session = requireRunningSession(workspaceId, sessionId);
+export function listSessionFiles(workspaceId: string, sessionId: string, dir = '.', actor = '', internal = false): Array<{ name: string; type: string; size: number | null }> {
+  const session = requireRunningSession(workspaceId, sessionId, actor, internal);
   const target = resolveSessionPath(session.workspaceDir, dir);
   const stat = statSync(target);
   if (!stat.isDirectory()) throw new Error('Path is not a directory');
@@ -266,20 +268,27 @@ export function addRuntimeArtifact(input: {
   return { id, name: input.name, kind: input.kind, mimeType: input.mimeType, sizeBytes: stat.size, createdAt, path: target };
 }
 
-export function listRuntimeArtifacts(workspaceId: string, filter: { missionId?: string; sessionId?: string; limit?: number } = {}): Array<{ id: string; sessionId: string; name: string; kind: string; mimeType: string; sizeBytes: number; createdAt: string }> {
+export function listRuntimeArtifacts(workspaceId: string, filter: { missionId?: string; sessionId?: string; limit?: number; actor?: string; internal?: boolean } = {}): Array<{ id: string; sessionId: string; name: string; kind: string; mimeType: string; sizeBytes: number; createdAt: string }> {
   const clauses = ['workspace_id = ?']; const values: Array<string | number> = [workspaceId];
   if (filter.missionId) { clauses.push('mission_id = ?'); values.push(filter.missionId); }
   if (filter.sessionId) { clauses.push('session_id = ?'); values.push(filter.sessionId); }
   const limit = Math.min(Math.max(filter.limit ?? 50, 1), 200);
   const rows = getOsDb().prepare(`SELECT * FROM os_runtime_artifacts WHERE ${clauses.join(' AND ')} ORDER BY created_at DESC LIMIT ?`).all(...values, limit) as Array<Record<string, string | number>>;
-  return rows.map((row) => ({ id: String(row['id']), sessionId: String(row['session_id']), name: String(row['name']), kind: String(row['kind']), mimeType: String(row['mime_type']), sizeBytes: Number(row['size_bytes']), createdAt: String(row['created_at']) }));
+  const visible = filter.actor && filter.internal !== true
+    ? rows.filter((row) => {
+      const session = getRuntimeSession(workspaceId, String(row['session_id']));
+      return Boolean(session && canAccessRuntimeSession(workspaceId, session, filter.actor!));
+    })
+    : rows;
+  return visible.map((row) => ({ id: String(row['id']), sessionId: String(row['session_id']), name: String(row['name']), kind: String(row['kind']), mimeType: String(row['mime_type']), sizeBytes: Number(row['size_bytes']), createdAt: String(row['created_at']) }));
 }
 
-export function getRuntimeArtifact(workspaceId: string, artifactId: string): { row: Record<string, string | number>; absolutePath: string } | null {
+export function getRuntimeArtifact(workspaceId: string, artifactId: string, actor: string, internal = false): { row: Record<string, string | number>; absolutePath: string } | null {
   const row = getOsDb().prepare('SELECT * FROM os_runtime_artifacts WHERE workspace_id = ? AND id = ?').get(workspaceId, artifactId) as Record<string, string | number> | undefined;
   if (!row) return null;
   const session = getRuntimeSession(workspaceId, String(row['session_id']));
   if (!session) return null;
+  assertRuntimeSessionAccess(workspaceId, session, actor, internal);
   const absolutePath = resolveSessionPath(session.workspaceDir, path.relative(session.workspaceDir, String(row['storage_path'])));
   return existsSync(absolutePath) ? { row, absolutePath } : null;
 }
@@ -290,9 +299,10 @@ export function listRuntimeEvents(workspaceId: string, sessionId: string, limit 
   return rows.map((row) => ({ id: row['id'], kind: row['kind'], action: row['action'], detail: redactSecrets(parseJson(row['detail'], {})).value, createdAt: row['created_at'] }));
 }
 
-export async function stopComputerSession(input: { workspaceId: string; sessionId: string; actor: string; reason?: string }): Promise<RuntimeSession> {
+export async function stopComputerSession(input: { workspaceId: string; sessionId: string; actor: string; reason?: string; internal?: boolean }): Promise<RuntimeSession> {
   const session = getComputerSession(input.workspaceId, input.sessionId);
   if (!session) throw new Error('Cloud session not found in this workspace');
+  assertRuntimeSessionAccess(input.workspaceId, session, input.actor, input.internal === true);
   if (['stopped', 'expired', 'failed', 'interrupted'].includes(session.status)) return session;
   try { await providerFor(session.provider).stop({ sessionId: session.id, workspaceId: session.workspaceId, metadata: session.metadata }); } catch (error) {
     event(session, 'lifecycle', 'session.stop_failed', { error: error instanceof Error ? error.message : String(error) });
@@ -346,7 +356,7 @@ export async function cleanupMissionSessions(workspaceId: string, missionId: str
   const sessions = listComputerSessions(workspaceId, { missionId, limit: 200 }).filter((session) => ['starting', 'running'].includes(session.status));
   let count = 0;
   for (const session of sessions) {
-    try { await stopComputerSession({ workspaceId, sessionId: session.id, actor, reason: 'mission finalized' }); count += 1; } catch { /* one bad session must not block finalization */ }
+    try { await stopComputerSession({ workspaceId, sessionId: session.id, actor, reason: 'mission finalized', internal: true }); count += 1; } catch { /* one bad session must not block finalization */ }
   }
   return count;
 }
