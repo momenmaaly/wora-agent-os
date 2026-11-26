@@ -11,7 +11,7 @@ import { writeFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { getOsDb, newId, nowIso, parseJson, audit } from './db.js';
-import { runTool, getTool, isIdempotentTool, type ToolContext } from './tools.js';
+import { runTool, getTool, isIdempotentTool, effectiveToolRisk, type ToolContext } from './tools.js';
 import { requiresHumanApproval, createApproval, getTaskApproval, listMissionApprovals, actionScope, extractAmount } from './governance.js';
 import { classifyAction } from './actions.js';
 import { maybeDistillPlaybook, findPlaybookFor, recordPlaybookReuse } from './playbooks.js';
@@ -33,6 +33,8 @@ import { comparePlans, savePlanVersion, listPlanVersions, verifyPlanExecution, r
 import { compareSolutionStrategies, saveDecisionRecord, listDecisionRecords, assessReplan } from './decision.js';
 import { applyAdaptiveReplan, alternativeForTask } from './adaptive-replan.js';
 import { composeMissionPlan, saveComposition, getComposition } from './capability-composition.js';
+import { cleanupMissionSessions } from '../runtime/cloud.js';
+import { closeBrowserSession, listBrowserSessions } from '../runtime/browser.js';
 import { filterProblemForActor, modelProblem, saveProblemModel, getProblemModel } from './problem-model.js';
 import { inferProblemStructure } from './problem-structure.js';
 import { evaluateSemanticCompatibility } from './semantic-contracts.js';
@@ -294,6 +296,74 @@ export function buildPlan(objective: string, track?: string, workspaceId = 'wora
     return [task];
   }
 
+  // Browser research — real Chromium navigation, inspection, screenshot and a
+  // Markdown artifact, using one persistent session across all task steps.
+  const browserIntent = /browser|web\s*(page|site)|website|documentation|متصفح|موقع/i.test(text)
+    && /open|visit|browse|inspect|research|summari[sz]e|capture|navigate|click|screenshot|افتح|تصفح|لقط/i.test(text);
+  if (browserIntent) {
+    const urls = extractUrls(text);
+    const url = urls[0] ?? 'https://developer.mozilla.org/en-US/docs/Web/JavaScript';
+    return [
+      {
+        title: 'Open the source page in a real browser',
+        objective: `${text} (source: ${url})`,
+        specialization: 'browser_automation',
+        tool: 'browser.open',
+        toolInput: { url },
+        dependsOn: [],
+        acceptance: ['A real Chromium browser session opens the URL', 'HTTP status and actual page title are returned'],
+        detail: 'Runs in a dedicated Playwright child process with the session workspace as its only application data directory.',
+      },
+      {
+        title: 'Inspect navigation and visible content',
+        objective: text,
+        specialization: 'browser_automation',
+        tool: 'browser.inspect',
+        toolInput: {},
+        inputBindings: [{ key: 'sessionId', taskIndex: 0, path: ['sessionId'] }],
+        dependsOn: [0],
+        acceptance: ['Actual navigation links, headings and visible text are extracted', 'No content is fabricated when the page has none'],
+        detail: 'Persistent browser session; reads the live DOM rather than replaying a canned page.',
+      },
+      {
+        title: 'Write the Markdown summary in the cloud workspace',
+        objective: text,
+        specialization: 'browser_automation',
+        tool: 'cloud.write_file',
+        toolInput: { path: 'research-summary.md' },
+        inputBindings: [
+          { key: 'sessionId', taskIndex: 1, path: ['sessionId'] },
+          { key: 'content', taskIndex: 1, path: ['markdown'] },
+        ],
+        dependsOn: [0, 1],
+        acceptance: ['A real Markdown file is written inside the isolated workspace', 'The file contains the inspected page evidence'],
+        detail: 'The file is path-confined to the session workspace; path traversal and symlink escapes are rejected.',
+      },
+      {
+        title: 'Capture the browser screenshot',
+        objective: text,
+        specialization: 'browser_automation',
+        tool: 'browser.screenshot',
+        toolInput: { fullPage: true, name: 'research-screenshot.png' },
+        inputBindings: [{ key: 'sessionId', taskIndex: 2, path: ['sessionId'] }],
+        dependsOn: [2],
+        acceptance: ['A real PNG screenshot is captured and recorded as a downloadable artifact', 'Password fields are masked'],
+        detail: 'The screenshot is written by Chromium inside the browser session and registered with checksum-verifiable evidence.',
+      },
+      {
+        title: 'Close the browser session',
+        objective: text,
+        specialization: 'browser_automation',
+        tool: 'browser.close',
+        toolInput: {},
+        inputBindings: [{ key: 'sessionId', taskIndex: 3, path: ['sessionId'] }],
+        dependsOn: [3],
+        acceptance: ['Chromium process is closed', 'Session state is reported as stopped, not completed'],
+        detail: 'Cleanup is explicit; artifacts remain available after the browser process exits.',
+      },
+    ];
+  }
+
   // Journey 4 — build a working web application
   if (/(build|create|develop|make|scaffold|implement)\b.{0,80}\b(web\s*(app|application|site)|application|app|platform|portal|saas)\b|تطبيق ويب|موقع/i.test(text)) {
     const appName = slugify(text.split(/\s+/).slice(0, 6).join(' '));
@@ -539,6 +609,26 @@ function reviewRun(task: TaskRow, toolOk: boolean, output: unknown, error: strin
     case 'web.fetch_read':
       if (toolOk && Number(out['status'] ?? 500) >= 400) issues.push(`Source responded with HTTP ${String(out['status'])}`);
       break;
+    case 'browser.open':
+      if (toolOk && !(typeof out['title'] === 'string' && out['title'].trim())) issues.push('Browser opened no identifiable page title');
+      if (toolOk && Number(out['status'] ?? 500) >= 400) issues.push(`Browser page responded with HTTP ${String(out['status'])}`);
+      break;
+    case 'browser.inspect':
+      if (toolOk && !(typeof out['markdown'] === 'string' && out['markdown'].trim().length > 40)) issues.push('Browser inspection produced no substantive content');
+      break;
+    case 'browser.screenshot':
+      if (toolOk && !(typeof out['artifactId'] === 'string' && Number(out['bytes'] ?? 0) > 0)) issues.push('Browser screenshot was not recorded as a non-empty artifact');
+      break;
+    case 'browser.research':
+      if (toolOk && !(typeof out['documentArtifactId'] === 'string' && typeof out['screenshotArtifactId'] === 'string')) issues.push('Browser research did not record both document and screenshot artifacts');
+      if (toolOk && !(typeof out['markdown'] === 'string' && out['markdown'].trim().length > 40)) issues.push('Browser research produced no substantive Markdown');
+      break;
+    case 'cloud.write_file':
+      if (toolOk && Number(out['bytes'] ?? 0) <= 0) issues.push('Cloud file write produced an empty file');
+      break;
+    case 'cloud.exec':
+      if (toolOk && out['exitCode'] !== 0) issues.push(`Cloud command exited with ${String(out['exitCode'] ?? 'unknown')}`);
+      break;
     case 'org.build':
       if (toolOk && !out['organizationId']) issues.push('Organization record was not created');
       break;
@@ -608,6 +698,13 @@ export async function executeMission(missionId: string, actor = 'orchestrator', 
   } finally {
     clearInterval(missionHeartbeat);
     if (ownsMissionLease) releaseMissionLease({ workspaceId: mission.workspace_id, missionId, ownerId: workerId });
+    const finalStatus = (db.prepare('SELECT status FROM os_missions WHERE id = ?').get(missionId) as { status?: string } | undefined)?.status;
+    if (finalStatus && ['completed', 'failed', 'cancelled'].includes(finalStatus)) {
+      await cleanupMissionSessions(mission.workspace_id, missionId, actor).catch(() => undefined);
+      for (const session of listBrowserSessions(mission.workspace_id, missionId)) {
+        if (['starting', 'running'].includes(session.status)) await closeBrowserSession({ workspaceId: mission.workspace_id, sessionId: session.id, actor, reason: 'mission finalized' }).catch(() => undefined);
+      }
+    }
   }
 }
 
@@ -729,12 +826,14 @@ async function executeMissionInner(missionId: string, actor = 'orchestrator', op
     taskInput = bound.input;
     const scope = toolDef ? actionScope(missionId, task.id, toolDef.id) : actionScope(missionId, task.id, null);
     const amountUsd = extractAmount(taskInput);
-    const actionClass = toolDef
-      ? classifyAction({ action: task.title, risk: toolDef.risk, reversible: toolDef.risk !== 'high', scope, amountUsd })
+    const riskRefinement = toolDef ? effectiveToolRisk(toolDef, taskInput) : null;
+    const effectiveRisk = riskRefinement?.risk ?? toolDef?.risk;
+    const actionClass = toolDef && effectiveRisk
+      ? classifyAction({ action: task.title, risk: effectiveRisk, reversible: effectiveRisk !== 'high', scope, amountUsd: amountUsd ?? riskRefinement?.amountUsd, spendsMoney: riskRefinement?.spendsMoney === true })
       : null;
     let approvedAction: ToolContext['approvedAction'] | undefined;
-    if (toolDef && requiresHumanApproval(mission.workspace_id, toolDef.risk, {
-      action: task.title, reversible: toolDef.risk !== 'high', scope, amountUsd,
+    if (toolDef && effectiveRisk && requiresHumanApproval(mission.workspace_id, effectiveRisk, {
+      action: task.title, reversible: effectiveRisk !== 'high', scope, amountUsd: amountUsd ?? riskRefinement?.amountUsd, spendsMoney: riskRefinement?.spendsMoney === true,
     })) {
       const existing = getTaskApproval(mission.workspace_id, task.id);
       if (existing?.expiresAt && Date.parse(existing.expiresAt) <= Date.now()) {
@@ -751,10 +850,10 @@ async function executeMissionInner(missionId: string, actor = 'orchestrator', op
             missionId,
             taskId: task.id,
             toolId: toolDef.id,
-            actionSummary: `${agent.name} يطلب تنفيذ ${toolDef.id} من نوع "${task.title}" قبل المتابعة`,
+            actionSummary: `${agent.name} يطلب تنفيذ ${toolDef.id} من نوع "${task.title}" قبل المتابعة${riskRefinement?.reason ? ` — ${riskRefinement.reason}` : ''}`,
             toolDescription: toolDef.description,
             toolPermissions: [toolDef.permission, ...(toolDef.permissions ?? [])].filter((permission): permission is string => Boolean(permission)),
-            risk: toolDef.risk,
+            risk: effectiveRisk,
             toolInput: taskInput,
             requestedBy: agent.name,
             actionClass: actionClass?.class ?? 'C',
@@ -890,6 +989,10 @@ async function executeMissionInner(missionId: string, actor = 'orchestrator', op
       const skillSelection = selectSkillsForTask(profile, task, { missionId, taskId: task.id });
       const policyResult = applySkillPolicy(task, taskInput, skillSelection);
       const skillContextId = persistSkillContext(skillSelection, agent.name);
+      // Only a class C approval for a financial input may unlock the browser
+      // financial boundary. A high-risk approval for an unrelated action must
+      // not become a generic purchase token.
+      const financialApproved = actionClass?.class === 'C' && Boolean(approvedAction) && riskRefinement?.spendsMoney === true;
       const ctx: ToolContext = {
         workspaceId: mission.workspace_id,
         actor: agent.name,
@@ -899,6 +1002,7 @@ async function executeMissionInner(missionId: string, actor = 'orchestrator', op
         taskId: task.id,
         actionClass: actionClass?.class,
         approvedAction,
+        financialApproved,
         correlationId: mission.correlation_id ?? undefined,
         skillContext: skillSelection.selected.length ? skillContextForTool(skillSelection) : undefined,
       };

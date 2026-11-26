@@ -8,6 +8,7 @@ import { ActivityPage } from '../components/ActivityPage.js';
 import { SecurityPage } from '../components/SecurityPage.js';
 import { SystemConsole } from '../components/SystemConsole.js';
 import { StateMessage } from '../components/ui.js';
+import { RuntimePanel } from '../components/RuntimePanel.js';
 
 type SystemTab = 'overview' | 'approvals' | 'activity' | 'security' | 'advanced';
 
@@ -97,6 +98,8 @@ export function SystemZone({ onNavigate }: { onNavigate: (page: PageId) => void 
           </dl>}
           {runtime?.limitations.length ? <ul className="op-list op-muted">{runtime.limitations.map((item) => <li key={item}>{item}</li>)}</ul> : null}
         </section>
+
+        <RuntimePanel showArtifacts={false} compact />
 
         <section className="op-panel">
           <div className="op-panel-head"><div><h2>{t('op.system.recovery')}</h2><p>{t('op.system.limits')}</p></div></div>

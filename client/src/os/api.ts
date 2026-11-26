@@ -341,6 +341,12 @@ export interface RuntimeStatus {
   checkpoints: boolean; independentWorkers: string; limitations: string[];
   limits: ExecutionLimits; recovery: RecoveryReport; activeLeases: number;
   activeMissionLeases: number; runnableMissions: Array<{ id: string; status: string }>;
+  cloud?: {
+    operational: boolean; isolated: boolean; selected: string | null;
+    activeSessions: number; failedSessions: number;
+    providers: Array<{ id: string; label: string; operational: boolean; isolated: boolean; reason: string }>;
+  };
+  browser?: { available: boolean; executable: string | null; reason: string };
 }
 
 export interface MigrationStatus {

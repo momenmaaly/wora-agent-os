@@ -139,7 +139,7 @@ The **Executive Command bar** at the bottom of every screen now launches a real 
 
 ## Test results (this branch)
 
-- `api-server`: full suite **210 tests: 209 pass, 1 skipped** (Mongo integration, opt-in), 0 failed —
+- `api-server`: full suite **398 tests: 394 pass, 4 skipped** (Mongo integration plus Docker integration when disabled), 0 failed —
   `npm test`. Coverage includes solvers, tools, memory isolation + ACL + TTL + version snapshots, registry
   and agent versions, orchestrator journeys 1–5 + failure/approval/denial paths, autonomy policy, device
   pairing, RBAC, boards, digital twins, playbook reuse, SQLite lease fencing, extensions, and the new
@@ -148,9 +148,9 @@ The **Executive Command bar** at the bottom of every screen now launches a real 
   explicit failure, blocked capability denial, workspace isolation and HTTP routes), action
   classification and enforcement (binding, replay, expiry, budgets, bypass attempts), durable task
   leases/checkpoints, structured problem understanding, independent verification, lesson promotion
-  controls, reproducible benchmarks, adversarial approval/workspace tests, scheduler stress, end-to-end missions and planning evaluation.
-- `client`: 49/49 pass — `npm test` (includes the browser E2E journey); typecheck + production build green.
-- Browser E2E: **1/1 pass** against the real preview API and Vite dev server (`client/tests/browser-e2e.test.mjs`).
+  controls, reproducible benchmarks, adversarial approval/workspace tests, scheduler stress, end-to-end missions, planning evaluation and real Docker/browser isolation. With `WORA_DOCKER_INTEGRATION=1`, the Docker suite is 3/3 (`runtime-docker.test.ts`).
+- `client`: 66/66 pass — `npm test` (includes the browser and runtime E2E journeys); typecheck + production build green.
+- Browser/runtime E2E: **2/2 pass** against the real preview API and Vite dev server (`client/tests/browser-e2e.test.mjs`, `client/tests/runtime-workspace.test.mjs`).
 - Production bundle builds: client `npm run build`, api-server `npm run build`.
 
 ## Six worlds — mapping (honest)
@@ -174,7 +174,7 @@ The persistent **Executive Command** bar (bottom of every screen) launches `POST
   redeems, collects **local-only** diagnostics (never uploaded), heartbeats, and exits permanently on revoke.
   There is intentionally **no remote command channel** yet — nothing can run anything on your machine.
   `system.diagnostics` inside missions always reports the machine running the API runtime, never your device.
-- **Playwright browser automation**: tool contract and permission slot exist; no browser runtime is bundled.
+- **Playwright browser automation**: implemented with open/inspect/click/type/select/scroll/wait/screenshot/research/close tools, persisted PNG and Markdown artifacts, session cleanup, expiry, audit events and a management panel on `#brief`, `#run`, `#library` and `#system`. Production runs Chromium in a read-only Docker container with dropped capabilities, resource limits, only the session workspace mounted, an internal network and a connection-time validating proxy that rejects private/metadata destinations and revalidates redirects/connections. Chromium's own sandbox is required by default and the runtime fails closed when unavailable. Financial click/type/select actions are class C and require a payload- and session-bound single-use approval. The process provider is development-only and refused when `NODE_ENV=production`.
 - **pgvector / semantic retrieval**: memory uses deterministic TF-IDF scoring; vector retrieval is a drop-in
   replacement inside `os/memory.ts` when a Postgres deployment is provisioned.
 - **Approvals beyond high-risk tools**: medium-risk tools (e.g. `agents.create`, `org.build`) execute

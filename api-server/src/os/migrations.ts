@@ -325,6 +325,80 @@ export const MIGRATIONS: Migration[] = [
       scrubLegacySecrets(db);
     },
   },
+  {
+    version: 15,
+    name: 'cloud-computer-browser-runtime',
+    up(db) {
+      db.exec(`CREATE TABLE IF NOT EXISTS os_runtime_sessions (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        mission_id TEXT,
+        task_id TEXT,
+        kind TEXT NOT NULL DEFAULT 'computer',
+        provider TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'starting',
+        workspace_dir TEXT NOT NULL,
+        limits TEXT NOT NULL DEFAULT '{}',
+        metadata TEXT NOT NULL DEFAULT '{}',
+        created_by TEXT NOT NULL,
+        error TEXT NOT NULL DEFAULT '',
+        expires_at INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        started_at TEXT,
+        ended_at TEXT
+      )`);
+      db.exec('CREATE INDEX IF NOT EXISTS idx_os_runtime_sessions_ws ON os_runtime_sessions(workspace_id, status, created_at)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_os_runtime_sessions_mission ON os_runtime_sessions(workspace_id, mission_id, created_at)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_os_runtime_sessions_expiry ON os_runtime_sessions(expires_at)');
+      db.exec(`CREATE TABLE IF NOT EXISTS os_runtime_events (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        session_id TEXT NOT NULL REFERENCES os_runtime_sessions(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL,
+        action TEXT NOT NULL,
+        detail TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL
+      )`);
+      db.exec('CREATE INDEX IF NOT EXISTS idx_os_runtime_events_session ON os_runtime_events(session_id, created_at)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_os_runtime_events_ws ON os_runtime_events(workspace_id, created_at)');
+      db.exec(`CREATE TABLE IF NOT EXISTS os_runtime_artifacts (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        session_id TEXT NOT NULL REFERENCES os_runtime_sessions(id) ON DELETE CASCADE,
+        mission_id TEXT,
+        name TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        mime_type TEXT NOT NULL,
+        size_bytes INTEGER NOT NULL,
+        storage_path TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      )`);
+      db.exec('CREATE INDEX IF NOT EXISTS idx_os_runtime_artifacts_session ON os_runtime_artifacts(session_id, created_at)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_os_runtime_artifacts_mission ON os_runtime_artifacts(workspace_id, mission_id, created_at)');
+
+      const updates: Array<[string, string[], string[]]> = [
+        ['browser_automation',
+          ['web.fetch_read', 'browser.open', 'browser.inspect', 'browser.screenshot', 'browser.click', 'browser.type', 'browser.select', 'browser.scroll', 'browser.wait', 'browser.research', 'browser.close', 'cloud.exec', 'cloud.write_file', 'cloud.read_file', 'cloud.list_files'],
+          ['web:read', 'browser:read', 'browser:interact', 'runtime:read', 'runtime:write', 'runtime:execute']],
+        ['research',
+          ['web.fetch_read', 'browser.open', 'browser.inspect', 'browser.screenshot', 'browser.research', 'browser.close', 'cloud.write_file', 'cloud.read_file', 'cloud.list_files'],
+          ['web:read', 'browser:read', 'runtime:read', 'runtime:write']],
+        ['software_engineer',
+          ['fs.workspace_read', 'security.scan', 'host.exec', 'cloud.exec', 'cloud.write_file', 'cloud.read_file', 'cloud.list_files'],
+          ['workspace:read', 'workspace:write', 'host:exec', 'runtime:read', 'runtime:write', 'runtime:execute']],
+        ['qa_engineer',
+          ['host.exec', 'fs.workspace_read', 'cloud.exec', 'cloud.read_file', 'cloud.list_files'],
+          ['workspace:read', 'host:exec', 'runtime:read', 'runtime:execute']],
+        ['system_administrator',
+          ['system.diagnostics', 'fs.workspace_list', 'cloud.exec', 'cloud.write_file', 'cloud.read_file', 'cloud.list_files'],
+          ['host:read', 'runtime:read', 'runtime:write', 'runtime:execute']],
+      ];
+      const update = db.prepare("UPDATE os_agents SET tools = ?, permissions = ?, updated_at = ? WHERE specialization = ? AND source IN ('seed', 'catalog')");
+      for (const [specialization, tools, permissions] of updates) {
+        update.run(JSON.stringify(tools), JSON.stringify(permissions), nowIso(), specialization);
+      }
+    },
+  },
 ];
 
 function tableExists(db: OsDatabase, name: string): boolean {

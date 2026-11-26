@@ -17,7 +17,7 @@ is backed by code and tests in `api-server/src/extensions`, `api-server/src/os`,
 | MCP stdio/HTTP child-process client | `api-server/src/extensions/mcp.ts` |
 | Plugin runtime: health, tool registration, execution | `api-server/src/extensions/runtime.ts` |
 | Capability resolution, tool authorization, snapshots | `api-server/src/extensions/capabilities.ts` |
-| Built-in WORA catalog (19 skills + echo MCP reference plugin) | `api-server/src/extensions/builtin.ts` |
+| Built-in WORA catalog (20 skills + echo MCP reference plugin) | `api-server/src/extensions/builtin.ts` |
 | REST surface | `api-server/src/extensions/router.ts` |
 | Agent tool provider hook | `api-server/src/os/tools.ts` |
 | Orchestrator enforcement and snapshots | `api-server/src/os/orchestrator.ts` |

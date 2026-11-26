@@ -244,6 +244,11 @@ export function isBlockedHostname(hostname: string): boolean {
   return false;
 }
 
+/** Validate an outbound URL with the same policy used by safeFetch, including test-only allowances. */
+export function assertSafeOutboundUrl(raw: string): URL {
+  return assertSafeUrl(raw, allowedPortsForFetch());
+}
+
 export function assertSafeUrl(raw: string, allowedPorts: ReadonlySet<string> = ALLOWED_PORTS): URL {
   if (!raw || raw.length > MAX_URL_LENGTH) throw new SafeFetchError('INVALID_URL', 'URL is empty or too long');
   let url: URL;

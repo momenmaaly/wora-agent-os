@@ -138,6 +138,38 @@ function toolOutcome(tool: string | null, output: unknown, input: unknown): { st
       const status = finite(out['status']) ? Number(out['status']) : 0;
       return { status: status > 0 && status < 400 ? 'passed' : 'failed', description: 'The authoritative HTTP response is successful', evidence: `status=${status}` };
     }
+    case 'browser.open': {
+      const title = typeof out['title'] === 'string' ? out['title'].trim() : '';
+      const url = typeof out['url'] === 'string' ? out['url'] : '';
+      const status = finite(out['status']) ? Number(out['status']) : 0;
+      return { status: title && url && status > 0 && status < 400 ? 'passed' : 'failed', description: 'A real browser loaded a titled page successfully', evidence: `title=${title.slice(0, 120)}; url=${url}; status=${status}` };
+    }
+    case 'browser.inspect': {
+      const markdown = typeof out['markdown'] === 'string' ? out['markdown'].trim() : '';
+      const headings = Array.isArray(out['headings']) ? out['headings'].length : 0;
+      return { status: markdown.length > 40 ? 'passed' : 'failed', description: 'Live DOM inspection produced substantive page content', evidence: `markdown=${markdown.length} chars; headings=${headings}` };
+    }
+    case 'browser.screenshot': {
+      const id = typeof out['artifactId'] === 'string' ? out['artifactId'] : '';
+      const bytes = finite(out['bytes']) ? Number(out['bytes']) : 0;
+      const exists = id ? Boolean(getOsDb().prepare('SELECT 1 FROM os_runtime_artifacts WHERE id = ?').get(id)) : false;
+      return { status: id && bytes > 0 && exists ? 'passed' : 'failed', description: 'A real PNG screenshot is persisted as a runtime artifact', evidence: `artifactId=${id || 'missing'}; bytes=${bytes}; persisted=${exists}` };
+    }
+    case 'browser.research': {
+      const documentId = typeof out['documentArtifactId'] === 'string' ? out['documentArtifactId'] : '';
+      const screenshotId = typeof out['screenshotArtifactId'] === 'string' ? out['screenshotArtifactId'] : '';
+      const markdown = typeof out['markdown'] === 'string' ? out['markdown'].trim() : '';
+      const persisted = [documentId, screenshotId].filter(Boolean).filter((id) => Boolean(getOsDb().prepare('SELECT 1 FROM os_runtime_artifacts WHERE id = ?').get(id))).length;
+      return { status: markdown.length > 40 && persisted === 2 ? 'passed' : 'failed', description: 'Browser research produced a substantive Markdown summary and two persisted artifacts', evidence: `markdown=${markdown.length} chars; persistedArtifacts=${persisted}` };
+    }
+    case 'cloud.write_file': {
+      const bytes = finite(out['bytes']) ? Number(out['bytes']) : 0;
+      return { status: bytes > 0 ? 'passed' : 'failed', description: 'The cloud workspace file contains bytes written by the tool', evidence: `bytes=${bytes}` };
+    }
+    case 'cloud.exec': {
+      const exitCode = out['exitCode'];
+      return { status: exitCode === 0 && out['timedOut'] !== true ? 'passed' : 'failed', description: 'The cloud command completed with exit code 0 and did not time out', evidence: `exitCode=${String(exitCode)}; timedOut=${String(out['timedOut'])}` };
+    }
     default: {
       if (!isRecord(output)) return { status: 'not_run', description: 'No tool-specific independent outcome check is available', evidence: 'no output' };
       if (/\.echo$/u.test(tool ?? '')) {
