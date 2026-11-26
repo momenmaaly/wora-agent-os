@@ -81,6 +81,25 @@ function contractCheck(tool: string | null, output: unknown): IndependentCheck {
     case 'web.fetch_read':
       if (!finite(output['status'])) failures.push('status must be a number');
       break;
+    case 'browser.open':
+    case 'browser.inspect':
+      if (typeof output['markdown'] !== 'string' && tool === 'browser.inspect') failures.push('markdown must be a string');
+      if (tool === 'browser.open' && typeof output['title'] !== 'string') failures.push('title must be a string');
+      break;
+    case 'browser.screenshot':
+      if (typeof output['artifactId'] !== 'string') failures.push('artifactId must be a string');
+      if (!finite(output['bytes'])) failures.push('bytes must be a number');
+      break;
+    case 'browser.research':
+      if (typeof output['documentArtifactId'] !== 'string' || typeof output['screenshotArtifactId'] !== 'string') failures.push('both artifact IDs are required');
+      if (typeof output['markdown'] !== 'string') failures.push('markdown must be a string');
+      break;
+    case 'cloud.write_file':
+      if (!finite(output['bytes'])) failures.push('bytes must be a number');
+      break;
+    case 'cloud.exec':
+      if (typeof output['exitCode'] !== 'number' && output['exitCode'] !== null) failures.push('exitCode must be a number or null');
+      break;
     default:
       break;
   }

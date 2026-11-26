@@ -94,7 +94,10 @@ Operational rule: keep the old key in the keyring until every row reports the ne
 
 ### 3.7 Versioned migrations and recovery
 
-- `os/migrations.ts` records versions in `os_schema_migrations` and `PRAGMA user_version`; each migration is transactional and idempotent.
+- `os/migrations.ts` records versions in `os_schema_migrations` and `PRAGMA user_version`; each migration is transactional and idempotent. The registry rejects duplicate versions at startup.
+- Migration map: **15** `approval-expiry-required`, **16** `cloud-computer-browser-runtime`, **17** `approval-expiry-reconciliation`. A database that applied the historical cloud runtime as version 15 keeps its history; version 17 re-applies the shared, idempotent approval guard.
+- Registry consistency: startup rejects a `user_version` newer than the build, missing registry rows, unknown versions, name mismatches (except the documented version 15 cloud alias), registry rows ahead of `user_version`, and rolled-back rows. Errors name the offending versions and instruct operators to restore a backup or repair the registry without deleting history.
+- Agent capability upgrades: migration 16 upgrades untouched seed/catalog defaults, appends cloud capabilities to additive customizations, and leaves narrowed allow-lists, custom catalog agents and user-source agents unchanged. It never silently restores a capability a user removed.
 - Additive migrations are not destructively rolled back; the documented strategy is restoring the pre-migration backup. `rollbackLastMigration` reports this instead of dropping data.
 - `os/recovery.ts` reports interrupted missions, expired leases, started checkpoints and pending approvals, and provides a workspace-scoped recovery operation.
 - `GET /api/os/migrations` (admin) reports applied and pending versions; `POST /api/os/recovery` (admin) reports interrupted work and performs the workspace-scoped recovery.

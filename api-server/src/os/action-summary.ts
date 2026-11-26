@@ -158,6 +158,19 @@ export function buildActionReview(input: ActionReviewInput): ActionReview {
     };
   }
 
+  if (tool.startsWith('browser.')) {
+    const target = text(data['text'] ?? data['selector'] ?? data['url'] ?? data['sessionId'], 400);
+    const safe = Boolean(target);
+    return {
+      ...base, safe,
+      target: target || '(missing browser target)',
+      consequences: 'Controls a real isolated Chromium session. A financial click or payment-field entry can commit a purchase or expose payment data only after this approval is consumed.',
+      resourceImpact: 'Bounded by the browser tool timeout and the session container limits.',
+      summary: `Run ${tool} against ${target || '(missing target)'}.`,
+      ...(safe ? {} : { reason: 'missing browser target' }),
+    };
+  }
+
   // Plugin tools carry their manifest description and permission list. A target
   // is required because an approver must know what the tool will act on.
   if (description) {

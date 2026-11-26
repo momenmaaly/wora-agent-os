@@ -10,6 +10,7 @@ import { useMissionFeed } from '../os/useMissionFeed.js';
 import type { PageId } from '../pages.js';
 import { extensionsApi, type CapabilitySnapshot } from '../extensions/api.js';
 import { Button, EmptyState, RiskBadge, StateMessage, StatusBadge } from '../components/ui.js';
+import { RuntimePanel } from '../components/RuntimePanel.js';
 import { attentionItems, derivePhases, fill, formatDate, missionActivity, missionProgress, nextAction } from './model.js';
 
 type RunTab = 'plan' | 'activity' | 'evidence' | 'artifact' | 'context';
@@ -293,6 +294,7 @@ export function RunZone({ onNavigate }: { onNavigate: (page: PageId) => void }) 
       <div className="op-run-grid">
         <section className="op-run-main op-panel" aria-label={t(`op.run.${tab}`)}>
           {tab === 'plan' && <>
+            <RuntimePanel missionId={detail.id} compact />
             <div className="op-panel-head"><div><h2>{t('op.run.plan')}</h2><p>{tasks.length} · {t('op.run.tasks')}</p></div></div>
             {tasks.length === 0 && <p className="op-muted">{t('op.run.noTasks')}</p>}
             {tasks.length > 0 && <ol className="op-task-list">{tasks.map((task) => <TaskRow key={task.id} task={task} selected={selectedTask?.id === task.id} onSelect={() => setSelectedTaskId(task.id)} />)}</ol>}

@@ -59,6 +59,7 @@ The same decision is available to agents as the low-risk core tool `meta.classif
 - Workspace budgets default to zero spend, 10 class C approvals per mission and a 60-minute TTL.
 - The orchestrator classifies each tool-backed task and consumes the approval before execution.
 - `runTool` refuses a high-risk tool without a valid approval; the direct tool API and extension executor refuse high-risk tools as well.
+- Financial `browser.click`, `browser.type` and `browser.select` inputs are reclassified as class C at execution time; the approval payload includes the browser session, selector/text/value, and the direct browser API rejects missing, replayed, expired or session-mismatched approvals.
 - Autopilot cannot bypass class C.
 - Tool execution continues to require the existing permission, agent allowlist and capability profile.
 
