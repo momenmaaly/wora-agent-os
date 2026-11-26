@@ -105,12 +105,20 @@ test('legacy pending approvals with a missing expiry are invalidated and fail cl
     const invalidated = getApproval(WS, approval.id)!;
     assert.equal(invalidated.status, 'expired');
     assert.match(invalidated.decisionNote, /legacy approval had no usable expiry/);
-    assert.equal(invalidated.decidedBy, 'system:migration-15');
+    assert.equal(invalidated.decidedBy, 'system:approval-expiry-migration');
     assert.ok(!db.prepare("SELECT 1 FROM os_approvals WHERE id = ? AND status = 'pending'").get(approval.id));
     assert.throws(() => db.prepare(`INSERT INTO os_approvals
-      (id, workspace_id, action_summary, status, created_at)
-      VALUES (?, ?, 'no expiry', 'pending', ?)`)
-      .run('apr_missing_expiry', WS, new Date().toISOString()), /pending approval requires a valid expires_at/);
+      (id, workspace_id, action_summary, status, expires_at, created_at)
+      VALUES (?, ?, 'no expiry', 'pending', NULL, ?)`)
+      .run('apr_missing_expiry', WS, new Date().toISOString()), /pending approval requires a valid future expires_at/);
+    assert.throws(() => db.prepare(`INSERT INTO os_approvals
+      (id, workspace_id, action_summary, status, expires_at, created_at)
+      VALUES (?, ?, 'bad expiry', 'pending', 'not-a-date', ?)`)
+      .run('apr_malformed_expiry', WS, new Date().toISOString()), /pending approval requires a valid future expires_at/);
+    assert.throws(() => db.prepare(`INSERT INTO os_approvals
+      (id, workspace_id, action_summary, status, expires_at, created_at)
+      VALUES (?, ?, 'past expiry', 'pending', ?, ?)`)
+      .run('apr_past_expiry', WS, '2020-01-01T00:00:00.000Z', new Date().toISOString()), /pending approval requires a valid future expires_at/);
   } finally {
     // The migration is idempotent and restores the database-edge guard.
     MIGRATIONS.find((migration) => migration.version === 15)!.up(db, () => {});
@@ -122,10 +130,19 @@ test('expired approvals cannot be decided or consumed', () => {
   const payload = { command: 'node', args: ['--test', 'test/app.test.mjs'] };
   const scope = actionScope(missionId, taskId, 'host.exec');
   const approval = createApproval({ workspaceId: WS, missionId, taskId, toolId: 'host.exec', actionSummary: 'Run tests', risk: 'high', toolInput: payload, requestedBy: 'agent' });
-  getOsDb().prepare('UPDATE os_approvals SET expires_at = ? WHERE id = ?').run('2020-01-01T00:00:00.000Z', approval.id);
-  assert.throws(() => decideApproval(WS, approval.id, 'approved', 'late', 'reviewer'), /expired/);
-  getOsDb().prepare("UPDATE os_approvals SET status = 'approved' WHERE id = ?").run(approval.id);
-  assert.throws(() => consumeApproval(WS, approval.id, { payload, scope, actionClass: 'C', actor: 'agent', missionId, taskId }), /expired/);
+  const db = getOsDb();
+  // The database guard rejects writing a past expiry to a pending row, so
+  // simulate the legacy state directly and restore the guard afterwards.
+  db.exec('DROP TRIGGER IF EXISTS os_approvals_pending_expiry_required');
+  db.exec('DROP TRIGGER IF EXISTS os_approvals_pending_expiry_update_required');
+  try {
+    db.prepare('UPDATE os_approvals SET expires_at = ? WHERE id = ?').run('2020-01-01T00:00:00.000Z', approval.id);
+    assert.throws(() => decideApproval(WS, approval.id, 'approved', 'late', 'reviewer'), /expired/);
+    db.prepare("UPDATE os_approvals SET status = 'approved' WHERE id = ?").run(approval.id);
+    assert.throws(() => consumeApproval(WS, approval.id, { payload, scope, actionClass: 'C', actor: 'agent', missionId, taskId }), /expired/);
+  } finally {
+    MIGRATIONS.find((migration) => migration.version === 15)!.up(db, () => {});
+  }
 });
 
 test('budgets fail closed by default and can be raised explicitly', () => {
