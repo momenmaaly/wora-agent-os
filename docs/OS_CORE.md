@@ -139,7 +139,7 @@ The **Executive Command bar** at the bottom of every screen now launches a real 
 
 ## Test results (this branch)
 
-- `api-server`: full suite **398 tests: 394 pass, 4 skipped** (Mongo integration plus Docker integration when disabled), 0 failed —
+- `api-server`: full suite **406 tests: 402 pass, 4 skipped** (Mongo integration plus Docker integration when disabled), 0 failed —
   `npm test`. Coverage includes solvers, tools, memory isolation + ACL + TTL + version snapshots, registry
   and agent versions, orchestrator journeys 1–5 + failure/approval/denial paths, autonomy policy, device
   pairing, RBAC, boards, digital twins, playbook reuse, SQLite lease fencing, extensions, and the new

@@ -74,10 +74,10 @@ Dark theme:
 
 ## Verification run on the integration branch
 
-- Client tests: **61 passed, 0 failed**.
+- Client tests: **66 passed, 0 failed**.
 - Browser E2E: **1 passed, 0 failed**.
-- API tests: **375 passed, 0 failed, 1 skipped** out of 376 (MongoDB test skipped because
-  MongoDB is not configured in this environment).
+- API tests: **402 passed, 0 failed, 4 skipped** out of 406 (MongoDB and Docker integration
+  tests are opt-in; Docker runs in the dedicated CI job).
 - API and client suites pass on both Node.js 22 and Node.js 24.
 - Client typecheck: passed.
 - API typecheck: passed.
