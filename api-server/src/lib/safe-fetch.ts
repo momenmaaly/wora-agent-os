@@ -68,6 +68,14 @@ const MAX_REDIRECTS = 5;
 const MAX_BYTES = 512 * 1024;
 const DEFAULT_TIMEOUT_MS = 8_000;
 const ALLOWED_PORTS = new Set(['', '80', '443']);
+
+/** Test-only extra ports, paired with the loopback allowance below. */
+function allowedPortsForFetch(): ReadonlySet<string> {
+  if (!allowPrivateForTests()) return ALLOWED_PORTS;
+  const extra = process.env['WORA_TEST_ALLOWED_PORTS'];
+  if (!extra) return ALLOWED_PORTS;
+  return new Set([...ALLOWED_PORTS, ...extra.split(',').map((port) => port.trim()).filter(Boolean)]);
+}
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 const SENSITIVE_HEADERS = new Set(['authorization', 'cookie', 'proxy-authorization']);
 
@@ -470,7 +478,7 @@ export async function safeFetch(url: string, options: SafeFetchOptions = {}): Pr
   const maxBytes = options.maxBytes ?? MAX_BYTES;
   const maxRedirects = options.maxRedirects ?? MAX_REDIRECTS;
   const allowRedirects = options.allowRedirects !== false;
-  const allowedPorts = options.allowedPorts ?? ALLOWED_PORTS;
+  const allowedPorts = options.allowedPorts ?? allowedPortsForFetch();
   let current = assertSafeUrl(url, allowedPorts);
   let currentOptions = options;
   const visited = new Set<string>();

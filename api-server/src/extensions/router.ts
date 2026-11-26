@@ -279,6 +279,7 @@ export function createExtensionsRouter(): Router {
     if (denied(res, 'admin')) return;
     if (!mutationAllowed(res)) return;
     const body = marketplaceSchema.parse(req.body ?? {});
+    if (body.trust === 'official') { res.status(403).json({ error: 'Official trust is reserved for the bundled WORA catalog', code: 'TRUST_DENIED' }); return; }
     const preview = await previewMarketplace({
       workspaceId: workspace(res), name: body.name ?? body.url, url: body.url, ref: body.ref,
       refType: body.refType, path: body.path, trust: body.trust, secretName: body.secretName, actor: actor(res),
@@ -290,6 +291,7 @@ export function createExtensionsRouter(): Router {
     if (denied(res, 'admin')) return;
     if (!mutationAllowed(res, 20)) return;
     const body = marketplaceSchema.parse(req.body ?? {});
+    if (body.trust === 'official') { res.status(403).json({ error: 'Official trust is reserved for the bundled WORA catalog', code: 'TRUST_DENIED' }); return; }
     let secretName = body.secretName ?? null;
     if (body.credential) {
       const name = `MARKETPLACE_${Buffer.from(body.url).toString('base64url').replace(/[^A-Z0-9]/giu, '').toUpperCase().slice(0, 24) || 'CREDENTIAL'}`;
@@ -327,6 +329,7 @@ export function createExtensionsRouter(): Router {
     if (!marketplace) { res.status(404).json({ error: 'Marketplace not found' }); return; }
     if (marketplace.provider === 'builtin') { res.status(409).json({ error: 'The official catalog is read-only' }); return; }
     const body = marketplaceSchema.partial().parse(req.body ?? {});
+    if (body.trust === 'official') { res.status(403).json({ error: 'Official trust is reserved for the bundled WORA catalog', code: 'TRUST_DENIED' }); return; }
     const refType = body.refType ?? marketplace.refType;
     const ref = body.ref !== undefined ? normalizeRef(body.ref, refType) : body.refType ? normalizeRef(marketplace.ref, refType) : undefined;
     const path = body.path !== undefined ? normalizePath(body.path) : undefined;

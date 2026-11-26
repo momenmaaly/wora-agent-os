@@ -212,6 +212,9 @@ export function createMarketplace(input: {
   autoLoad?: boolean; trust?: TrustLevel; secretName?: string | null; actor: string;
 }): MarketplaceRecord {
   ensureExtensionSchema();
+  if ((input.trust ?? 'community') === 'official' && input.provider !== 'builtin') {
+    throw new Error('Official trust is reserved for the bundled WORA catalog');
+  }
   const db = getOsDb();
   const id = newId('mkt');
   const ts = nowIso();
@@ -243,6 +246,9 @@ export function updateMarketplace(workspaceId: string, id: string, patch: {
 }, actor: string): MarketplaceRecord | null {
   const current = getMarketplace(workspaceId, id);
   if (!current) return null;
+  if (patch.trust === 'official' && current.provider !== 'builtin') {
+    throw new Error('Official trust is reserved for the bundled WORA catalog');
+  }
   getOsDb().prepare(
     `UPDATE ext_marketplaces SET name = ?, ref = ?, ref_type = ?, path = ?, scope = ?, scope_id = ?, auto_load = ?, trust = ?, secret_name = ?, status = ?, updated_at = ? WHERE workspace_id = ? AND id = ?`,
   ).run(patch.name ?? current.name, patch.ref ?? current.ref, patch.refType ?? current.refType, patch.path ?? current.path,

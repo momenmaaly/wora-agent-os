@@ -24,6 +24,7 @@ const TSX = path.resolve(process.cwd(), 'node_modules', '.bin', 'tsx');
 const API_PORT = 44000 + Math.floor(Math.random() * 1000);
 const API_BASE = `http://127.0.0.1:${API_PORT}`;
 const WS = 'wora-preview';
+let TEST_FETCH_PORT = '';
 
 function childEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
   return {
@@ -33,6 +34,7 @@ function childEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
     WORA_WORKSPACE: WORKSPACE,
     WORA_OS_WORKSPACE_ID: WS,
     WORA_ALLOW_PRIVATE_OUTBOUND_FOR_TESTS: '1',
+    WORA_TEST_ALLOWED_PORTS: TEST_FETCH_PORT,
     WORA_MCP_RESOURCE_LIMITS: '0',
     ...extra,
   };
@@ -98,7 +100,9 @@ test('worker SIGKILL mid-task is recovered by a new process without duplicate co
       res.end('slow research source');
     }, 3_500);
   });
-  await new Promise<void>((resolve) => slowServer!.listen(80, '127.0.0.1', resolve));
+  await new Promise<void>((resolve) => slowServer!.listen(0, '127.0.0.1', resolve));
+  const slowPort = (slowServer!.address() as { port: number }).port;
+  TEST_FETCH_PORT = String(slowPort);
   mkdirSync(path.join(WORKSPACE, WS), { recursive: true });
   writeFileSync(path.join(WORKSPACE, WS, 'after-research.txt'), 'dependent artifact', 'utf8');
 
@@ -107,7 +111,7 @@ test('worker SIGKILL mid-task is recovered by a new process without duplicate co
   try {
     const created = await api('/api/os/missions', {
       method: 'POST',
-      body: JSON.stringify({ objective: 'research http://127.0.0.1/slow and summarize it', execute: false }),
+      body: JSON.stringify({ objective: `research http://127.0.0.1:${slowPort}/slow and summarize it`, execute: false }),
     });
     assert.equal(created.status, 202);
     const mission = await created.json() as { id: string; tasks: Array<{ id: string; tool: string }> };

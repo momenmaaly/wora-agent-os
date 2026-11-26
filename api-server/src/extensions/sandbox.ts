@@ -18,6 +18,24 @@ export interface IsolationStatus {
 
 const PRLIMIT = ['/usr/bin/prlimit', '/bin/prlimit'].find((candidate) => existsSync(candidate)) ?? null;
 
+/**
+ * Environment variables that can turn a declared secret into code execution
+ * or redirect a runtime's module/config loading. They are never inherited by
+ * a stdio MCP child, even when a manifest declares them.
+ */
+export const DANGEROUS_MCP_ENV = new Set([
+  'NODE_OPTIONS', 'NODE_PATH', 'NODE_REPL_EXTERNAL_MODULE',
+  'LD_PRELOAD', 'LD_LIBRARY_PATH', 'LD_AUDIT',
+  'DYLD_INSERT_LIBRARIES', 'DYLD_LIBRARY_PATH',
+  'PYTHONPATH', 'PYTHONHOME', 'PYTHONSTARTUP', 'PYTHONINSPECT',
+  'BASH_ENV', 'ENV', 'SHELLOPTS', 'PS4',
+  'PATH', 'HOME', 'TMPDIR', 'SHELL', 'IFS',
+]);
+
+export function isDangerousMcpEnv(name: string): boolean {
+  return DANGEROUS_MCP_ENV.has(name.trim().toUpperCase());
+}
+
 function positiveInt(name: string, fallback: number, max: number): number {
   const raw = Number(process.env[name]);
   return Number.isInteger(raw) && raw > 0 && raw <= max ? raw : fallback;
@@ -44,10 +62,14 @@ export function isolationStatus(): IsolationStatus {
   };
 }
 
-export function resourceLimitedCommand(command: string, args: string[]): { command: string; args: string[]; isolation: IsolationStatus } {
+export function resourceLimitedCommand(
+  command: string,
+  args: string[],
+  overrides: { addressSpaceBytes?: number } = {},
+): { command: string; args: string[]; isolation: IsolationStatus } {
   const status = isolationStatus();
   if (status.mode !== 'resource-limits' || !PRLIMIT) return { command, args, isolation: status };
-  const limits = status.limits;
+  const limits: Record<string, number> = { ...status.limits, ...overrides };
   return {
     command: PRLIMIT,
     args: [
@@ -60,6 +82,6 @@ export function resourceLimitedCommand(command: string, args: string[]): { comma
       command,
       ...args,
     ],
-    isolation: status,
+    isolation: { ...status, limits },
   };
 }

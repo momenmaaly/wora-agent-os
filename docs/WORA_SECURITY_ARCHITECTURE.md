@@ -75,7 +75,8 @@ Operational rule: keep the old key in the keyring until every row reports the ne
   - address space (default 2 GiB), CPU seconds (60), file size (32 MiB), open files (1024), process count (1024).
   - limits are configurable with `WORA_MCP_*`; `WORA_MCP_RESOURCE_LIMITS=0` disables the wrapper.
 - This is resource isolation, not a filesystem/network sandbox. The health response reports the exact enforced limits and states the remaining limitations.
-- Stdio remains disabled by default; community stdio remains refused; only the bundled reference server is allowed in `official` mode.
+- Stdio remains disabled by default; community stdio remains refused; only the bundled reference server is allowed in `official` mode. Official trust cannot be assigned to a user-registered marketplace, and loader/inline-evaluation flags plus process-control environment variables (`NODE_OPTIONS`, `LD_PRELOAD`, `PYTHONPATH`, etc.) are rejected before spawn.
+- Migration 15 invalidates legacy pending approvals with a missing/invalid expiry and adds database triggers requiring a valid expiry for every future pending approval. Missing expiry is treated as expired at every decision, consumption and orchestration boundary.
 
 ### 3.6 Bounded code repair
 

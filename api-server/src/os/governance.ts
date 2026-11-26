@@ -19,7 +19,7 @@ import { fieldAad, openJson, sealJson } from '../security/field-crypto.js';
 import { assertSafeReview, buildActionReview, type ActionReview } from './action-summary.js';
 
 export type AutonomyPolicy = 'balanced' | 'autopilot';
-export type ApprovalStatus = 'pending' | 'approved' | 'denied';
+export type ApprovalStatus = 'pending' | 'approved' | 'denied' | 'expired';
 
 const AUTONOMY_KEY = 'autonomy_policy';
 const ACTION_BUDGET_KEY = 'action_budget';
@@ -52,10 +52,11 @@ export function payloadDigest(value: unknown): string {
   return sha256(JSON.stringify(canonical(value ?? {})));
 }
 
-/** Invalid or missing expiry timestamps fail closed where an approval is required. */
+/** Missing, invalid or past expiry timestamps fail closed. */
 export function isApprovalExpired(value: string | null | undefined): boolean {
-  if (!value) return false;
-  const parsed = Date.parse(value);
+  const text = typeof value === 'string' ? value.trim() : '';
+  if (!text) return true;
+  const parsed = Date.parse(text);
   return !Number.isFinite(parsed) || parsed <= Date.now();
 }
 
@@ -247,7 +248,7 @@ export function decideApproval(workspaceId: string, approvalId: string, decision
   if (isApprovalExpired(row['expires_at'] as string | null)) throw new Error('Approval has expired');
   const now = nowIso();
   const update = db.prepare(`UPDATE os_approvals SET status = ?, decision_note = ?, decided_by = ?, decided_at = ?
-    WHERE workspace_id = ? AND id = ? AND status = 'pending' AND (expires_at IS NULL OR expires_at > ?)`)
+    WHERE workspace_id = ? AND id = ? AND status = 'pending' AND expires_at IS NOT NULL AND expires_at > ?`)
     .run(decision, note.slice(0, 500), actor, now, workspaceId, approvalId, now);
   if (Number(update.changes ?? 0) !== 1) {
     const latest = db.prepare('SELECT status, expires_at FROM os_approvals WHERE workspace_id = ? AND id = ?').get(workspaceId, approvalId) as { status?: string; expires_at?: string | null } | undefined;
