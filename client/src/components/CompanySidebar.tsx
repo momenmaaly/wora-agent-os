@@ -12,7 +12,7 @@ export function CompanySidebar({ page, onNavigate, onHelp }: { page: PageId; onN
     } };
   }
   return <>
-    <a className="sidebar-brand" aria-label={`Wora — ${t('app.tagline')}`} {...link('home')}><WoraMark /></a>
+    <a className="sidebar-brand" aria-label={`Wora — ${t('app.tagline')}`} {...link('brief')}><WoraMark /></a>
     <nav className="sidebar-navigation hq-scroll" aria-label={t('nav.navigation')}>
       {NAV_GROUPS.map((group) => <div className="nav-group" key={group.id}>
         <p className="nav-group-label">{t(group.label)}</p>

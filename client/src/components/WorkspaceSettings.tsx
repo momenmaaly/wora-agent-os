@@ -7,7 +7,6 @@ const DESCRIPTION_KEY: Record<SettingsPage, string> = {
   settings: 'settings.securityDesc',
   security: 'settings.securityDesc',
   models: 'settings.modelsDesc',
-  system: 'settings.systemDesc',
   pricing: 'settings.pricingDesc',
 };
 

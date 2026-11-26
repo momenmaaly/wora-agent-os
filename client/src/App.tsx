@@ -26,6 +26,10 @@ import { osApi } from './os/api.js';
 
 initBoardSync(); // pull the durable workspace board once per boot (server wins); safe to call before React mounts
 
+const Brief = lazy(() => import('./workspace/BriefZone.js').then((module) => ({ default: module.BriefZone })));
+const Run = lazy(() => import('./workspace/RunZone.js').then((module) => ({ default: module.RunZone })));
+const Library = lazy(() => import('./workspace/LibraryZone.js').then((module) => ({ default: module.LibraryZone })));
+const System = lazy(() => import('./workspace/SystemZone.js').then((module) => ({ default: module.SystemZone })));
 const Campus = lazy(() => import('./components/Campus.js').then((module) => ({ default: module.Campus })));
 const Director = lazy(() => import('./components/DirectorOffice.js').then((module) => ({ default: module.DirectorOffice })));
 const Projects = lazy(() => import('./components/ProjectOSBoard.js').then((module) => ({ default: module.ProjectOSBoard })));
@@ -33,7 +37,7 @@ const Agents = lazy(() => import('./components/AgentRegistry.js').then((module) 
 const Execution = lazy(() => import('./components/ExecutionCenter.js').then((module) => ({ default: module.ExecutionCenter })));
 const Intelligence = lazy(() => import('./components/IntelligenceHub.js').then((module) => ({ default: module.IntelligenceHub })));
 const Extensions = lazy(() => import('./components/ExtensionsHub.js').then((module) => ({ default: module.ExtensionsHub })));
-const SystemConsole = lazy(() => import('./components/SystemConsole.js').then((module) => ({ default: module.SystemConsole })));
+
 const Studio = lazy(() => import('./components/ProductStudio.js').then((module) => ({ default: module.ProductStudio })));
 const Models = lazy(() => import('./components/ModelHub.js').then((module) => ({ default: module.ModelHub })));
 const Integrations = lazy(() => import('./components/IntegrationsHub.js').then((module) => ({ default: module.IntegrationsHub })));
@@ -96,12 +100,12 @@ export default function App() {
   const launchCommand = useCallback((brief: string) => {
     void (async () => {
       try {
-        await osApi.launchMission(brief);
-        try { sessionStorage.removeItem('wora:os:launchError'); } catch { /* ignore */ }
+        const mission = await osApi.launchMission(brief);
+        try { sessionStorage.setItem('wora:selectedMission', mission.id); sessionStorage.removeItem('wora:os:launchError'); } catch { /* ignore */ }
       } catch (err) {
         try { sessionStorage.setItem('wora:os:launchError', err instanceof Error ? err.message : t('workspace.launchError')); } catch { /* ignore */ }
       } finally {
-        navigateHash('#execution');
+        navigateHash('#run');
       }
     })();
   }, [navigateHash, t]);
@@ -157,10 +161,15 @@ export default function App() {
     <a href="#main-content" className="button primary skip-link" onClick={(event) => { event.preventDefault(); main.current?.focus(); }}>{t('app.skipToContent')}</a>
     <aside className="company-sidebar desktop-sidebar"><CompanySidebar page={page} onNavigate={navigate} onHelp={() => setOverlay('help')} /></aside>
     <div className="app-main">
-      <CompanyHeader onMenu={() => setOverlay('menu')} onSearch={() => setOverlay('search')} onHome={() => navigate('home')} />
+      <CompanyHeader onMenu={() => setOverlay('menu')} onSearch={() => setOverlay('search')} onHome={() => navigate('brief')} />
       <main id="main-content" className="app-scroll hq-scroll" tabIndex={-1} ref={main}>
         {page !== 'director' && <div className={`page-frame page-${page}`} key={page}>
           <WorkspacePage>
+            {page === 'brief' && <Brief onNavigate={navigate} />}
+            {page === 'run' && <Run onNavigate={navigate} />}
+            {page === 'library' && <Library onNavigate={navigate} />}
+            {page === 'capabilities' && <Extensions variant="capabilities" />}
+            {page === 'system' && <System onNavigate={navigate} />}
             {page === 'home' && <TechnicalWorkspace onNavigate={navigate} />}
             {page === 'campus' && <Campus roomId={roomId} tourIndex={tourIndex} onVisit={visit} onAssign={assign} onDirector={toDirector} />}
             {page === 'organizations' && <OrganizationsPage onNavigate={navigate} />}
@@ -178,7 +187,6 @@ export default function App() {
             {page === 'security' && <Security onNavigate={navigate} />}
             {page === 'intelligence' && <Intelligence />}
             {page === 'extensions' && <Extensions />}
-            {page === 'system' && <SystemConsole />}
             {page === 'studio' && <Studio onUpgrade={toPricing} onProjects={toProjects} />}
             {page === 'settings' && <WorkspaceSettings onNavigate={navigate} />}
             {page === 'models' && <Models onUpgrade={toPricing} />}
@@ -192,7 +200,7 @@ export default function App() {
           </WorkspacePage>
         </div>}
       </main>
-      {page !== 'home' && <ExecutiveCommandBar onSubmit={launchCommand} />}
+      {page !== 'home' && page !== 'brief' && <ExecutiveCommandBar onSubmit={launchCommand} />}
     </div>
     {overlay === 'menu' && <Dialog key="menu" title={t('nav.navigation')} variant="navigation" onClose={() => setOverlay(null)}><div className="company-sidebar"><CompanySidebar page={page} onNavigate={navigate} onHelp={() => setOverlay('help')} /></div></Dialog>}
     {overlay === 'search' && <QuickSearch onClose={() => setOverlay(null)} onNavigate={navigate} onAgent={openAgent} onRoom={visit} />}
