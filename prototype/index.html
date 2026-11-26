@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ar" dir="rtl" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="color-scheme" content="light dark" />
+  <meta name="description" content="WORA experience redesign prototype — one operational workspace for intelligent work." />
+  <meta name="theme-color" content="#f2eee6" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%235d2334'/%3E%3Cpath d='M13 20l8 25 11-18 11 18 8-25' fill='none' stroke='%23f2eee6' stroke-width='5' stroke-linecap='square' stroke-linejoin='bevel'/%3E%3C/svg%3E" />
+  <title>WORA — Operations Workspace</title>
+  <link rel="stylesheet" href="assets/styles.css" />
+</head>
+<body>
+  <a class="skip" href="#workspace">تخطي إلى مساحة العمل</a>
+  <div class="app" id="app">
+    <header class="topbar" id="topbar"></header>
+    <aside class="rail" id="rail" aria-label="التنقل الرئيسي"></aside>
+    <main class="workspace" id="workspace" tabindex="-1"></main>
+    <aside class="inspector" id="inspector" aria-label="المفتش"></aside>
+    <footer class="runtime-strip" id="runtime-strip"></footer>
+  </div>
+  <nav class="mobile-nav" id="mobile-nav" aria-label="التنقل الرئيسي"></nav>
+  <div id="sheet-root"></div>
+  <div id="palette-root"></div>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <noscript>This prototype requires JavaScript.</noscript>
+  <script src="assets/app.js" defer></script>
+</body>
+</html>
