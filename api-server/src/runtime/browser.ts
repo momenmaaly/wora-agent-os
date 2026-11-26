@@ -244,7 +244,7 @@ export async function createBrowserSession(input: { workspaceId: string; actor: 
         event(current, 'lifecycle', 'browser.interrupted', { code });
       }
     });
-    const ping = await request(runner, 'ping', {}, 45_000);
+    const ping = await request(runner, 'ping', {}, 90_000);
     if (!ping) throw new Error('Browser child did not acknowledge ping');
     getOsDb().prepare("UPDATE os_runtime_sessions SET status = 'running', started_at = ?, metadata = ? WHERE id = ?")
       .run(nowIso(), JSON.stringify({ browser: 'chromium', provider: availability.provider, isolated: availability.isolated, sandbox, executable: availability.executable, containerName: containerName ?? null, pid: child!.pid, browserTmpDir, network: availability.isolated ? 'internal-proxy-only' : 'host' }), id);
