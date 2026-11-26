@@ -5,7 +5,7 @@ function isSessionToken(value?: string): value is string {
 }
 
 export function isSessionError(code: string | null) {
-  return code === 'AUTH_REQUIRED' || code === 'AUTH_INVALID' || code === 'SESSION_EXPIRED';
+  return code === 'AUTH_REQUIRED' || code === 'AUTH_INVALID' || code === 'SESSION_EXPIRED' || code === 'SESSION_REVOKED';
 }
 
 /** A short-lived application session supplied by the deployment's identity layer. */
@@ -41,6 +41,19 @@ export async function connectWorkspace(raw: string, signal: AbortSignal): Promis
   signal.throwIfAborted();
   try { window.sessionStorage.setItem(SESSION_KEY, token); }
   catch { throw new Error('STORAGE_UNAVAILABLE'); }
+}
+
+export async function revokeWorkspaceSession(): Promise<boolean> {
+  const token = readSessionToken();
+  if (!token) return false;
+  try {
+    const url = new URL('/api/session/revoke', import.meta.env?.VITE_API_URL?.trim() || window.location.origin);
+    const response = await fetch(url, {
+      method: 'POST', headers: { Accept: 'application/json', Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(5_000), cache: 'no-store', redirect: 'error', credentials: 'omit',
+    });
+    return response.ok || response.status === 400;
+  } catch { return false; }
 }
 
 export function clearWorkspaceSession() {

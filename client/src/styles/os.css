@@ -198,6 +198,9 @@
 .os-approval.compact { margin-top: 0; }
 .os-approval-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .os-approval p { margin: 0; font-size: 13px; }
+.os-approval-review { display: grid; grid-template-columns: max-content 1fr; gap: 4px 10px; margin: 0; font-size: 12px; }
+.os-approval-review dt { color: var(--text-muted); font-weight: 600; }
+.os-approval-review dd { margin: 0; overflow-wrap: anywhere; }
 .os-approval-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .os-risk-chip { font-size: 11px; font-weight: 700; letter-spacing: .04em; padding: 2px 8px; border-radius: 999px; background: var(--gold); color: #241a05; }
 .button.ghost.danger { border-color: color-mix(in srgb, var(--red, #c0392b) 55%, var(--line)); color: var(--red, #c0392b); }
@@ -260,3 +263,8 @@
 .os-role-badge { padding: 2px 10px; border-radius: 999px; background: rgba(139, 112, 232, 0.15); border: 1px solid rgba(139, 112, 232, 0.4); color: #c4b5fd; }
 .os-role-list { display: grid; gap: 8px; margin-bottom: 12px; }
 .os-role-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 12px; border-radius: 12px; border: 1px solid rgba(148, 163, 184, 0.14); background: rgba(148, 163, 184, 0.04); }
+
+.os-inline-control { display: inline-flex; align-items: center; gap: 6px; }
+.os-inline-control select { min-height: 30px; padding: 2px 6px; border: 1px solid var(--line); border-radius: var(--control-radius); background: var(--bg); color: var(--ink); }
+.os-lessons .os-tool-grid > article h3 { margin: 6px 0; font-size: 14px; }
+.os-benchmarks .os-handoffs { margin-top: 8px; }

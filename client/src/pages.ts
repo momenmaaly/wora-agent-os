@@ -1,36 +1,74 @@
-import { Bot, BrainCircuit, Building2, Boxes, CreditCard, FolderKanban, Home, Plug2, ServerCog, Settings, Cpu, Workflow, Sparkles, LayoutGrid, BriefcaseBusiness } from 'lucide-react';
+import {
+  Activity, Bot, BookOpen, Boxes, BrainCircuit, Building2, CreditCard, Cpu, FolderKanban, GitBranch, History,
+  LayoutDashboard, Package, Plug2, Puzzle, ServerCog, Settings, Shield, ShieldCheck, Terminal, Workflow,
+} from 'lucide-react';
 import { ROOM_BY_ID } from './office/layout.js';
 import { TOUR_STOPS } from './office/visits.js';
 import { DIRECTOR_ROOM_ID } from './office/work.js';
 
 /**
- * WORA — final navigation (2026-11-23 product reset).
- * Three entry paths, one product. Primary areas are task-first, not workspace-first.
- * Labels live in the i18n dictionaries (`nav.<id>`); no hardcoded strings here.
+ * WORA — technical workspace navigation.
+ * Primary areas are grouped by intent; labels live in `nav.<id>`.
  */
-export const NAV_ITEMS = [
-  { id: 'home', icon: Home },
-  { id: 'execution', icon: Workflow },
-  { id: 'agents', icon: Bot },
-  { id: 'projects', icon: FolderKanban },
-  { id: 'organizations', icon: Building2 },
-  { id: 'intelligence', icon: BrainCircuit },
-  { id: 'workspaces', icon: Boxes },
-  { id: 'system', icon: ServerCog },
+export const NAV_GROUPS = [
+  {
+    id: 'workspace',
+    label: 'nav.groupWorkspace',
+    items: [
+      { id: 'home', icon: LayoutDashboard },
+      { id: 'execution', icon: Workflow },
+      { id: 'agents', icon: Bot },
+      { id: 'workflows', icon: GitBranch },
+    ],
+  },
+  {
+    id: 'build',
+    label: 'nav.groupBuild',
+    items: [
+      { id: 'projects', icon: FolderKanban },
+      { id: 'terminal', icon: Terminal },
+      { id: 'artifacts', icon: Package },
+    ],
+  },
+  {
+    id: 'systems',
+    label: 'nav.groupSystems',
+    items: [
+      { id: 'integrations', icon: Plug2 },
+      { id: 'extensions', icon: Puzzle },
+      { id: 'knowledge', icon: BookOpen },
+    ],
+  },
+  {
+    id: 'governance',
+    label: 'nav.groupGovernance',
+    items: [
+      { id: 'approvals', icon: ShieldCheck },
+      { id: 'activity', icon: Activity },
+      { id: 'history', icon: History },
+    ],
+  },
 ] as const;
+
+type NavGroupItem = (typeof NAV_GROUPS)[number]['items'][number];
+export const NAV_ITEMS = NAV_GROUPS.reduce<NavGroupItem[]>((items, group) => [...items, ...group.items], []);
 
 export const SETTINGS_ITEMS = [
   { id: 'settings', icon: Settings },
+  { id: 'security', icon: Shield },
   { id: 'models', icon: Cpu },
-  { id: 'integrations', icon: Plug2 },
+  { id: 'system', icon: ServerCog },
   { id: 'pricing', icon: CreditCard },
 ] as const;
 
-/** Kept reachable (hash-routable, documented in the audit) but deliberately outside primary nav. */
+/** Hash-routable areas kept outside the primary navigation. */
 export const LEGACY_ITEMS = [
-  { id: 'campus', icon: LayoutGrid },
-  { id: 'director', icon: BriefcaseBusiness },
-  { id: 'studio', icon: Sparkles },
+  { id: 'organizations', icon: Building2 },
+  { id: 'intelligence', icon: BrainCircuit },
+  { id: 'workspaces', icon: Boxes },
+  { id: 'campus', icon: LayoutDashboard },
+  { id: 'director', icon: Workflow },
+  { id: 'studio', icon: Package },
 ] as const;
 
 export const PAGES = [...NAV_ITEMS, ...SETTINGS_ITEMS, ...LEGACY_ITEMS] as const;

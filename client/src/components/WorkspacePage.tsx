@@ -1,6 +1,7 @@
 import { Component, Suspense, type ReactNode } from 'react';
+import { useI18n } from '../i18n/I18nContext.js';
 
-class PageErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+class PageErrorBoundary extends Component<{ children: ReactNode; title: string; body: string; action: string }, { failed: boolean }> {
   state = { failed: false };
 
   static getDerivedStateFromError() {
@@ -12,17 +13,18 @@ class PageErrorBoundary extends Component<{ children: ReactNode }, { failed: boo
 
     return <section className="panel panel-pad field-stack">
       <div role="alert">
-        <h1>تعذّر تحميل الصفحة</h1>
-        <p className="subtle">أعد تحميل الصفحة لجلب أحدث نسخة، أو افتح صفحة أخرى من القائمة.</p>
+        <h1>{this.props.title}</h1>
+        <p className="subtle">{this.props.body}</p>
       </div>
-      <div><button type="button" className="button primary" onClick={() => window.location.reload()}>إعادة تحميل الصفحة</button></div>
+      <div><button type="button" className="button primary" onClick={() => window.location.reload()}>{this.props.action}</button></div>
     </section>;
   }
 }
 
-export function WorkspacePage({ children, loading = 'جارٍ تحميل الصفحة…' }: { children: ReactNode; loading?: string }) {
-  return <PageErrorBoundary>
-    <Suspense fallback={<div className="panel panel-pad subtle" role="status">{loading}</div>}>
+export function WorkspacePage({ children, loading }: { children: ReactNode; loading?: string }) {
+  const { t } = useI18n();
+  return <PageErrorBoundary title={t('app.pageLoadError')} body={t('app.pageLoadBody')} action={t('app.reload')}>
+    <Suspense fallback={<div className="panel panel-pad subtle" role="status">{loading ?? t('app.loading')}</div>}>
       {children}
     </Suspense>
   </PageErrorBoundary>;

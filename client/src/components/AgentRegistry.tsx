@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
-  Bot, CircleAlert, LoaderCircle, Plus, Search, Trash2, Users, X,
+  Bot, CircleAlert, LoaderCircle, Plus, Search, ShieldCheck, Trash2, Users, X,
 } from 'lucide-react';
 import { OsApiError, osApi, type Agent, type Specialization } from '../os/api.js';
+import { AgentCapabilitiesDialog } from './AgentCapabilitiesDialog.js';
+import { useI18n } from '../i18n/I18nContext.js';
 
 function CreateAgentDialog({ specializations, onClose, onCreated }: { specializations: Specialization[]; onClose: () => void; onCreated: (agent: Agent) => void }) {
   const [name, setName] = useState('');
@@ -60,7 +62,9 @@ function CreateAgentDialog({ specializations, onClose, onCreated }: { specializa
 }
 
 export function AgentRegistry() {
+  const { t } = useI18n();
   const [specializations, setSpecializations] = useState<Specialization[]>([]);
+  const [capabilitiesAgent, setCapabilitiesAgent] = useState<Agent | null>(null);
   const [agents, setAgents] = useState<Agent[] | null>(null);
   const [query, setQuery] = useState('');
   const [specializationFilter, setSpecializationFilter] = useState('');
@@ -148,6 +152,7 @@ export function AgentRegistry() {
               <div className="os-agent-foot">
                 <small className="subtle">{agent.tools.length} أداة · {agent.permissions.length} صلاحية · {agent.source === 'seed' ? 'أساسي' : agent.source === 'organization' ? 'منظمة' : agent.source === 'orchestrator' ? 'من مهمة' : 'إنشاء يدوي'}</small>
                 <span className="os-agent-actions">
+                  <button type="button" className="button small ghost" onClick={() => setCapabilitiesAgent(agent)} title={t('ext.agentCapabilities')}><ShieldCheck size={14} aria-hidden="true" /> {t('ext.agentCapabilities')}</button>
                   <button type="button" className="button small ghost" disabled={busyId === agent.id} onClick={() => void toggleStatus(agent)}>{agent.status === 'active' ? 'إيقاف' : 'تفعيل'}</button>
                   <button type="button" className="icon-button" aria-label="حذف الوكيل" disabled={busyId === agent.id} onClick={() => void remove(agent)}><Trash2 size={15} /></button>
                 </span>
@@ -157,6 +162,7 @@ export function AgentRegistry() {
           {agents.length === 0 && <p className="os-empty">لا توجد نتائج مطابقة.</p>}
         </div>}
         {showCreate && <CreateAgentDialog specializations={specializations} onClose={() => setShowCreate(false)} onCreated={() => { setShowCreate(false); void loadAgents(); }} />}
+        {capabilitiesAgent && <AgentCapabilitiesDialog agentId={capabilitiesAgent.id} agentName={capabilitiesAgent.name} onClose={() => setCapabilitiesAgent(null)} />}
       </>
     </div>
   );

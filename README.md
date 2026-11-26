@@ -19,6 +19,8 @@ curl http://localhost:4000/api/os/usage       # AI token/cost ledger (admin-key 
 
 State is persisted under `WORA_OS_DB` (default `api-server/data/wora-os.db`, SQLite via `node:sqlite`); generated apps, reports and mission artifacts live under `WORA_WORKSPACE` (default `api-server/data/workspace`). Both are git- and docker-ignored.
 
+SQLite is a single-writer store. Run exactly **one** API replica against the `os-data` volume. The API takes an atomic, fenced heartbeat lease before application schema/migration writes; a second process fails fast, and a process that loses renewal closes the database and refuses further writes. Scaling the API horizontally requires moving the OS store to PostgreSQL first. Workspace file access canonicalizes paths and rejects symlink escapes; the file-read tool and scaffold writes additionally use descriptor-verified opens; `web.fetch_read`, plugin HTTP tools and HTTP MCP all use the hardened outbound policy (private/metadata blocking, pinned DNS, revalidated redirects, streaming decompressed byte caps). Local marketplaces are limited to `WORA_EXTENSIONS_LOCAL_ROOTS`; `file://` sources enforce the same roots and Git refs are validated before every fetch. Stdio MCP is **disabled by default**; `WORA_MCP_STDIO_MODE=official` permits only the bundled trusted reference server, never community code. High-risk agent capabilities and plugin approvals require an admin, and a requester cannot approve their own high-risk request.
+
 ## Run the workspace
 
 Use Node.js 22.18 or later and npm. To explore the client without external services:
@@ -132,7 +134,7 @@ For live generation on the **production API**:
 
 1. Set `STUDIO_PROVIDER` to `google`, `openai`, `anthropic`, or `groq` and supply its matching API key on the server. Optionally set `STUDIO_MODEL` to a supported model listed by `/api/brains`; otherwise the first supported model for that provider is used.
 2. Open a signed workspace session as described below. The same session authorizes Studio, room access and the skill registry. Never put a session, signing secret or provider key in a `VITE_*` variable.
-3. Use the same-origin `/api` proxy, or set `VITE_API_URL` to your API's HTTPS origin and allow the app origin in `ALLOWED_ORIGINS`.
+3. Use the same-origin `/api` proxy, or set `VITE_API_URL` to your API's HTTPS origin and allow the app origin in `ALLOWED_ORIGINS`. `/api/os` and `/api/os/extensions` follow `VITE_API_URL`; set `VITE_OS_API` only when those routes live on a different origin. `npm run build` fails if the Docker/compose/env files drift from this contract.
 
 `GET /api/studio/status` reports live availability for the current signed session. `POST /api/studio/drafts` accepts only the brief with a bearer session, enforces a 4-per-minute quota per user and a shared 60-per-hour deployment quota in Redis, and times out provider calls. Redis quota failures refuse the call rather than sending unmetered requests. Both routes use `Cache-Control: no-store`. Provider output is validated before being returned, and the UI offers local templates if direct generation fails. Only the live mode forwards the brief to the configured provider; generated packs are saved in the browser, not by the Studio API. The local Pro switch is a preview UI switch, not authentication or a production billing entitlement.
 
@@ -149,7 +151,7 @@ The production API must be a long-lived service that supports WebSockets, not a 
 ### Vercel frontend with Railway or another API host
 
 1. Deploy `api-server/Dockerfile` with the repository root as build context. Attach persistent Redis (`noeviction`) and MongoDB. Set `MONGO_URI`, `REDIS_URL`, and `AUTH_SECRET`. Set `ALLOWED_ORIGINS` to the frontend's **exact origin** (scheme and host, no trailing slash). Initialize a new catalog with `node dist/seed.mjs`.
-2. Enable HTTPS and `/socket.io` on the API host. On `client/` in Vercel, set the **public** API origin in `VITE_API_URL` and redeploy. `VITE_SOCKET_URL` is only needed when the socket origin differs. For one HTTPS origin with a reverse proxy, leave both empty.
+2. Enable HTTPS and `/socket.io` on the API host. On `client/` in Vercel, set the **public** API origin in `VITE_API_URL` and redeploy. The OS and extensions clients now use that same origin; set `VITE_OS_API` only if `/api/os` is served elsewhere. `VITE_SOCKET_URL` is only needed when the socket origin differs. For one HTTPS origin with a reverse proxy, leave all three empty. Do not run more than one API replica while the OS database is SQLite.
 3. Supply provider keys server-side for the models you plan to use. For the default roster, the first general-chat reply goes to Aria (Google/Gemini); you can select a different agent or use a room-level model swap. Unconfigured agents can record assignments but cannot generate live replies. Live Studio and model-assisted Director recommendations also require `STUDIO_PROVIDER` and its key. Do not use a preview provider key or integration demo as evidence of a live connection.
 
 ### Open a private workspace
