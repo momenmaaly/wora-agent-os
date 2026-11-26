@@ -325,6 +325,32 @@ export const MIGRATIONS: Migration[] = [
       scrubLegacySecrets(db);
     },
   },
+  {
+    version: 15,
+    name: 'approval-expiry-required',
+    up(db) {
+      // Legacy rows predate the expiry contract. Invalidate only pending
+      // records so approved/denied history remains intact, and make future
+      // pending rows without a usable expiry impossible at the database edge.
+      db.prepare(`UPDATE os_approvals
+        SET status = 'expired',
+            decision_note = 'Invalidated by migration 15: legacy approval had no usable expiry',
+            decided_by = 'system:migration-15',
+            decided_at = ?
+        WHERE status = 'pending'
+          AND (expires_at IS NULL OR trim(expires_at) = '' OR julianday(expires_at) IS NULL)`).run(nowIso());
+      db.exec(`CREATE TRIGGER IF NOT EXISTS os_approvals_pending_expiry_required
+        BEFORE INSERT ON os_approvals
+        WHEN NEW.status = 'pending'
+          AND (NEW.expires_at IS NULL OR trim(NEW.expires_at) = '' OR julianday(NEW.expires_at) IS NULL)
+        BEGIN SELECT RAISE(ABORT, 'pending approval requires a valid expires_at'); END`);
+      db.exec(`CREATE TRIGGER IF NOT EXISTS os_approvals_pending_expiry_update_required
+        BEFORE UPDATE OF status, expires_at ON os_approvals
+        WHEN NEW.status = 'pending'
+          AND (NEW.expires_at IS NULL OR trim(NEW.expires_at) = '' OR julianday(NEW.expires_at) IS NULL)
+        BEGIN SELECT RAISE(ABORT, 'pending approval requires a valid expires_at'); END`);
+    },
+  },
 ];
 
 function tableExists(db: OsDatabase, name: string): boolean {

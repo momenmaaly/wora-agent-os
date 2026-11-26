@@ -20,10 +20,11 @@ mkdirSync(process.env['WORA_WORKSPACE']!, { recursive: true });
 const { createMission, getMissionDetail } = await import('./orchestrator.js');
 const {
   createApproval, decideApproval, consumeApproval, actionScope, payloadDigest,
-  getActionBudget, setActionBudget, requiresHumanApproval, getAutonomyPolicy, setAutonomyPolicy, getApproval,
+  getActionBudget, setActionBudget, requiresHumanApproval, getAutonomyPolicy, setAutonomyPolicy, getApproval, isApprovalExpired,
 } = await import('./governance.js');
 const { runTool } = await import('./tools.js');
 const { getOsDb } = await import('./db.js');
+const { MIGRATIONS } = await import('./migrations.js');
 
 const WS = 'wora-governance-test';
 
@@ -81,6 +82,39 @@ test('an approval is single-use and cannot be replayed', () => {
   const consumed = consumeApproval(WS, approval.id, { payload, scope, actionClass: 'C', actor: 'agent', missionId, taskId });
   assert.ok(consumed.consumedAt);
   assert.throws(() => consumeApproval(WS, approval.id, { payload, scope, actionClass: 'C', actor: 'agent', missionId, taskId }), /already consumed/);
+});
+
+
+test('legacy pending approvals with a missing expiry are invalidated and fail closed', () => {
+  const { missionId, taskId } = taskFixture();
+  const payload = { command: 'node', args: ['--test', 'test/app.test.mjs'] };
+  const approval = createApproval({
+    workspaceId: WS, missionId, taskId, toolId: 'host.exec', actionSummary: 'Legacy approval',
+    risk: 'high', toolInput: payload, requestedBy: 'agent',
+  });
+  const db = getOsDb();
+  db.exec('DROP TRIGGER IF EXISTS os_approvals_pending_expiry_required');
+  db.exec('DROP TRIGGER IF EXISTS os_approvals_pending_expiry_update_required');
+  try {
+    db.prepare('UPDATE os_approvals SET expires_at = NULL WHERE id = ?').run(approval.id);
+    assert.equal(isApprovalExpired(null), true, 'missing expiry must be treated as expired');
+    assert.equal(isApprovalExpired(undefined), true);
+    assert.equal(isApprovalExpired('not-a-date'), true);
+    assert.throws(() => decideApproval(WS, approval.id, 'approved', 'late', 'reviewer'), /expired/);
+    MIGRATIONS.find((migration) => migration.version === 15)!.up(db, () => {});
+    const invalidated = getApproval(WS, approval.id)!;
+    assert.equal(invalidated.status, 'expired');
+    assert.match(invalidated.decisionNote, /legacy approval had no usable expiry/);
+    assert.equal(invalidated.decidedBy, 'system:migration-15');
+    assert.ok(!db.prepare("SELECT 1 FROM os_approvals WHERE id = ? AND status = 'pending'").get(approval.id));
+    assert.throws(() => db.prepare(`INSERT INTO os_approvals
+      (id, workspace_id, action_summary, status, created_at)
+      VALUES (?, ?, 'no expiry', 'pending', ?)`)
+      .run('apr_missing_expiry', WS, new Date().toISOString()), /pending approval requires a valid expires_at/);
+  } finally {
+    // The migration is idempotent and restores the database-edge guard.
+    MIGRATIONS.find((migration) => migration.version === 15)!.up(db, () => {});
+  }
 });
 
 test('expired approvals cannot be decided or consumed', () => {

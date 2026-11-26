@@ -39,6 +39,7 @@ function verificationLabel(t: Translate, result: string): string {
 function approvalLabel(t: Translate, status: string): string {
   if (status === 'approved') return t('execution.approvalApproved');
   if (status === 'denied') return t('execution.approvalDenied');
+  if (status === 'expired') return t('execution.approvalExpired');
   return t('execution.approvalPending');
 }
 
