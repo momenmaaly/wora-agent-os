@@ -42,8 +42,8 @@ const detail = {
 };
 
 const pagesSource = read('pages.ts');
-const NAV_IDS = ['home', 'execution', 'agents', 'workflows', 'projects', 'terminal', 'artifacts', 'integrations', 'extensions', 'knowledge', 'approvals', 'activity', 'history'];
-const SETTINGS_IDS = ['settings', 'security', 'models', 'system', 'pricing'];
+const NAV_IDS = ['brief', 'run', 'library', 'capabilities', 'system', 'home', 'execution', 'agents', 'workflows', 'projects', 'terminal', 'artifacts', 'integrations', 'extensions', 'knowledge', 'approvals', 'activity', 'history'];
+const SETTINGS_IDS = ['settings', 'security', 'models', 'pricing'];
 
 function itemIds(source, groupId) {
   const block = source.split(`id: '${groupId}'`)[1] ?? '';
@@ -52,11 +52,8 @@ function itemIds(source, groupId) {
 }
 
 test('technical navigation groups and routes are wired to real pages', () => {
-  deepEqual(itemIds(pagesSource, 'workspace'), ['home', 'execution', 'agents', 'workflows']);
-  deepEqual(itemIds(pagesSource, 'build'), ['projects', 'terminal', 'artifacts']);
-  deepEqual(itemIds(pagesSource, 'systems'), ['integrations', 'extensions', 'knowledge']);
-  deepEqual(itemIds(pagesSource, 'governance'), ['approvals', 'activity', 'history']);
-  deepEqual([...SETTINGS_IDS], ['settings', 'security', 'models', 'system', 'pricing']);
+  deepEqual(itemIds(pagesSource, 'operate'), ['brief', 'run', 'library', 'capabilities', 'system']);
+  deepEqual([...SETTINGS_IDS], ['settings', 'security', 'models', 'pricing']);
   ok(pagesSource.includes('export function workspaceRoute'), 'the app resolves pages through a single hash router');
   for (const id of [...NAV_IDS, ...SETTINGS_IDS]) ok(pagesSource.includes(`{ id: '${id}', icon:`), `page ${id} is registered`);
 });
@@ -66,7 +63,7 @@ test('every technical nav label exists in both dictionaries', () => {
     ok(typeof ar.nav[id] === 'string' && ar.nav[id].length > 0, `nav.${id} missing in Arabic`);
     ok(typeof en.nav[id] === 'string' && en.nav[id].length > 0, `nav.${id} missing in English`);
   }
-  for (const group of ['groupWorkspace', 'groupBuild', 'groupSystems', 'groupGovernance', 'groupSettings']) {
+  for (const group of ['groupOperate', 'groupSettings']) {
     ok(typeof ar.nav[group] === 'string', `nav.${group} missing in Arabic`);
     ok(typeof en.nav[group] === 'string', `nav.${group} missing in English`);
   }

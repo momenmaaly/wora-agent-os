@@ -5,7 +5,7 @@ import {
 } from 'lucide-react';
 import { Dialog, EmptyState, Notice, PageHeader } from './ui.js';
 import { useI18n } from '../i18n/I18nContext.js';
-import { osApi, type Agent } from '../os/api.js';
+import { osApi, type Agent, type OsState, type RuntimeStatus } from '../os/api.js';
 import {
   ExtensionApiError, extensionsApi,
   type CapabilityMatch, type CapabilityProfile, type ExtensionPackage, type ExtensionSummary, type InstallPlanView,
@@ -16,8 +16,10 @@ import {
   categoriesOf, filterPackages, isAdmin, isMember, parseToolInput, permissionTone, planBlockers,
   pluginTemplate, scopeKey, skillTemplate, summarizeProfile,
 } from '../extensions/model.js';
+import { AgentRegistry } from './AgentRegistry.js';
+import { fill } from '../workspace/model.js';
 
-type Tab = 'skills' | 'plugins' | 'marketplaces' | 'tools' | 'intelligence';
+type Tab = 'agents' | 'skills' | 'plugins' | 'marketplaces' | 'tools' | 'intelligence';
 const SCOPES: ScopeName[] = ['instance', 'organization', 'project', 'agent', 'user'];
 const TRUSTS: TrustLevel[] = ['official', 'verified', 'community', 'untrusted'];
 
@@ -418,7 +420,7 @@ function CreatePackageDialog({ kind, onClose, onCreated }: { kind: 'skill' | 'pl
   </Dialog>;
 }
 
-export function ExtensionsHub() {
+export function ExtensionsHub({ variant = 'extensions' }: { variant?: 'extensions' | 'capabilities' } = {}) {
   const { t } = useI18n();
   const [tab, setTab] = useState<Tab>('skills');
   const [summary, setSummary] = useState<ExtensionSummary | null>(null);
@@ -428,6 +430,8 @@ export function ExtensionsHub() {
   const [mcp, setMcp] = useState<McpServer[] | null>(null);
   const [secrets, setSecrets] = useState<SecretMetadata[] | null>(null);
   const [agents, setAgents] = useState<Agent[]>([]);
+  const [osState, setOsState] = useState<OsState | null>(null);
+  const [runtime, setRuntime] = useState<RuntimeStatus | null>(null);
   const [organizations, setOrganizations] = useState<Array<{ id: string; name: string }>>([]);
   const [filters, setFilters] = useState({ query: '', category: '', marketplace: '', scope: '', installed: false, enabled: false });
   const [error, setError] = useState<string | null>(null);
@@ -456,9 +460,15 @@ export function ExtensionsHub() {
 
   const loadAll = useCallback(async () => {
     try {
-      const [nextSummary, list] = await Promise.all([extensionsApi.summary(), extensionsApi.packages()]);
+      const [nextSummary, list, nextTools] = await Promise.all([
+        extensionsApi.summary(), extensionsApi.packages(), extensionsApi.tools(),
+      ]);
       setSummary(nextSummary);
       setPackages(list);
+      setTools(nextTools);
+      const [nextState, nextRuntime] = await Promise.allSettled([osApi.state(), osApi.runtimeStatus()]);
+      if (nextState.status === 'fulfilled') setOsState(nextState.value);
+      if (nextRuntime.status === 'fulfilled') setRuntime(nextRuntime.value);
       setError(null);
     } catch (err) {
       setError(errorText(err, t('ext.errorGeneric')));
@@ -548,6 +558,7 @@ export function ExtensionsHub() {
   }
 
   const tabs: Array<{ id: Tab; label: string; icon: typeof Boxes; count: number }> = [
+    { id: 'agents', label: t('op.capabilities.agents'), icon: Boxes, count: agents.length },
     { id: 'skills', label: t('ext.tabSkills'), icon: Boxes, count: summary?.skills ?? 0 },
     { id: 'plugins', label: t('ext.tabPlugins'), icon: Plug2, count: summary?.plugins ?? 0 },
     { id: 'marketplaces', label: t('ext.tabMarketplaces'), icon: Store, count: summary?.marketplaces ?? 0 },
@@ -555,8 +566,8 @@ export function ExtensionsHub() {
     { id: 'intelligence', label: t('ext.tabIntelligence'), icon: Sparkles, count: match?.candidates.length ?? 0 },
   ];
 
-  return <div className="os-page ext-page">
-    <PageHeader icon={Boxes} eyebrow={t('ext.eyebrow')} title={t('ext.title')} description={t('ext.subtitle')}
+  return <div className={`os-page ext-page${variant === 'capabilities' ? ' op-capabilities-page' : ''}`}>
+    <PageHeader icon={Boxes} eyebrow={variant === 'capabilities' ? t('op.eyebrow') : t('ext.eyebrow')} title={variant === 'capabilities' ? t('op.capabilities.title') : t('ext.title')} description={variant === 'capabilities' ? t('op.capabilities.subtitle') : t('ext.subtitle')}
       action={<div className="ext-head-actions">
         {member && <button type="button" className="button" onClick={() => setCreateKind('skill')}><Plus size={15} aria-hidden="true" />{t('ext.createSkill')}</button>}
         {member && <button type="button" className="button" onClick={() => setCreateKind('plugin')}><Plus size={15} aria-hidden="true" />{t('ext.createPlugin')}</button>}
@@ -571,6 +582,19 @@ export function ExtensionsHub() {
       <div><span className="subtle">{t('ext.mcpServers')}</span><strong>{summary?.mcpServers ?? 0}</strong></div>
     </div>
 
+    <section className="op-foundation" aria-label={t('op.capabilities.foundation')}>
+      <div className="op-foundation-head"><div><h2>{t('op.capabilities.foundation')}</h2><p>{t('op.capabilities.foundationHint')}</p></div></div>
+      <div className="op-foundation-grid">
+        <div data-state={(osState?.agents ?? agents.length) > 0 ? 'available' : 'unavailable'}><strong>{t('op.capabilities.agentBrain')}</strong><span>{t('op.capabilities.available')}</span><small>{fill(t('op.capabilities.noteAgents'), { count: osState?.agents ?? agents.length })}</small></div>
+        <div data-state="unavailable"><strong>{t('op.capabilities.cloudComputer')}</strong><span>{t('op.capabilities.unavailable')}</span><small>{t('op.capabilities.noteCloud')}</small></div>
+        <div data-state="unavailable"><strong>{t('op.capabilities.browserAutomation')}</strong><span>{t('op.capabilities.unavailable')}</span><small>{t('op.capabilities.noteBrowser')}</small></div>
+        <div data-state="available"><strong>{t('op.capabilities.personalMemory')}</strong><span>{t('op.capabilities.available')}</span><small>{fill(t('op.capabilities.noteMemory'), { count: osState?.memory ?? 0 })}</small></div>
+        <div data-state={(tools?.core.length ?? 0) > 0 ? 'available' : 'unavailable'}><strong>{t('op.capabilities.toolIntegrations')}</strong><span>{t('op.capabilities.available')}</span><small>{fill(t('op.capabilities.noteTools'), { count: tools?.core.length ?? 0, plugin: tools?.plugin.length ?? 0 })}</small></div>
+        <div data-state={runtime ? 'partial' : 'unavailable'}><strong>{t('op.capabilities.longRunning')}</strong><span>{runtime ? t('op.capabilities.partial') : t('op.capabilities.unavailable')}</span><small>{t('op.capabilities.noteLongRunning')}</small></div>
+        <div data-state="unavailable"><strong>{t('op.capabilities.proactive')}</strong><span>{t('op.capabilities.unavailable')}</span><small>{t('op.capabilities.noteProactive')}</small></div>
+      </div>
+    </section>
+
     {error && <div className="os-alert" role="alert"><CircleAlert size={16} aria-hidden="true" />{error}</div>}
     {notice && <div className="ext-success" role="status"><CheckCircle2 size={16} aria-hidden="true" />{notice}</div>}
 
@@ -579,6 +603,8 @@ export function ExtensionsHub() {
         <entry.icon size={15} aria-hidden="true" />{entry.label}<span className="ext-count">{entry.count}</span>
       </button>)}
     </div>
+
+    {tab === 'agents' && <div className="op-embed"><AgentRegistry /></div>}
 
     {(tab === 'skills' || tab === 'plugins') && <>
       <div className="os-toolbar ext-toolbar">
