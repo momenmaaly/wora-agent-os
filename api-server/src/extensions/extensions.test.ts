@@ -35,6 +35,7 @@ const { createExtensionsRouter } = await import('./router.js');
 const { syncInstallationResources, checkInstallationHealth } = await import('./runtime.js');
 const { putSecret, listSecrets, revealSecret } = await import('./secrets.js');
 const { seedBuiltinCatalog } = await import('./builtin.js');
+const { McpSession } = await import('./mcp.js');
 const { ensureExtensionSchema } = await import('./schema.js');
 const { initExtensions } = await import('./index.js');
 const { createAgent, listAgents } = await import('../os/registry.js');
@@ -239,6 +240,42 @@ test('manifest: inline evaluation and unlisted commands are rejected; code execu
   assert.equal(echo.ok, true, JSON.stringify(echo.errors));
   assert.equal(echo.security?.requiresApproval, true, 'executing a child process always needs explicit approval');
   assert.equal(echo.security?.executionModel, 'mcp-stdio');
+});
+
+
+test('manifest: MCP loader flags and process-control environment names are rejected', () => {
+  const loader = validateManifest('plugin', {
+    ...httpPlugin({ id: 'test.loader' }), type: 'mcp',
+    entrypoint: { transport: 'stdio', command: 'node', args: ['--import', '/tmp/evil.mjs'], env: [] },
+  }, 'community');
+  assert.equal(loader.ok, false);
+  assert.ok(loader.errors.some((error) => error.path === 'entrypoint.args'));
+
+  const env = validateManifest('plugin', {
+    ...httpPlugin({ id: 'test.env' }), type: 'mcp',
+    entrypoint: { transport: 'stdio', command: 'node', args: ['/tmp/server.mjs'], env: ['NODE_OPTIONS'] },
+  }, 'community');
+  assert.equal(env.ok, false);
+  assert.ok(env.errors.some((error) => /reserved by the MCP runtime/iu.test(error.message)));
+});
+
+test('security: official MCP trust cannot be self-assigned and reserved env never reaches a child', async () => {
+  assert.throws(() => store.createMarketplace({
+    workspaceId: 'wora-trust-guard', name: 'Self-assigned official', url: 'https://example.com/market.git',
+    provider: 'git', trust: 'official', actor: 'tester',
+  }), /Official trust is reserved/);
+
+  const previous = process.env['WORA_MCP_STDIO_MODE'];
+  process.env['WORA_MCP_STDIO_MODE'] = 'official';
+  try {
+    await assert.rejects(McpSession.open({
+      transport: 'stdio', command: 'node', args: ['/tmp/server.mjs'], trust: 'official',
+      env: { NODE_OPTIONS: '--require /tmp/evil.cjs' },
+    }), /MCP_ENV_DENIED/);
+  } finally {
+    if (previous === undefined) delete process.env['WORA_MCP_STDIO_MODE'];
+    else process.env['WORA_MCP_STDIO_MODE'] = previous;
+  }
 });
 
 test('manifest: permission sensitivity flags high-impact permissions', () => {

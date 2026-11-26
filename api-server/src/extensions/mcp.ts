@@ -11,7 +11,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { safeFetch } from '../lib/safe-fetch.js';
-import { resourceLimitedCommand } from './sandbox.js';
+import { isDangerousMcpEnv, resourceLimitedCommand } from './sandbox.js';
 
 export interface McpToolDescriptor {
   name: string;
@@ -112,6 +112,9 @@ export class McpSession {
     if (stdioMode() !== 'official') throw new McpError('MCP_STDIO_DISABLED', 'Stdio MCP execution is disabled; no verified sandbox runner is configured');
     if (this.options.trust !== 'official') throw new McpError('MCP_STDIO_UNTRUSTED', 'Only official bundled MCP servers may run as stdio on the API host');
     if (!/^(?:node|npx|python3|uvx|deno)$/u.test(command)) throw new McpError('MCP_COMMAND_DENIED', 'MCP command is not allowed');
+    for (const name of Object.keys(this.options.env ?? {})) {
+      if (isDangerousMcpEnv(name)) throw new McpError('MCP_ENV_DENIED', `MCP environment variable ${name} is not allowed`);
+    }
     this.home = mkdtempSync(path.join(os.tmpdir(), 'wora-mcp-home-'));
     const env: NodeJS.ProcessEnv = {
       PATH: process.env['PATH'] ?? '/usr/local/bin:/usr/bin:/bin',
