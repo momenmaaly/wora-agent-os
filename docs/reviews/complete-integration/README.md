@@ -76,8 +76,9 @@ Dark theme:
 
 - Client tests: **61 passed, 0 failed**.
 - Browser E2E: **1 passed, 0 failed**.
-- API tests: **372 passed, 0 failed, 1 skipped** (MongoDB test skipped because
+- API tests: **375 passed, 0 failed, 1 skipped** out of 376 (MongoDB test skipped because
   MongoDB is not configured in this environment).
+- API and client suites pass on both Node.js 22 and Node.js 24.
 - Client typecheck: passed.
 - API typecheck: passed.
 - Client production build: passed; API/deployment contract check passed;

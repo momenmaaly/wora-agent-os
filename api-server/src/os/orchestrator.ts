@@ -12,7 +12,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { getOsDb, newId, nowIso, parseJson, audit } from './db.js';
 import { runTool, getTool, isIdempotentTool, effectiveToolRisk, type ToolContext } from './tools.js';
-import { requiresHumanApproval, createApproval, getTaskApproval, listMissionApprovals, actionScope, extractAmount } from './governance.js';
+import { requiresHumanApproval, createApproval, getTaskApproval, listMissionApprovals, actionScope, extractAmount, isApprovalExpired } from './governance.js';
 import { classifyAction } from './actions.js';
 import { maybeDistillPlaybook, findPlaybookFor, recordPlaybookReuse } from './playbooks.js';
 import { listAgents, getAgent, ensureSeedAgents, type AgentRecord } from './registry.js';
@@ -836,7 +836,7 @@ async function executeMissionInner(missionId: string, actor = 'orchestrator', op
       action: task.title, reversible: effectiveRisk !== 'high', scope, amountUsd: amountUsd ?? riskRefinement?.amountUsd, spendsMoney: riskRefinement?.spendsMoney === true,
     })) {
       const existing = getTaskApproval(mission.workspace_id, task.id);
-      if (existing?.expiresAt && Date.parse(existing.expiresAt) <= Date.now()) {
+      if (existing && isApprovalExpired(existing.expiresAt)) {
         db.prepare('UPDATE os_tasks SET status = ?, detail = ?, updated_at = ? WHERE id = ?')
           .run('failed', 'Approval expired before execution — request a new approval', nowIso(), task.id);
         failed = true;
@@ -882,6 +882,12 @@ async function executeMissionInner(missionId: string, actor = 'orchestrator', op
       if (existing.consumedAt) {
         db.prepare('UPDATE os_tasks SET status = ?, detail = ?, updated_at = ? WHERE id = ?')
           .run('failed', 'Approval was already consumed by another attempt; request a new approval', nowIso(), task.id);
+        failed = true;
+        continue;
+      }
+      if (existing.status !== 'approved') {
+        db.prepare('UPDATE os_tasks SET status = ?, detail = ?, updated_at = ? WHERE id = ?')
+          .run('failed', 'Approval is not active; request a new approval', nowIso(), task.id);
         failed = true;
         continue;
       }
