@@ -111,6 +111,126 @@ export function applyApprovalExpiryGuard(db: OsDatabase): void {
     BEGIN SELECT RAISE(ABORT, 'pending approval requires a valid future expires_at'); END`);
 }
 
+type CloudAgentUpgrade = {
+  specialization: string;
+  previousTools: string[];
+  previousPermissions: string[];
+  tools: string[];
+  permissions: string[];
+};
+
+// Exact defaults that existed before the cloud runtime migration. Comparing
+// against them distinguishes an untouched agent from a user-customized one.
+const CLOUD_AGENT_UPGRADES: CloudAgentUpgrade[] = [
+  {
+    specialization: 'browser_automation',
+    previousTools: ['web.fetch_read'],
+    previousPermissions: ['web:read'],
+    tools: ['web.fetch_read', 'browser.open', 'browser.inspect', 'browser.screenshot', 'browser.click', 'browser.type', 'browser.select', 'browser.scroll', 'browser.wait', 'browser.research', 'browser.close', 'cloud.exec', 'cloud.write_file', 'cloud.read_file', 'cloud.list_files'],
+    permissions: ['web:read', 'browser:read', 'browser:interact', 'runtime:read', 'runtime:write', 'runtime:execute'],
+  },
+  {
+    specialization: 'research',
+    previousTools: ['web.fetch_read', 'text.extract_summary'],
+    previousPermissions: ['web:read', 'memory:read'],
+    tools: ['web.fetch_read', 'browser.open', 'browser.inspect', 'browser.screenshot', 'browser.research', 'browser.close', 'cloud.write_file', 'cloud.read_file', 'cloud.list_files'],
+    permissions: ['web:read', 'browser:read', 'runtime:read', 'runtime:write'],
+  },
+  {
+    specialization: 'software_engineer',
+    previousTools: ['fs.workspace_read', 'security.scan', 'host.exec'],
+    previousPermissions: ['workspace:read', 'workspace:write', 'host:exec'],
+    tools: ['fs.workspace_read', 'security.scan', 'host.exec', 'cloud.exec', 'cloud.write_file', 'cloud.read_file', 'cloud.list_files'],
+    permissions: ['workspace:read', 'workspace:write', 'host:exec', 'runtime:read', 'runtime:write', 'runtime:execute'],
+  },
+  {
+    specialization: 'qa_engineer',
+    previousTools: ['host.exec', 'fs.workspace_read'],
+    previousPermissions: ['workspace:read', 'host:exec'],
+    tools: ['host.exec', 'fs.workspace_read', 'cloud.exec', 'cloud.read_file', 'cloud.list_files'],
+    permissions: ['workspace:read', 'host:exec', 'runtime:read', 'runtime:execute'],
+  },
+  {
+    specialization: 'system_administrator',
+    previousTools: ['system.diagnostics', 'fs.workspace_list'],
+    previousPermissions: ['host:read'],
+    tools: ['system.diagnostics', 'fs.workspace_list', 'cloud.exec', 'cloud.write_file', 'cloud.read_file', 'cloud.list_files'],
+    permissions: ['host:read', 'runtime:read', 'runtime:write', 'runtime:execute'],
+  },
+];
+const CLOUD_AGENT_UPGRADE_BY_SPECIALIZATION = new Map(CLOUD_AGENT_UPGRADES.map((upgrade) => [upgrade.specialization, upgrade]));
+
+function parseAgentArray(raw: string): string[] | null {
+  try {
+    const value = JSON.parse(raw || '[]') as unknown;
+    return Array.isArray(value) && value.every((item) => typeof item === 'string') ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function sameStringSet(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((item) => right.includes(item));
+}
+
+function containsAll(current: string[], required: string[]): boolean {
+  return required.every((item) => current.includes(item));
+}
+
+function appendNewCapabilities(current: string[], previous: string[], target: string[]): string[] {
+  const additions = target.filter((item) => !previous.includes(item) && !current.includes(item));
+  return additions.length ? [...current, ...additions] : current;
+}
+
+/**
+ * Apply the cloud runtime capability defaults without overwriting user choices.
+ *
+ * - An untouched seed/catalog agent gets the new defaults.
+ * - An agent that only added capabilities keeps its additions and receives the
+ *   new cloud capabilities.
+ * - An agent that removed a capability keeps the narrowed allow-list; the
+ *   migration never re-adds a capability the user deliberately removed.
+ */
+function applyCloudAgentCapabilities(db: OsDatabase): void {
+  const rows = db.prepare("SELECT id, specialization, tools, permissions FROM os_agents WHERE source IN ('seed', 'catalog')").all() as Array<{
+    id: string;
+    specialization: string;
+    tools: string;
+    permissions: string;
+  }>;
+  const update = db.prepare('UPDATE os_agents SET tools = ?, permissions = ?, updated_at = ? WHERE id = ?');
+  for (const row of rows) {
+    const upgrade = CLOUD_AGENT_UPGRADE_BY_SPECIALIZATION.get(row.specialization);
+    if (!upgrade) continue;
+    const tools = parseAgentArray(row.tools);
+    const permissions = parseAgentArray(row.permissions);
+    if (!tools || !permissions) continue;
+    const newTools = upgrade.tools.filter((item) => !upgrade.previousTools.includes(item));
+    const newPermissions = upgrade.permissions.filter((item) => !upgrade.previousPermissions.includes(item));
+    // If any new cloud capability is already present, this agent has already
+    // seen the cloud migration. A missing capability is then a user removal,
+    // not an un-upgraded default, so preserve the allow-list exactly.
+    const alreadyCloudEnabled = tools.some((item) => newTools.includes(item));
+    const alreadyRuntimeEnabled = permissions.some((item) => newPermissions.includes(item));
+    const nextTools = sameStringSet(tools, upgrade.previousTools)
+      ? [...upgrade.tools]
+      : alreadyCloudEnabled
+        ? tools
+        : containsAll(tools, upgrade.previousTools)
+          ? appendNewCapabilities(tools, upgrade.previousTools, upgrade.tools)
+          : tools;
+    const nextPermissions = sameStringSet(permissions, upgrade.previousPermissions)
+      ? [...upgrade.permissions]
+      : alreadyRuntimeEnabled
+        ? permissions
+        : containsAll(permissions, upgrade.previousPermissions)
+          ? appendNewCapabilities(permissions, upgrade.previousPermissions, upgrade.permissions)
+          : permissions;
+    if (JSON.stringify(nextTools) === JSON.stringify(tools) && JSON.stringify(nextPermissions) === JSON.stringify(permissions)) continue;
+    update.run(JSON.stringify(nextTools), JSON.stringify(nextPermissions), nowIso(), row.id);
+  }
+}
+
 export const MIGRATIONS: Migration[] = [
   {
     version: 1,
@@ -416,27 +536,7 @@ export const MIGRATIONS: Migration[] = [
       db.exec('CREATE INDEX IF NOT EXISTS idx_os_runtime_artifacts_session ON os_runtime_artifacts(session_id, created_at)');
       db.exec('CREATE INDEX IF NOT EXISTS idx_os_runtime_artifacts_mission ON os_runtime_artifacts(workspace_id, mission_id, created_at)');
 
-      const updates: Array<[string, string[], string[]]> = [
-        ['browser_automation',
-          ['web.fetch_read', 'browser.open', 'browser.inspect', 'browser.screenshot', 'browser.click', 'browser.type', 'browser.select', 'browser.scroll', 'browser.wait', 'browser.research', 'browser.close', 'cloud.exec', 'cloud.write_file', 'cloud.read_file', 'cloud.list_files'],
-          ['web:read', 'browser:read', 'browser:interact', 'runtime:read', 'runtime:write', 'runtime:execute']],
-        ['research',
-          ['web.fetch_read', 'browser.open', 'browser.inspect', 'browser.screenshot', 'browser.research', 'browser.close', 'cloud.write_file', 'cloud.read_file', 'cloud.list_files'],
-          ['web:read', 'browser:read', 'runtime:read', 'runtime:write']],
-        ['software_engineer',
-          ['fs.workspace_read', 'security.scan', 'host.exec', 'cloud.exec', 'cloud.write_file', 'cloud.read_file', 'cloud.list_files'],
-          ['workspace:read', 'workspace:write', 'host:exec', 'runtime:read', 'runtime:write', 'runtime:execute']],
-        ['qa_engineer',
-          ['host.exec', 'fs.workspace_read', 'cloud.exec', 'cloud.read_file', 'cloud.list_files'],
-          ['workspace:read', 'host:exec', 'runtime:read', 'runtime:execute']],
-        ['system_administrator',
-          ['system.diagnostics', 'fs.workspace_list', 'cloud.exec', 'cloud.write_file', 'cloud.read_file', 'cloud.list_files'],
-          ['host:read', 'runtime:read', 'runtime:write', 'runtime:execute']],
-      ];
-      const update = db.prepare("UPDATE os_agents SET tools = ?, permissions = ?, updated_at = ? WHERE specialization = ? AND source IN ('seed', 'catalog')");
-      for (const [specialization, tools, permissions] of updates) {
-        update.run(JSON.stringify(tools), JSON.stringify(permissions), nowIso(), specialization);
-      }
+      applyCloudAgentCapabilities(db);
     },
   },
   {
@@ -450,6 +550,75 @@ export const MIGRATIONS: Migration[] = [
     },
   },
 ];
+
+const HISTORICAL_MIGRATION_NAMES: Record<number, string[]> = {
+  15: ['approval-expiry-required', 'cloud-computer-browser-runtime'],
+};
+
+function acceptedMigrationName(version: number, name: string): boolean {
+  const expected = MIGRATIONS.find((migration) => migration.version === version);
+  if (!expected) return false;
+  return expected.name === name || (HISTORICAL_MIGRATION_NAMES[version]?.includes(name) ?? false);
+}
+
+/**
+ * Compare the scalar `PRAGMA user_version` with the append-only registry.
+ * Historical version 15 is accepted under either published name; everything
+ * else must match the current registry exactly.
+ */
+export function migrationStateIssues(db: OsDatabase): string[] {
+  ensureRegistry(db);
+  const issues: string[] = [];
+  const rawVersion = (db.prepare('PRAGMA user_version').get() as { user_version?: number } | undefined)?.user_version;
+  const current = Number(rawVersion ?? 0);
+  if (!Number.isInteger(current) || current < 0) {
+    return [`PRAGMA user_version is not a valid non-negative integer: ${String(rawVersion)}`];
+  }
+  const latest = MIGRATIONS.at(-1)?.version ?? 0;
+  if (current > latest) issues.push(`PRAGMA user_version is ${current}, but this build only knows migrations through ${latest}`);
+  const rows = db.prepare('SELECT version, name, rolled_back_at FROM os_schema_migrations ORDER BY version').all() as Array<{
+    version: number;
+    name: string;
+    rolled_back_at: string | null;
+  }>;
+  const active = new Map<number, string>();
+  for (const row of rows) {
+    const version = Number(row.version);
+    if (!Number.isInteger(version) || version < 1) {
+      issues.push(`os_schema_migrations contains an invalid version: ${String(row.version)}`);
+      continue;
+    }
+    if (row.rolled_back_at) {
+      issues.push(`Migration ${version} (${row.name}) is marked rolled back; additive migrations cannot be rolled back in place`);
+      continue;
+    }
+    if (active.has(version)) {
+      issues.push(`Migration version ${version} appears more than once in os_schema_migrations`);
+      continue;
+    }
+    active.set(version, row.name);
+    if (!MIGRATIONS.some((migration) => migration.version === version)) {
+      issues.push(`Migration ${version} (${row.name}) is recorded in os_schema_migrations but is unknown to this build`);
+    } else if (!acceptedMigrationName(version, row.name)) {
+      issues.push(`Migration ${version} is recorded as "${row.name}", but this build expects "${MIGRATIONS.find((migration) => migration.version === version)?.name}"`);
+    }
+    if (version > current) {
+      issues.push(`Migration ${version} (${row.name}) is recorded as applied, but PRAGMA user_version is only ${current}`);
+    }
+  }
+  if (current > 0) {
+    for (let version = 1; version <= current; version += 1) {
+      if (!active.has(version)) issues.push(`PRAGMA user_version is ${current}, but migration ${version} is missing from os_schema_migrations`);
+    }
+  }
+  return issues;
+}
+
+export function validateMigrationState(db: OsDatabase): void {
+  const issues = migrationStateIssues(db);
+  if (!issues.length) return;
+  throw new Error(`Migration state is inconsistent:\n- ${issues.join('\n- ')}\nRestore the pre-migration database backup or repair os_schema_migrations; do not delete applied rows.`);
+}
 
 function tableExists(db: OsDatabase, name: string): boolean {
   return Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name));
@@ -472,6 +641,8 @@ export function migrationStatus(db: OsDatabase): { version: number; applied: Arr
 export function validateMigrationRegistry(): void {
   const versions = new Set<number>();
   for (const migration of MIGRATIONS) {
+    if (!Number.isInteger(migration.version) || migration.version < 1) throw new Error(`Invalid migration version ${String(migration.version)}`);
+    if (!migration.name.trim()) throw new Error(`Migration ${migration.version} has an empty name`);
     if (versions.has(migration.version)) throw new Error(`Duplicate migration version ${migration.version}`);
     versions.add(migration.version);
   }
@@ -480,6 +651,7 @@ export function validateMigrationRegistry(): void {
 export function runVersionedMigrations(db: OsDatabase, baseline: (db: OsDatabase) => void): { applied: number[]; version: number } {
   validateMigrationRegistry();
   ensureRegistry(db);
+  validateMigrationState(db);
   const current = Number((db.prepare('PRAGMA user_version').get() as { user_version?: number } | undefined)?.user_version ?? 0);
   const applied: number[] = [];
   for (const migration of MIGRATIONS.filter((candidate) => candidate.version > current).sort((a, b) => a.version - b.version)) {
@@ -496,6 +668,7 @@ export function runVersionedMigrations(db: OsDatabase, baseline: (db: OsDatabase
       throw new Error(`Migration ${migration.version} (${migration.name}) failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
+  validateMigrationState(db);
   return { applied, version: migrationStatus(db).version };
 }
 

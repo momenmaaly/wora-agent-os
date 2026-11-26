@@ -76,7 +76,7 @@ Dark theme:
 
 - Client tests: **66 passed, 0 failed**.
 - Browser E2E: **1 passed, 0 failed**.
-- API tests: **402 passed, 0 failed, 4 skipped** out of 406 (MongoDB and Docker integration
+- API tests: **404 passed, 0 failed, 4 skipped** out of 408 (MongoDB and Docker integration
   tests are opt-in; Docker runs in the dedicated CI job).
 - API and client suites pass on both Node.js 22 and Node.js 24.
 - Client typecheck: passed.
