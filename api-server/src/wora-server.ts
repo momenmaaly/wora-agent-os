@@ -50,6 +50,8 @@ import { createStudioRouter } from './studio/router.js';
 import { createOsRouter } from './os/router.js';
 import { createGitHubImporter } from './skills/github.js';
 import { createSkillsRouter } from './skills/router.js';
+import { createLegacyAgentsHandler } from './legacy-agents.js';
+import { getWorkspaceRole } from './os/roles.js';
 import { createMongoSkillStore } from './models/AgentSkills.js';
 import { initExtensions } from './extensions/index.js';
 
@@ -754,26 +756,25 @@ export async function bootWoraServer(app: Express, port = DEFAULT_PORT) {
     }
   });
 
-  app.get('/api/agents', async (_req: Request, res: Response) => {
-    try {
-      const docs = await loadActiveAgents();
-      const agents = docs.map((a) => ({
-        agentId:     a.agentId,
-        displayName: a.displayName,
-        locale:      a.locale,
-        zoneId:      a.zoneId,
-        modelId:     a.modelId,
-        brainConfig: toPublicBrain(a.brainConfig, a.modelId),
-        profile:     a.profile,
-        status:      a.status,
-        lastSeenAt:  a.lastSeenAt,
-      }));
-      res.json({ agents });
-    } catch (err) {
-      logger.error({ err }, 'Failed to fetch agents');
-      res.status(500).json({ error: 'Failed to load agents' });
-    }
-  });
+  app.get('/api/agents', createLegacyAgentsHandler({
+    authSecret: AUTH_SECRET ?? '',
+    isProduction: IS_PRODUCTION,
+    adminApiKey: ADMIN_API_KEY,
+    loadActiveAgents: async () => (await loadActiveAgents()).map((agent) => ({
+      agentId: agent.agentId,
+      displayName: agent.displayName,
+      locale: agent.locale,
+      zoneId: agent.zoneId,
+      modelId: agent.modelId,
+      brainConfig: toPublicBrain(agent.brainConfig, agent.modelId),
+      profile: agent.profile,
+      status: agent.status,
+      lastSeenAt: agent.lastSeenAt,
+      assignedRoomIds: agent.assignedRoomIds ?? [],
+    })),
+    isSessionActive,
+    getWorkspaceRole,
+  }));
 
   app.get('/api/zones', (_req: Request, res: Response) => {
     res.json({ zones: EXAMPLE_ZONES });

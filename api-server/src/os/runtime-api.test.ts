@@ -44,6 +44,9 @@ test('pause, resume, cancel and diagnostics are real workspace-scoped endpoints'
   const resumed = await fetch(`${baseUrl}/missions/${pausedMission}/resume`, { method: 'POST' });
   assert.equal(resumed.status, 200);
   assert.equal(((await resumed.json()) as { status?: string }).status, 'completed');
+  const repeatedResume = await fetch(`${baseUrl}/missions/${pausedMission}/resume`, { method: 'POST' });
+  assert.equal(repeatedResume.status, 404, 'a repeated resume must not restart or duplicate a completed mission');
+  assert.equal(getMissionDetail(WS, pausedMission)!.status, 'completed');
 
   const leases = await fetch(`${baseUrl}/missions/${pausedMission}/leases`);
   assert.equal(leases.status, 200);

@@ -319,6 +319,7 @@ export async function executeForAgent(input: {
   const ctx: ToolContext = {
     workspaceId: input.workspaceId,
     actor: profile.agentName,
+    requestedBy: input.actor ?? profile.agentName,
     permissions: new Set(profile.permissions),
     toolAllowlist: new Set(profile.tools),
     missionId: input.missionId,
