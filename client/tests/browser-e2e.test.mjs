@@ -99,6 +99,15 @@ test('browser journeys: mission, plan, workers, pause/resume/cancel, approval, e
     await pause.click();
     await page.getByText('متوقفة مؤقتًا', { exact: true }).first().waitFor({ timeout: 10_000 });
     await page.getByRole('button', { name: /استئناف/ }).click();
+    await page.getByText('متوقفة مؤقتًا', { exact: true }).first().waitFor({ state: 'detached', timeout: 20_000 });
+    const missionListResponse = await fetch(`${API}/api/os/missions`);
+    assert.equal(missionListResponse.status, 200);
+    const missionList = await missionListResponse.json();
+    const resumedMission = (Array.isArray(missionList) ? missionList : [])
+      .filter((mission) => mission.objective === 'Build a working web application')
+      .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))[0];
+    assert.ok(resumedMission, 'the resumed mission must be visible through the API');
+    assert.notEqual(resumedMission.status, 'paused', 'the UI resume action must change the persisted mission state');
     await page.getByText('بانتظار موافقتك', { exact: true }).first().waitFor({ timeout: 20_000 });
     page.once('dialog', (dialog) => void dialog.accept());
     await page.getByRole('button', { name: /إلغاء/ }).click();

@@ -32,7 +32,10 @@ export type ToolRisk = 'low' | 'medium' | 'high';
 
 export interface ToolContext {
   workspaceId: string;
+  /** The executing agent's name, used for agent-level audit and attribution. */
   actor: string;
+  /** The authenticated user who initiated the mission. Never set from tool input. */
+  requestedBy?: string;
   permissions: Set<string>;
   /** When present, the tool must be explicitly enabled for the executing agent. */
   toolAllowlist?: ReadonlySet<string>;

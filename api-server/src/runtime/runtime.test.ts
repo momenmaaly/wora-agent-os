@@ -23,13 +23,15 @@ process.env['WORA_ALLOW_PRIVATE_OUTBOUND_FOR_TESTS'] = '1';
 process.env['AUTH_SECRET'] = 'test-secret-0123456789abcdef0123456789abcdef';
 process.env['NODE_ENV'] = 'test';
 
-const { createComputerSession, execComputer, expireRuntimeSessions, getComputerSession, listComputerSessions, readSessionFile, stopComputerSession, writeSessionFile, listRuntimeArtifacts, getRuntimeArtifact, runtimeStatus } = await import('./cloud.js');
-const { browserOpen, browserInspect, browserClick, browserType, browserSelect, browserScreenshot, browserResearch, closeBrowserSession, closeAllBrowserSessionsForTests, createBrowserSession, expireBrowserSessions, getBrowserSession, listBrowserSessions } = await import('./browser.js');
+const { addRuntimeArtifact, createComputerSession, execComputer, expireRuntimeSessions, getComputerSession, listComputerSessions, listSessionFiles, readSessionFile, stopComputerSession, writeSessionFile, listRuntimeArtifacts, getRuntimeArtifact, runtimeStatus } = await import('./cloud.js');
+const { browserOpen, browserInspect, browserClick, browserType, browserSelect, browserScroll, browserWait, browserScreenshot, browserResearch, closeBrowserSession, closeAllBrowserSessionsForTests, createBrowserSession, expireBrowserSessions, getBrowserSession, listBrowserSessions } = await import('./browser.js');
 const { getOsDb } = await import('../os/db.js');
 const { createMission, executeMission, getMissionDetail } = await import('../os/orchestrator.js');
 const { ensureSeedAgents } = await import('../os/registry.js');
 const { listApprovals, decideApproval, getApproval } = await import('../os/governance.js');
 const { issueSessionToken } = await import('../lib/session.js');
+const { getWorkspaceRole, setWorkspaceRole } = await import('../os/roles.js');
+const { runTool } = await import('../os/tools.js');
 const { createOsRouter } = await import('../os/router.js');
 const express = (await import('express')).default;
 
@@ -85,12 +87,12 @@ test('process provider starts a session, executes and confines files', async () 
   assert.equal(run.stdout, 'cloud-ok');
   const write = writeSessionFile({ workspaceId: WS, sessionId: session.id, path: 'notes/result.md', content: '# Result\n\nReal cloud file.', actor: 'test' });
   assert.ok(write.bytes > 0);
-  const read = readSessionFile({ workspaceId: WS, sessionId: session.id, path: 'notes/result.md' });
+  const read = readSessionFile({ workspaceId: WS, sessionId: session.id, path: 'notes/result.md', actor: 'test' });
   assert.match(read.content, /Real cloud file/u);
-  assert.throws(() => readSessionFile({ workspaceId: WS, sessionId: session.id, path: '../../../../etc/passwd' }), /escapes|ENOENT|not a file/u);
+  assert.throws(() => readSessionFile({ workspaceId: WS, sessionId: session.id, path: '../../../../etc/passwd', actor: 'test' }), /escapes|ENOENT|not a file/u);
   assert.throws(() => writeSessionFile({ workspaceId: WS, sessionId: session.id, path: '../escape.txt', content: 'x', actor: 'test' }), /escapes/u);
   const other = await createComputerSession({ workspaceId: WS, actor: 'test', missionId: 'msn-runtime-test' });
-  assert.throws(() => readSessionFile({ workspaceId: WS, sessionId: other.id, path: 'notes/result.md' }), /ENOENT/u);
+  assert.throws(() => readSessionFile({ workspaceId: WS, sessionId: other.id, path: 'notes/result.md', actor: 'test' }), /ENOENT/u);
   await stopComputerSession({ workspaceId: WS, sessionId: session.id, actor: 'test' });
   await stopComputerSession({ workspaceId: WS, sessionId: other.id, actor: 'test' });
   assert.equal(getComputerSession(WS, session.id)?.status, 'stopped');
@@ -161,24 +163,24 @@ test('browser unavailability fails closed instead of simulating a session', asyn
 test('browser runs in a real Chromium child, navigates, inspects, types, selects and screenshots', async () => {
   const session = await createBrowserSession({ workspaceId: WS, actor: 'test', missionId: 'msn-browser-test' });
   assert.equal(session.status, 'running');
-  const opened = await browserOpen(WS, session.id, docUrl);
+  const opened = await browserOpen(WS, session.id, docUrl, 'test');
   assert.equal(opened['title'], 'WORA Runtime Docs');
   assert.ok(Number(opened['status']) >= 200 && Number(opened['status']) < 400);
-  const inspected = await browserInspect(WS, session.id);
+  const inspected = await browserInspect(WS, session.id, 'test');
   assert.match(String(inspected['markdown']), /Runtime documentation/u);
   assert.ok(Array.isArray(inspected['navigation']) && (inspected['navigation'] as unknown[]).length > 0);
-  await browserType(WS, session.id, { selector: '#query', text: 'cloud computer' });
-  await browserSelect(WS, session.id, { selector: '#kind', value: 'b' });
-  await assert.rejects(() => browserClick(WS, session.id, { selector: '#submit-order' }), /FINANCIAL_APPROVAL_REQUIRED/u);
-  await assert.rejects(() => browserType(WS, session.id, { selector: '#email', text: 'buyer@example.test', submit: true }), /FINANCIAL_APPROVAL_REQUIRED/u);
-  await browserType(WS, session.id, { selector: '#email', text: 'buyer@example.test' });
-  const shot = await browserScreenshot(WS, session.id, { name: 'runtime-proof.png' });
+  await browserType(WS, session.id, { selector: '#query', text: 'cloud computer' }, 'test');
+  await browserSelect(WS, session.id, { selector: '#kind', value: 'b' }, 'test');
+  await assert.rejects(() => browserClick(WS, session.id, { selector: '#submit-order' }, 'test'), /FINANCIAL_APPROVAL_REQUIRED/u);
+  await assert.rejects(() => browserType(WS, session.id, { selector: '#email', text: 'buyer@example.test', submit: true }, 'test'), /FINANCIAL_APPROVAL_REQUIRED/u);
+  await browserType(WS, session.id, { selector: '#email', text: 'buyer@example.test' }, 'test');
+  const shot = await browserScreenshot(WS, session.id, { name: 'runtime-proof.png' }, 'test');
   assert.ok(Number(shot['bytes']) > 0);
-  const artifact = getRuntimeArtifact(WS, String(shot['artifactId']));
+  const artifact = getRuntimeArtifact(WS, String(shot['artifactId']), 'test');
   assert.ok(artifact);
   assert.equal(readFileSync(artifact!.absolutePath).subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
-  await assert.rejects(() => browserClick(WS, session.id, { text: 'Buy now' }), /FINANCIAL_APPROVAL_REQUIRED/u);
-  const next = await browserClick(WS, session.id, { text: 'Next page' });
+  await assert.rejects(() => browserClick(WS, session.id, { text: 'Buy now' }, 'test'), /FINANCIAL_APPROVAL_REQUIRED/u);
+  const next = await browserClick(WS, session.id, { text: 'Next page' }, 'test');
   assert.equal(next['title'], 'Next page');
   await closeBrowserSession({ workspaceId: WS, sessionId: session.id, actor: 'test' });
   assert.equal(getBrowserSession(WS, session.id)?.status, 'stopped');
@@ -186,7 +188,7 @@ test('browser runs in a real Chromium child, navigates, inspects, types, selects
 
 test('browser research writes a Markdown document and records both artifacts', async () => {
   const session = await createBrowserSession({ workspaceId: WS, actor: 'test' });
-  const result = await browserResearch(WS, session.id, { url: docUrl, filename: 'research.md' });
+  const result = await browserResearch(WS, session.id, { url: docUrl, filename: 'research.md' }, 'test');
   assert.ok(String(result['markdown']).length > 40);
   assert.ok(result['documentArtifactId']);
   assert.ok(result['screenshotArtifactId']);
@@ -238,9 +240,9 @@ test('mission lifecycle resolves the browser agent, executes real tools and stop
 test('financial browser actions are blocked until a payload-bound class C approval is consumed', async () => {
   ensureSeedAgents(WS);
   const session = await createBrowserSession({ workspaceId: WS, actor: 'test' });
-  await browserOpen(WS, session.id, docUrl);
-  await assert.rejects(() => browserClick(WS, session.id, { text: 'Buy now' }), /FINANCIAL_APPROVAL_REQUIRED/u);
-  await assert.rejects(() => browserType(WS, session.id, { selector: '#card-number', text: '4242 4242 4242 4242' }), /FINANCIAL_APPROVAL_REQUIRED/u);
+  await browserOpen(WS, session.id, docUrl, 'test');
+  await assert.rejects(() => browserClick(WS, session.id, { text: 'Buy now' }, 'test'), /FINANCIAL_APPROVAL_REQUIRED/u);
+  await assert.rejects(() => browserType(WS, session.id, { selector: '#card-number', text: '4242 4242 4242 4242' }, 'test'), /FINANCIAL_APPROVAL_REQUIRED/u);
 
   const missionId = createMission({ workspaceId: WS, objective: 'Complete an approval-gated browser purchase', actor: 'test' });
   const db = getOsDb();
@@ -270,6 +272,70 @@ test('financial browser actions are blocked until a payload-bound class C approv
   assert.ok(consumed?.consumedAt, 'the approval must be consumed exactly at execution');
   await closeBrowserSession({ workspaceId: WS, sessionId: session.id, actor: 'test' });
 });
+test('runtime ownership rejects another user across computer, browser, files and artifacts', { timeout: 60_000 }, async () => {
+  const ownershipWs = 'wora-runtime-ownership';
+  getWorkspaceRole(ownershipWs, 'alice');
+  setWorkspaceRole(ownershipWs, 'bob', 'member', 'alice');
+  setWorkspaceRole(ownershipWs, 'adminuser', 'admin', 'alice');
+
+  const computer = await createComputerSession({ workspaceId: ownershipWs, actor: 'alice', missionId: 'msn-ownership' });
+  const written = writeSessionFile({ workspaceId: ownershipWs, sessionId: computer.id, path: 'private.txt', content: 'alice-only', actor: 'alice' });
+  assert.ok(written.bytes > 0);
+  assert.deepEqual(listSessionFiles(ownershipWs, computer.id, '.', 'alice').map((entry) => entry.name), ['private.txt']);
+  const artifact = addRuntimeArtifact({
+    workspaceId: ownershipWs, sessionId: computer.id, missionId: 'msn-ownership',
+    name: 'private.txt', kind: 'file', mimeType: 'text/plain', storagePath: `${computer.workspaceDir}/private.txt`,
+  });
+
+  await assert.rejects(() => execComputer({ workspaceId: ownershipWs, actor: 'bob', sessionId: computer.id, command: 'printf bob' }), /not accessible|forbidden/iu);
+  assert.throws(() => writeSessionFile({ workspaceId: ownershipWs, sessionId: computer.id, path: 'bob.txt', content: 'bob', actor: 'bob' }), /not accessible|forbidden/iu);
+  assert.throws(() => readSessionFile({ workspaceId: ownershipWs, sessionId: computer.id, path: 'private.txt', actor: 'bob' }), /not accessible|forbidden/iu);
+  assert.throws(() => listSessionFiles(ownershipWs, computer.id, '.', 'bob'), /not accessible|forbidden/iu);
+  await assert.rejects(() => stopComputerSession({ workspaceId: ownershipWs, sessionId: computer.id, actor: 'bob' }), /not accessible|forbidden/iu);
+  assert.throws(() => getRuntimeArtifact(ownershipWs, artifact.id, 'bob'), /not accessible|forbidden/iu);
+  assert.equal(getRuntimeArtifact('wora-other-workspace', artifact.id, 'alice'), null);
+  await assert.rejects(() => execComputer({ workspaceId: 'wora-other-workspace', actor: 'alice', sessionId: computer.id, command: 'printf cross' }), /not found/iu);
+
+  const bobTool = await runTool('cloud.exec', { sessionId: computer.id, command: 'printf tool-bob' }, {
+    workspaceId: ownershipWs, actor: 'bob', requestedBy: 'bob', permissions: new Set(['runtime:execute']),
+  });
+  assert.equal(bobTool.ok, false);
+  assert.match(String(bobTool.error), /not accessible|forbidden/iu);
+  const aliceTool = await runTool('cloud.exec', { sessionId: computer.id, command: 'printf tool-alice' }, {
+    workspaceId: ownershipWs, actor: 'alice', requestedBy: 'alice', permissions: new Set(['runtime:execute']),
+  });
+  assert.equal(aliceTool.ok, true, String(aliceTool.error));
+  const adminTool = await runTool('cloud.exec', { sessionId: computer.id, command: 'printf tool-admin' }, {
+    workspaceId: ownershipWs, actor: 'adminuser', requestedBy: 'adminuser', permissions: new Set(['runtime:execute']),
+  });
+  assert.equal(adminTool.ok, true, String(adminTool.error));
+  assert.ok(getRuntimeArtifact(ownershipWs, artifact.id, 'alice'));
+
+  const legacyMission = createMission({ workspaceId: ownershipWs, objective: 'Legacy agent session ownership check', actor: 'alice' });
+  const legacySession = await createComputerSession({ workspaceId: ownershipWs, actor: 'legacy-agent', missionId: legacyMission });
+  const legacyRun = await execComputer({ workspaceId: ownershipWs, actor: 'alice', sessionId: legacySession.id, command: 'printf legacy-owner' });
+  assert.equal(legacyRun.stdout, 'legacy-owner');
+  await assert.rejects(() => execComputer({ workspaceId: ownershipWs, actor: 'bob', sessionId: legacySession.id, command: 'printf legacy-bob' }), /not accessible|forbidden/iu);
+  await stopComputerSession({ workspaceId: ownershipWs, sessionId: legacySession.id, actor: 'alice' });
+
+  const browser = await createBrowserSession({ workspaceId: ownershipWs, actor: 'alice', missionId: 'msn-ownership' });
+  await browserOpen(ownershipWs, browser.id, docUrl, 'alice');
+  await assert.rejects(() => browserOpen(ownershipWs, browser.id, docUrl, 'bob'), /not accessible|forbidden/iu);
+  await assert.rejects(() => browserInspect(ownershipWs, browser.id, 'bob'), /not accessible|forbidden/iu);
+  await assert.rejects(() => browserScreenshot(ownershipWs, browser.id, { name: 'bob.png' }, 'bob'), /not accessible|forbidden/iu);
+  await assert.rejects(() => browserClick(ownershipWs, browser.id, { text: 'Next page' }, 'bob'), /not accessible|forbidden/iu);
+  await assert.rejects(() => browserType(ownershipWs, browser.id, { selector: '#query', text: 'bob' }, 'bob'), /not accessible|forbidden/iu);
+  await assert.rejects(() => browserSelect(ownershipWs, browser.id, { selector: '#kind', value: 'b' }, 'bob'), /not accessible|forbidden/iu);
+  await assert.rejects(() => browserScroll(ownershipWs, browser.id, 100, 'bob'), /not accessible|forbidden/iu);
+  await assert.rejects(() => browserWait(ownershipWs, browser.id, 100, 'bob'), /not accessible|forbidden/iu);
+  await assert.rejects(() => browserResearch(ownershipWs, browser.id, { url: docUrl }, 'bob'), /not accessible|forbidden/iu);
+  await assert.rejects(() => closeBrowserSession({ workspaceId: ownershipWs, sessionId: browser.id, actor: 'bob' }), /not accessible|forbidden/iu);
+  assert.ok(await browserInspect(ownershipWs, browser.id, 'adminuser'));
+  await browserScreenshot(ownershipWs, browser.id, { name: 'alice.png' }, 'alice');
+  await closeBrowserSession({ workspaceId: ownershipWs, sessionId: browser.id, actor: 'alice' });
+  await stopComputerSession({ workspaceId: ownershipWs, sessionId: computer.id, actor: 'alice' });
+});
+
 test('runtime API enforces workspace session authorization', async () => {
   const app = express();
   app.use('/api/os', createOsRouter({ production: true }));

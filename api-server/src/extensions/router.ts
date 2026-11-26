@@ -39,6 +39,7 @@ import { deleteSecret, listSecrets, migrateLegacySecrets, putSecret, rotateSecre
 import { builtinSkillCount, BUILTIN_MARKETPLACE_URL } from './builtin.js';
 import { matchCapabilities } from './capability-intelligence.js';
 import { logger } from '../lib/logger.js';
+import { assertInstallScope, assertPolicyTargets, ExtensionScopeError } from './scope-auth.js';
 
 const SCOPES_SCHEMA = z.enum(SCOPES);
 const KIND_SCHEMA = z.enum(['skill', 'plugin']);
@@ -197,6 +198,13 @@ export function createExtensionsRouter(): Router {
 
   function isAdmin(res: Response): boolean {
     return roleRank(role(res)) >= roleRank('admin');
+  }
+
+  function assertExistingInstallationScope(res: Response, installation: { scope: import('./manifest.js').PackageScope; scopeId: string }): void {
+    assertInstallScope({
+      workspaceId: workspace(res), actor: actor(res), role: role(res),
+      scope: installation.scope, scopeId: installation.scopeId,
+    });
   }
 
   function mutationAllowed(res: Response, limit = 90): boolean {
@@ -416,6 +424,7 @@ export function createExtensionsRouter(): Router {
       res.status(403).json({ error: 'High-risk plugin installation requires an admin', code: 'HIGH_RISK_PLUGIN_REQUIRES_ADMIN', plan: planToView(plan) });
       return;
     }
+    assertInstallScope({ workspaceId: ws, actor: actor(res), role: role(res), scope: body.scope, scopeId: body.scopeId });
     const installation = applyInstallPlan({
       workspaceId: ws, plan, actor: actor(res), approvePermissions: body.approvePermissions ?? false, autoLoad: body.autoLoad,
     });
@@ -476,6 +485,7 @@ export function createExtensionsRouter(): Router {
     const ws = workspace(res);
     const installation = getInstallation(ws, param(req, 'id'));
     if (!installation) { res.status(404).json({ error: 'Installation not found' }); return; }
+    assertExistingInstallationScope(res, installation);
     if (!installation.permissionsApproved) { res.status(409).json({ error: 'Permissions must be approved before enabling', code: 'APPROVAL_REQUIRED' }); return; }
     const pkg = getPackage(ws, installation.packageId);
     if (!pkg || pkg.status === 'revoked' || pkg.status === 'missing') { res.status(409).json({ error: 'Package is revoked or missing', code: 'PACKAGE_REVOKED' }); return; }
@@ -501,6 +511,7 @@ export function createExtensionsRouter(): Router {
     const ws = workspace(res);
     const installation = getInstallation(ws, param(req, 'id'));
     if (!installation) { res.status(404).json({ error: 'Installation not found' }); return; }
+    assertExistingInstallationScope(res, installation);
     const updated = updateInstallation(ws, installation.id, { enabled: false, status: 'disabled' }, actor(res));
     syncInstallationResources(ws, installation.id);
     res.json(installationView(ws, updated!));
@@ -513,6 +524,7 @@ export function createExtensionsRouter(): Router {
     const body = updateSchema.parse(req.body ?? {});
     const installation = getInstallation(ws, param(req, 'id'));
     if (!installation) { res.status(404).json({ error: 'Installation not found' }); return; }
+    assertExistingInstallationScope(res, installation);
     const pkg = getPackage(ws, installation.packageId);
     if (!pkg) { res.status(404).json({ error: 'Package not found' }); return; }
     const target = body.version ?? nextVersion(ws, installation)?.version;
@@ -542,6 +554,7 @@ export function createExtensionsRouter(): Router {
     const body = rollbackSchema.parse(req.body ?? {});
     const installation = getInstallation(ws, param(req, 'id'));
     if (!installation) { res.status(404).json({ error: 'Installation not found' }); return; }
+    assertExistingInstallationScope(res, installation);
     const plan = buildInstallPlan({
       workspaceId: ws, packageId: installation.packageId, version: body.version,
       scope: installation.scope, scopeId: installation.scopeId, targetInstallationId: installation.id, allowDowngrade: true,
@@ -564,7 +577,10 @@ export function createExtensionsRouter(): Router {
     if (denied(res, 'member')) return;
     if (!mutationAllowed(res, 30)) return;
     const ws = workspace(res);
-    res.status(uninstallPackage(ws, param(req, 'id'), actor(res)) ? 204 : 404).end();
+    const installation = getInstallation(ws, param(req, 'id'));
+    if (!installation) { res.status(404).json({ error: 'Installation not found' }); return; }
+    assertExistingInstallationScope(res, installation);
+    res.status(uninstallPackage(ws, installation.id, actor(res)) ? 204 : 404).end();
   }));
 
   router.post('/installations/:id/health', asyncWrap(async (req, res) => {
@@ -573,6 +589,7 @@ export function createExtensionsRouter(): Router {
     const ws = workspace(res);
     const installation = getInstallation(ws, param(req, 'id'));
     if (!installation) { res.status(404).json({ error: 'Installation not found' }); return; }
+    assertExistingInstallationScope(res, installation);
     res.json(await checkInstallationHealth(ws, installation.id, actor(res), true));
   }));
 
@@ -592,6 +609,7 @@ export function createExtensionsRouter(): Router {
     if (!getAgent(ws, agentId)) { res.status(404).json({ error: 'Agent not found' }); return; }
     const body = policySchema.parse(req.body ?? {});
     if (body.extraPermissions?.length && denied(res, 'admin')) return;
+    assertPolicyTargets({ workspaceId: ws, role: role(res), organizationId: body.organizationId, projectIds: body.projectIds });
     const policy = setAgentPolicy(ws, agentId, body, actor(res));
     res.json({ policy, profile: resolveCapabilities(ws, agentId, { actor: actor(res) }) });
   }));
@@ -773,6 +791,10 @@ export function createExtensionsRouter(): Router {
     if (error instanceof PluginRuntimeError) {
       const status = error.code === 'INSTALLATION_NOT_ACTIVE' ? 409 : 422;
       res.status(status).json({ error: error.message, code: error.code });
+      return;
+    }
+    if (error instanceof ExtensionScopeError) {
+      res.status(error.status).json({ error: error.message, code: error.code });
       return;
     }
     if (error instanceof Error && /not found/iu.test(error.message)) { res.status(404).json({ error: error.message }); return; }

@@ -702,7 +702,7 @@ export async function executeMission(missionId: string, actor = 'orchestrator', 
     if (finalStatus && ['completed', 'failed', 'cancelled'].includes(finalStatus)) {
       await cleanupMissionSessions(mission.workspace_id, missionId, actor).catch(() => undefined);
       for (const session of listBrowserSessions(mission.workspace_id, missionId)) {
-        if (['starting', 'running'].includes(session.status)) await closeBrowserSession({ workspaceId: mission.workspace_id, sessionId: session.id, actor, reason: 'mission finalized' }).catch(() => undefined);
+        if (['starting', 'running'].includes(session.status)) await closeBrowserSession({ workspaceId: mission.workspace_id, sessionId: session.id, actor, reason: 'mission finalized', internal: true }).catch(() => undefined);
       }
     }
   }
@@ -710,7 +710,7 @@ export async function executeMission(missionId: string, actor = 'orchestrator', 
 
 async function executeMissionInner(missionId: string, actor = 'orchestrator', options: { workerId?: string; leaseTtlMs?: number; maxAttempts?: number; concurrency?: number; workerMode?: boolean; missionLeaseOwner?: string; missionLeaseTtlMs?: number; skipMissionLease?: boolean } = {}): Promise<void> {
   const db = getOsDb();
-  const mission = db.prepare('SELECT * FROM os_missions WHERE id = ?').get(missionId) as { id: string; workspace_id: string; objective: string; status: string; correlation_id?: string | null } | undefined;
+  const mission = db.prepare('SELECT * FROM os_missions WHERE id = ?').get(missionId) as { id: string; workspace_id: string; objective: string; status: string; requested_by: string; correlation_id?: string | null } | undefined;
   if (!mission) throw new Error(`Mission ${missionId} not found`);
   // Completed, paused and cancelled missions never run. Failed/awaiting missions
   // re-enter: completed tasks are skipped and the failed/blocked ones retry.
@@ -1002,6 +1002,7 @@ async function executeMissionInner(missionId: string, actor = 'orchestrator', op
       const ctx: ToolContext = {
         workspaceId: mission.workspace_id,
         actor: agent.name,
+        requestedBy: mission.requested_by || actor,
         permissions: new Set(profile.permissions),
         toolAllowlist: new Set(profile.tools),
         missionId,

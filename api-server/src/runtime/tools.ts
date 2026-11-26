@@ -19,6 +19,11 @@ import {
   browserType, browserWait, closeBrowserSession, createBrowserSession, getBrowserSession, listBrowserSessions,
 } from './browser.js';
 import { financialIntent } from './financial.js';
+import { assertRuntimeSessionAccess, canAccessRuntimeSession } from './auth.js';
+
+function principal(ctx: ToolContext): string {
+  return ctx.requestedBy?.trim() || ctx.actor;
+}
 
 function publicSession(session: RuntimeSession): Record<string, unknown> {
   return {
@@ -39,32 +44,35 @@ async function ensureComputer(ctx: ToolContext, explicit?: string): Promise<Runt
   if (explicit) {
     const session = getComputerSession(ctx.workspaceId, explicit);
     if (!session) throw new Error('Cloud session not found in this workspace');
+    assertRuntimeSessionAccess(ctx.workspaceId, session, principal(ctx));
     if (session.status !== 'running') throw new Error(`Cloud session is ${session.status}, not running`);
     return session;
   }
-  return createComputerSession({ workspaceId: ctx.workspaceId, actor: ctx.actor, missionId: ctx.missionId, taskId: ctx.taskId });
+  return createComputerSession({ workspaceId: ctx.workspaceId, actor: principal(ctx), missionId: ctx.missionId, taskId: ctx.taskId });
 }
 
 async function ensureRuntimeSession(ctx: ToolContext, explicit?: string): Promise<RuntimeSession> {
   if (explicit) {
     const session = getRuntimeSession(ctx.workspaceId, explicit);
     if (!session) throw new Error('Runtime session not found in this workspace');
+    assertRuntimeSessionAccess(ctx.workspaceId, session, principal(ctx));
     if (session.status !== 'running') throw new Error(`Runtime session is ${session.status}, not running`);
     return session;
   }
-  return createComputerSession({ workspaceId: ctx.workspaceId, actor: ctx.actor, missionId: ctx.missionId, taskId: ctx.taskId });
+  return createComputerSession({ workspaceId: ctx.workspaceId, actor: principal(ctx), missionId: ctx.missionId, taskId: ctx.taskId });
 }
 
 async function ensureBrowser(ctx: ToolContext, explicit?: string): Promise<RuntimeSession> {
   if (explicit) {
     const session = getBrowserSession(ctx.workspaceId, explicit);
     if (!session) throw new Error('Browser session not found in this workspace');
+    assertRuntimeSessionAccess(ctx.workspaceId, session, principal(ctx));
     if (session.status !== 'running') throw new Error(`Browser session is ${session.status}, not running`);
     return session;
   }
   const existing = listBrowserSessions(ctx.workspaceId, ctx.missionId).find((session) => session.status === 'running');
   if (existing) return existing;
-  return createBrowserSession({ workspaceId: ctx.workspaceId, actor: ctx.actor, missionId: ctx.missionId, taskId: ctx.taskId });
+  return createBrowserSession({ workspaceId: ctx.workspaceId, actor: principal(ctx), missionId: ctx.missionId, taskId: ctx.taskId });
 }
 
 const startSchema = z.object({ kind: z.enum(['computer', 'browser']).optional(), ttlMinutes: z.number().int().min(1).max(1440).optional(), allowNetwork: z.boolean().optional() }).strict();
@@ -89,8 +97,8 @@ const startTool: ToolDefinition = {
   schema: startSchema, permission: 'runtime:execute', risk: 'medium', environment: 'host', timeoutMs: 70_000,
   async execute(input: z.infer<typeof startSchema>, ctx) {
     if (input.allowNetwork === true) throw new Error('Cloud session network access is restricted to an explicit admin API request');
-    if (input.kind === 'browser') return publicSession(await createBrowserSession({ workspaceId: ctx.workspaceId, actor: ctx.actor, missionId: ctx.missionId, taskId: ctx.taskId, ttlMinutes: input.ttlMinutes }));
-    return publicSession(await createComputerSession({ workspaceId: ctx.workspaceId, actor: ctx.actor, missionId: ctx.missionId, taskId: ctx.taskId, ttlMinutes: input.ttlMinutes, allowNetwork: input.allowNetwork }));
+    if (input.kind === 'browser') return publicSession(await createBrowserSession({ workspaceId: ctx.workspaceId, actor: principal(ctx), missionId: ctx.missionId, taskId: ctx.taskId, ttlMinutes: input.ttlMinutes }));
+    return publicSession(await createComputerSession({ workspaceId: ctx.workspaceId, actor: principal(ctx), missionId: ctx.missionId, taskId: ctx.taskId, ttlMinutes: input.ttlMinutes, allowNetwork: input.allowNetwork }));
   },
 };
 
@@ -100,7 +108,7 @@ const execTool: ToolDefinition = {
   schema: execSchema, permission: 'runtime:execute', risk: 'medium', environment: 'host', timeoutMs: 125_000,
   async execute(input: z.infer<typeof execSchema>, ctx) {
     const session = await ensureComputer(ctx, input.sessionId);
-    const result = await execComputer({ workspaceId: ctx.workspaceId, actor: ctx.actor, sessionId: session.id, command: input.command, cwd: input.cwd, timeoutMs: input.timeoutMs });
+    const result = await execComputer({ workspaceId: ctx.workspaceId, actor: principal(ctx), sessionId: session.id, command: input.command, cwd: input.cwd, timeoutMs: input.timeoutMs });
     return { ...result, sessionId: session.id, provider: session.provider, isolated: session.provider === 'docker', stdout: redactSecrets(result.stdout).value, stderr: redactSecrets(result.stderr).value };
   },
 };
@@ -111,7 +119,7 @@ const writeTool: ToolDefinition = {
   schema: writeSchema, permission: 'runtime:write', risk: 'low', environment: 'host', timeoutMs: 10_000,
   async execute(input: z.infer<typeof writeSchema>, ctx) {
     const session = await ensureRuntimeSession(ctx, input.sessionId);
-    const written = writeSessionFile({ workspaceId: ctx.workspaceId, sessionId: session.id, path: input.path, content: input.content, actor: ctx.actor });
+    const written = writeSessionFile({ workspaceId: ctx.workspaceId, sessionId: session.id, path: input.path, content: input.content, actor: principal(ctx) });
     const kind = input.path.endsWith('.md') ? 'markdown' : input.path.endsWith('.json') ? 'json' : 'file';
     const artifact = addRuntimeArtifact({ workspaceId: ctx.workspaceId, sessionId: session.id, missionId: ctx.missionId, name: path.basename(input.path), kind, mimeType: kind === 'markdown' ? 'text/markdown; charset=utf-8' : kind === 'json' ? 'application/json' : 'text/plain; charset=utf-8', storagePath: path.join(session.workspaceDir, input.path) });
     return { ...written, sessionId: session.id, artifactId: artifact.id, artifact: { id: artifact.id, name: artifact.name, kind: artifact.kind, sizeBytes: artifact.sizeBytes } };
@@ -124,7 +132,7 @@ const readTool: ToolDefinition = {
   schema: readSchema, permission: 'runtime:read', risk: 'low', environment: 'host', timeoutMs: 10_000,
   async execute(input: z.infer<typeof readSchema>, ctx) {
     const session = await ensureRuntimeSession(ctx, input.sessionId);
-    return { ...readSessionFile({ workspaceId: ctx.workspaceId, sessionId: session.id, path: input.path, maxBytes: input.maxBytes }), sessionId: session.id };
+    return { ...readSessionFile({ workspaceId: ctx.workspaceId, sessionId: session.id, path: input.path, maxBytes: input.maxBytes, actor: principal(ctx) }), sessionId: session.id };
   },
 };
 
@@ -134,7 +142,7 @@ const listTool: ToolDefinition = {
   schema: listSchema, permission: 'runtime:read', risk: 'low', environment: 'host', timeoutMs: 10_000,
   async execute(input: z.infer<typeof listSchema>, ctx) {
     const session = await ensureRuntimeSession(ctx, input.sessionId);
-    return { sessionId: session.id, dir: input.dir ?? '.', entries: listSessionFiles(ctx.workspaceId, session.id, input.dir) };
+    return { sessionId: session.id, dir: input.dir ?? '.', entries: listSessionFiles(ctx.workspaceId, session.id, input.dir, principal(ctx)) };
   },
 };
 
@@ -143,7 +151,7 @@ const stopTool: ToolDefinition = {
   inputSchema: { type: 'object', properties: { sessionId: { type: 'string' }, reason: { type: 'string' } }, required: ['sessionId'], additionalProperties: false },
   schema: stopSchema, permission: 'runtime:execute', risk: 'low', environment: 'host', timeoutMs: 30_000,
   async execute(input: z.infer<typeof stopSchema>, ctx) {
-    return publicSession(await stopComputerSession({ workspaceId: ctx.workspaceId, sessionId: input.sessionId, actor: ctx.actor, reason: input.reason }));
+    return publicSession(await stopComputerSession({ workspaceId: ctx.workspaceId, sessionId: input.sessionId, actor: principal(ctx), reason: input.reason }));
   },
 };
 
@@ -154,7 +162,7 @@ const openTool: ToolDefinition = {
   async execute(input: z.infer<typeof openSchema>, ctx) {
     assertSafeOutboundUrl(input.url);
     const session = await ensureBrowser(ctx, input.sessionId);
-    return { ...(await browserOpen(ctx.workspaceId, session.id, input.url, ctx.actor)), sessionId: session.id };
+    return { ...(await browserOpen(ctx.workspaceId, session.id, input.url, principal(ctx))), sessionId: session.id };
   },
 };
 
@@ -163,7 +171,7 @@ const inspectTool: ToolDefinition = {
   inputSchema: { type: 'object', properties: { sessionId: { type: 'string' } }, required: ['sessionId'], additionalProperties: false },
   schema: browserSessionSchema, permission: 'browser:read', risk: 'low', environment: 'host', timeoutMs: 30_000,
   async execute(input: z.infer<typeof browserSessionSchema>, ctx) {
-    return { ...(await browserInspect(ctx.workspaceId, input.sessionId, ctx.actor)), sessionId: input.sessionId };
+    return { ...(await browserInspect(ctx.workspaceId, input.sessionId, principal(ctx))), sessionId: input.sessionId };
   },
 };
 
@@ -173,7 +181,7 @@ const clickTool: ToolDefinition = {
   schema: clickSchema, permission: 'browser:interact', risk: 'medium', environment: 'host', timeoutMs: 40_000,
   riskForInput: (input) => { const intent = financialIntent('click', (input ?? {}) as Record<string, unknown>); return intent.required ? { risk: 'high', spendsMoney: true, ...(intent.amountUsd !== undefined ? { amountUsd: intent.amountUsd } : {}), reason: intent.reason } : { risk: 'medium' }; },
   async execute(input: z.infer<typeof clickSchema>, ctx) {
-    return { ...(await browserClick(ctx.workspaceId, input.sessionId, { selector: input.selector, text: input.text }, ctx.actor, ctx.financialApproved === true)), sessionId: input.sessionId };
+    return { ...(await browserClick(ctx.workspaceId, input.sessionId, { selector: input.selector, text: input.text }, principal(ctx), ctx.financialApproved === true)), sessionId: input.sessionId };
   },
 };
 
@@ -183,7 +191,7 @@ const typeTool: ToolDefinition = {
   schema: typeSchema, permission: 'browser:interact', risk: 'medium', environment: 'host', timeoutMs: 40_000,
   riskForInput: (input) => { const intent = financialIntent('type', (input ?? {}) as Record<string, unknown>); return intent.required ? { risk: 'high', spendsMoney: true, ...(intent.amountUsd !== undefined ? { amountUsd: intent.amountUsd } : {}), reason: intent.reason } : { risk: 'medium' }; },
   async execute(input: z.infer<typeof typeSchema>, ctx) {
-    return { ...(await browserType(ctx.workspaceId, input.sessionId, { selector: input.selector, text: input.text, submit: input.submit }, ctx.actor, ctx.financialApproved === true)), sessionId: input.sessionId };
+    return { ...(await browserType(ctx.workspaceId, input.sessionId, { selector: input.selector, text: input.text, submit: input.submit }, principal(ctx), ctx.financialApproved === true)), sessionId: input.sessionId };
   },
 };
 
@@ -193,7 +201,7 @@ const selectTool: ToolDefinition = {
   schema: selectSchema, permission: 'browser:interact', risk: 'medium', environment: 'host', timeoutMs: 30_000,
   riskForInput: (input) => { const intent = financialIntent('select', (input ?? {}) as Record<string, unknown>); return intent.required ? { risk: 'high', spendsMoney: true, ...(intent.amountUsd !== undefined ? { amountUsd: intent.amountUsd } : {}), reason: intent.reason } : { risk: 'medium' }; },
   async execute(input: z.infer<typeof selectSchema>, ctx) {
-    return { ...(await browserSelect(ctx.workspaceId, input.sessionId, { selector: input.selector, value: input.value }, ctx.actor, ctx.financialApproved === true)), sessionId: input.sessionId };
+    return { ...(await browserSelect(ctx.workspaceId, input.sessionId, { selector: input.selector, value: input.value }, principal(ctx), ctx.financialApproved === true)), sessionId: input.sessionId };
   },
 };
 
@@ -202,7 +210,7 @@ const scrollTool: ToolDefinition = {
   inputSchema: { type: 'object', properties: { delta: { type: 'number' }, sessionId: { type: 'string' } }, required: ['sessionId'], additionalProperties: false },
   schema: scrollSchema, permission: 'browser:interact', risk: 'low', environment: 'host', timeoutMs: 30_000,
   async execute(input: z.infer<typeof scrollSchema>, ctx) {
-    return { ...(await browserScroll(ctx.workspaceId, input.sessionId, input.delta, ctx.actor)), sessionId: input.sessionId };
+    return { ...(await browserScroll(ctx.workspaceId, input.sessionId, input.delta, principal(ctx))), sessionId: input.sessionId };
   },
 };
 
@@ -211,7 +219,7 @@ const waitTool: ToolDefinition = {
   inputSchema: { type: 'object', properties: { timeoutMs: { type: 'number' }, sessionId: { type: 'string' } }, required: ['sessionId'], additionalProperties: false },
   schema: waitSchema, permission: 'browser:read', risk: 'low', environment: 'host', timeoutMs: 40_000,
   async execute(input: z.infer<typeof waitSchema>, ctx) {
-    return { ...(await browserWait(ctx.workspaceId, input.sessionId, input.timeoutMs, ctx.actor)), sessionId: input.sessionId };
+    return { ...(await browserWait(ctx.workspaceId, input.sessionId, input.timeoutMs, principal(ctx))), sessionId: input.sessionId };
   },
 };
 
@@ -220,7 +228,7 @@ const screenshotTool: ToolDefinition = {
   inputSchema: { type: 'object', properties: { fullPage: { type: 'boolean' }, name: { type: 'string' }, sessionId: { type: 'string' } }, required: ['sessionId'], additionalProperties: false },
   schema: screenshotSchema, permission: 'browser:read', risk: 'low', environment: 'host', timeoutMs: 40_000,
   async execute(input: z.infer<typeof screenshotSchema>, ctx) {
-    return { ...(await browserScreenshot(ctx.workspaceId, input.sessionId, { fullPage: input.fullPage, name: input.name }, ctx.actor)), sessionId: input.sessionId };
+    return { ...(await browserScreenshot(ctx.workspaceId, input.sessionId, { fullPage: input.fullPage, name: input.name }, principal(ctx))), sessionId: input.sessionId };
   },
 };
 
@@ -231,7 +239,7 @@ const researchTool: ToolDefinition = {
   async execute(input: z.infer<typeof researchSchema>, ctx) {
     assertSafeOutboundUrl(input.url);
     const session = await ensureBrowser(ctx, input.sessionId);
-    const result = await browserResearch(ctx.workspaceId, session.id, { url: input.url, filename: input.filename }, ctx.actor);
+    const result = await browserResearch(ctx.workspaceId, session.id, { url: input.url, filename: input.filename }, principal(ctx));
     audit(getOsDb(), { workspaceId: ctx.workspaceId, actor: ctx.actor, action: 'runtime.browser.research', subject: session.id, detail: { url: input.url, title: result['title'], documentArtifactId: result['documentArtifactId'] } });
     return { ...result, sessionId: session.id };
   },
@@ -242,7 +250,7 @@ const closeTool: ToolDefinition = {
   inputSchema: { type: 'object', properties: { sessionId: { type: 'string' }, reason: { type: 'string' } }, required: ['sessionId'], additionalProperties: false },
   schema: stopSchema, permission: 'browser:read', risk: 'low', environment: 'host', timeoutMs: 30_000,
   async execute(input: z.infer<typeof stopSchema>, ctx) {
-    return publicSession(await closeBrowserSession({ workspaceId: ctx.workspaceId, sessionId: input.sessionId, actor: ctx.actor, reason: input.reason }));
+    return publicSession(await closeBrowserSession({ workspaceId: ctx.workspaceId, sessionId: input.sessionId, actor: principal(ctx), reason: input.reason }));
   },
 };
 
@@ -251,13 +259,14 @@ export const RUNTIME_TOOLS: ToolDefinition[] = [
   openTool, inspectTool, clickTool, typeTool, selectTool, scrollTool, waitTool, screenshotTool, researchTool, closeTool,
 ];
 
-export function runtimeSessionsForWorkspace(workspaceId: string, missionId?: string) {
+export function runtimeSessionsForWorkspace(workspaceId: string, missionId?: string, actor?: string) {
+  const visible = (session: RuntimeSession): boolean => !actor || canAccessRuntimeSession(workspaceId, session, actor);
   return {
-    computer: listComputerSessions(workspaceId, { missionId }).map(publicSession),
-    browser: listBrowserSessions(workspaceId, missionId).map(publicSession),
+    computer: listComputerSessions(workspaceId, { missionId }).filter(visible).map(publicSession),
+    browser: listBrowserSessions(workspaceId, missionId).filter(visible).map(publicSession),
   };
 }
 
-export function runtimeArtifactsForWorkspace(workspaceId: string, missionId?: string) {
-  return listRuntimeArtifacts(workspaceId, { missionId }).map((artifact) => ({ ...artifact, contentUrl: `/api/os/runtime/artifacts/${artifact.id}` }));
+export function runtimeArtifactsForWorkspace(workspaceId: string, missionId?: string, actor?: string) {
+  return listRuntimeArtifacts(workspaceId, { missionId, ...(actor ? { actor } : {}) }).map((artifact) => ({ ...artifact, contentUrl: `/api/os/runtime/artifacts/${artifact.id}` }));
 }
