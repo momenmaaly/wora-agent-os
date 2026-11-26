@@ -26,7 +26,7 @@ SQLite is a single-writer store. Run exactly **one** API replica against the `os
 The OS can start real, persistent execution sessions and operate a real Chromium browser through the same Tool Registry, permissions and audit path as every other tool.
 
 - **Cloud computer** tools: `cloud.computer_start`, `cloud.exec`, `cloud.write_file`, `cloud.read_file`, `cloud.list_files`, `cloud.computer_stop`. Docker is the production provider: `--network none` by default, read-only root, dropped capabilities, `no-new-privileges`, CPU/memory/PID limits, and only the session workspace mounted. The process provider is an explicit, non-isolated development fallback; it is never selected in production unless `WORA_CLOUD_ALLOW_PROCESS_PROVIDER=1`, and that override is for controlled development deployments only.
-- **Browser automation** tools: `browser.open`, `browser.inspect`, `browser.screenshot`, `browser.click`, `browser.type`, `browser.select`, `browser.scroll`, `browser.wait`, `browser.research`, `browser.close`. In production Chromium runs inside a dedicated Docker container: read-only image, only the session workspace mounted, dropped capabilities, CPU/memory/PID limits, an internal network with no direct egress, and a connection-time validating proxy. The proxy resolves each destination itself, rejects loopback/private/link-local/cloud-metadata targets, ignores proxy bypass, forces the upstream `Host` header to the validated URL host, refuses plain `ws://` upgrades, and revalidates every redirect, subresource and CONNECT tunnel (including `wss`). Only source addresses inside the browser Docker subnet may use the proxy; the Docker gateway is explicitly rejected so host-local processes cannot use it as an open proxy. Chromium's own sandbox is required by default; the container fails closed when the host cannot provide it.
+- **Browser automation** tools: `browser.open`, `browser.inspect`, `browser.screenshot`, `browser.click`, `browser.type`, `browser.select`, `browser.scroll`, `browser.wait`, `browser.research`, `browser.close`. In production Chromium runs inside a dedicated Docker container: read-only image, only the session workspace mounted, dropped capabilities, CPU/memory/PID limits, an internal network with no direct egress, and a connection-time validating proxy. The proxy resolves each destination itself, rejects loopback/private/link-local/cloud-metadata targets, ignores proxy bypass, forces the upstream `Host` header to the validated URL host, refuses plain `ws://` upgrades, and revalidates every redirect, subresource and CONNECT tunnel (including `wss`). In production the proxy listens on a per-session Unix socket inside the shared runtime volume; only the browser container mounts it, and the container bridges it to Chromium over loopback. There is no open TCP proxy port. Chromium's own sandbox is required by default; the container fails closed when the host cannot provide it.
 - **Financial actions**: `browser.click`, `browser.type` and `browser.select` are reclassified as high-risk class C at execution time when their target is financial. They require a payload-bound, single-use approval; direct `/api/os/runtime/sessions/:id/browser` calls need an approval created through `/api/os/runtime/browser-approvals`. A denial, replay, payload change or session mismatch is rejected and audited.
 - **Artifacts**: real PNG screenshots and Markdown research documents are stored with workspace/session ownership and served through `/api/os/runtime/artifacts/:id`.
 - **UI**: the runtime panel is available on `#brief`, `#run`, `#library` and `#system` with live provider status, session start/stop, and downloadable screenshot/document artifacts. Arabic and English labels are both wired.
@@ -36,15 +36,19 @@ Configuration:
 
 | Variable | Purpose |
 | --- | --- |
-| `WORA_CLOUD_PROVIDER` | `auto` (default), `docker`, or `process`. |
+| `WORA_CLOUD_PROVIDER` | `docker` in production; `auto`/`process` remain development options. Production boot rejects `process`. |
 | `WORA_CLOUD_IMAGE` | Docker runtime image (default `node:22-alpine`). Pulling is opt-in through `WORA_CLOUD_DOCKER_PULL=1`. |
 | `WORA_CLOUD_ALLOW_PROCESS_PROVIDER` | Explicitly enables the non-isolated process provider outside development. |
 | `WORA_CLOUD_MAX_SESSIONS` | Per-workspace active cloud + browser session cap (default 8). |
-| `WORA_RUNTIME_ROOT` | Root for session workspaces and screenshots. |
-| `WORA_BROWSER_PROVIDER` | `docker` or `process`. Production defaults to `docker`; development defaults to `process`. |
+| `WORA_RUNTIME_ROOT` | Absolute root for session workspaces and screenshots; shared with the dedicated runtime daemon. |
+| `WORA_BROWSER_PROVIDER` | `docker` in production; `process` is development-only and rejected in production. |
 | `WORA_BROWSER_IMAGE` | Isolated browser image (default `wora-browser-runtime:1.0.0`). Build it with `docker build -f docker/browser-runtime.Dockerfile -t wora-browser-runtime:1.0.0 .` from `api-server` after `npm run build`. |
 | `WORA_BROWSER_SANDBOX` | `chromium` (default and required in production) or `container` (container-only boundary, explicitly disabled in production unless `WORA_BROWSER_ALLOW_CONTAINER_SANDBOX=1`). |
 | `WORA_BROWSER_EXECUTABLE_PATH` | Chromium/Chrome path for the development process provider. When set, it must exist; there is no silent fallback. |
+| `DOCKER_HOST` | Production must point at the dedicated `runtime-docker` TLS endpoint, not the host socket. |
+| `DOCKER_TLS_VERIFY` / `DOCKER_CERT_PATH` | Required with a TCP Docker endpoint. |
+| `WORA_API_IMAGE` | Image tag shared by the API, keyring init, runtime bootstrap and worker services. |
+| `WORA_OS_WORKSPACE_ID` | Workspace polled by the durable `os-worker` service. |
 
 Verified with `api-server/src/runtime/browser-proxy.test.ts` (real proxy listener, private/metadata rejection, DNS-rebinding revalidation, redirect revalidation, Host-header pinning, client-subnet restriction, plain-WebSocket refusal, CONNECT policy), `api-server/src/runtime/runtime.test.ts` (real development Chromium, financial class C approval and replay rejection, mission lifecycle, expiry and API authorization), `api-server/src/runtime/runtime-docker.test.ts` (real Docker computer and real Docker browser, internal network, proxy-only page access, screenshot and cleanup) and `client/tests/runtime-workspace.test.mjs` (real UI start → screenshot → refresh → download preview → stop against the preview API).
 
@@ -61,10 +65,22 @@ Secure production requirements:
 
 - A Linux host with unprivileged user namespaces available to Docker containers.
 - A Docker seccomp/AppArmor profile that permits the namespace and setuid operations Chromium's sandbox needs.
-- Docker daemon access for the API process, and the `wora-browser-runtime:1.0.0` image built from this repository.
+- A dedicated Docker runtime daemon (`runtime-docker` in `docker-compose.prod.yml`) with the `wora-browser-runtime:1.0.0` image built by the one-shot `runtime-bootstrap` service. The API receives only the TLS Docker endpoint, never the host socket.
 - A host where the image's Chromium sandbox helper passes the probe. If the probe fails, production remains unavailable rather than silently downgrading.
 
 Browser containers need proxy-mediated outbound web access but never direct network access. A host that cannot provide Chromium's sandbox should use an approved container-only deployment only with an explicit risk decision, not as an automatic fallback.
+
+## Release V1 runtime wiring
+
+The production compose file separates the public API from the execution boundary:
+
+- `api` — public HTTP/Socket.IO API, no host Docker socket.
+- `runtime-docker` — dedicated privileged DinD daemon on `wora-runtime-net`; the API connects over mutual TLS.
+- `runtime-bootstrap` — builds the pinned browser image inside that daemon.
+- `keyring-init` — creates the 0600 secret keyring once.
+- `os-worker` — durable mission worker sharing the file-backed SQLite store and runtime volume.
+
+The API fails fast at boot if `WORA_CLOUD_PROVIDER`/`WORA_BROWSER_PROVIDER` are not `docker`, the Docker endpoint is missing or insecure, the runtime root is not writable, Git is missing, the keyring is not managed, or the Docker/Chromium probes fail. `/ready` reports runtime and browser status. See `docs/releases/WORA-V1-DEPLOYMENT.md` for the exact external requirements and backup procedure.
 
 ## Run the workspace
 

@@ -10,6 +10,7 @@
 import { lookup as dnsLookup } from 'node:dns/promises';
 import http from 'node:http';
 import net from 'node:net';
+import { existsSync, rmSync } from 'node:fs';
 import type { Duplex } from 'node:stream';
 import { isBlockedAddress, isBlockedHostname } from '../lib/safe-fetch.js';
 
@@ -33,6 +34,8 @@ export interface BrowserProxyOptions {
   allowedPorts?: ReadonlySet<number>;
   /** Restrict callers to an address range (for example the browser Docker subnet). */
   allowedClients?: net.BlockList;
+  /** Listen on a Unix socket shared with the isolated browser container. */
+  socketPath?: string;
   /** Reject this caller even when it falls inside allowedClients (the Docker gateway). */
   blockedClient?: string;
   lookup?: (host: string) => Promise<Array<{ address: string; family: number }>>;
@@ -186,6 +189,21 @@ export async function startBrowserProxy(options: BrowserProxyOptions = {}): Prom
   // proxied as validated CONNECT tunnels; plain ws:// must not bypass validation.
   server.on('upgrade', (_req, socket) => { deny(socket, '405 Method Not Allowed'); });
   server.on('clientError', (_error, socket) => { deny(socket, '400 Bad Request'); });
+  if (options.socketPath) {
+    if (existsSync(options.socketPath)) rmSync(options.socketPath, { force: true });
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(options.socketPath!, () => resolve());
+    });
+    return {
+      url: 'http://127.0.0.1:3128',
+      server,
+      close: () => new Promise<void>((resolve) => {
+        server.closeAllConnections?.();
+        server.close(() => { try { rmSync(options.socketPath!, { force: true }); } catch { /* already removed */ } resolve(); });
+      }),
+    };
+  }
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
     server.listen(options.port ?? 0, options.host ?? '127.0.0.1', () => resolve());

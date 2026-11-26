@@ -43,7 +43,10 @@ import { EXAMPLE_ZONES, VALID_ZONE_IDS } from './zones.js';
 import { logger } from './lib/logger.js';
 import { safeEqual, verifySessionToken } from './lib/session.js';
 import { isSessionActive, revokeSession } from './lib/session-store.js';
-import { configuredOrigins, isProductionEnv, productionConfigProblems, sanitizeEnv } from './lib/config.js';
+import { configuredOrigins, isProductionEnv, productionConfigProblems, productionRuntimeConfigProblems, sanitizeEnv } from './lib/config.js';
+import { assertProductionRuntimeReady } from './runtime/readiness.js';
+import { runtimeStatus } from './runtime/cloud.js';
+import { browserAvailability } from './runtime/browser.js';
 import { isAllowedOrigin, isCrossSiteBrowserMutation } from './lib/http-security.js';
 import { generateStudioPack, resolveStudioBrain } from './studio/drafts.js';
 import { createStudioRouter } from './studio/router.js';
@@ -464,6 +467,9 @@ export async function bootWoraServer(app: Express, port = DEFAULT_PORT) {
   initExtensions();
   const problems = productionConfigProblems(process.env);
   if (problems.length) throw new Error(`Missing or invalid production configuration: ${problems.join(', ')}`);
+  const runtimeProblems = productionRuntimeConfigProblems(process.env);
+  if (runtimeProblems.length) throw new Error(`Missing or invalid production runtime configuration: ${runtimeProblems.join(', ')}`);
+  await assertProductionRuntimeReady(process.env);
   const httpServer = createServer(app);
   const corsOptions = buildCorsOptions();
 
@@ -716,7 +722,10 @@ export async function bootWoraServer(app: Express, port = DEFAULT_PORT) {
     const redisOk = await redisResponds();
     const mongoOk = isMongoReady();
     const agents = mongoOk ? await within(loadActiveAgents(), 2_600).catch(() => null) : null;
-    const ready = redisOk && mongoOk && Boolean(AUTH_SECRET && agents?.length);
+    const runtime = await runtimeStatus().catch(() => null);
+    const browser = await browserAvailability().catch(() => null);
+    const runtimeReady = !IS_PRODUCTION || (runtime?.operational === true && browser?.available === true);
+    const ready = redisOk && mongoOk && Boolean(AUTH_SECRET && agents?.length) && runtimeReady;
     const hasProvider = agents?.some((agent) => isProviderConfigured(agent.brainConfig ?? { provider: BrainProvider.Google }));
     res.setHeader('Cache-Control', 'no-store');
     res.status(ready ? 200 : 503).json({
@@ -725,6 +734,8 @@ export async function bootWoraServer(app: Express, port = DEFAULT_PORT) {
       sessions: AUTH_SECRET ? 'signed' : 'unconfigured',
       roster: agents === null ? 'unavailable' : agents.length ? 'seeded' : 'unseeded',
       ai: hasProvider ? 'configured' : 'unconfigured',
+      runtime: runtime ? { operational: runtime['operational'], provider: runtime['selected'], isolated: runtime['isolated'] } : 'unavailable',
+      browser: browser ? { available: browser.available, provider: browser.provider, isolated: browser.isolated, sandbox: browser.sandbox } : 'unavailable',
     });
   });
 

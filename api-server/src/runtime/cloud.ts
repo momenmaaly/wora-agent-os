@@ -181,14 +181,17 @@ export function getComputerSession(workspaceId: string, sessionId: string): Runt
   return session?.kind === 'computer' ? session : null;
 }
 
-export function listComputerSessions(workspaceId: string, filter: { missionId?: string; kind?: RuntimeKind; status?: RuntimeStatus; limit?: number } = {}): RuntimeSession[] {
+export function listComputerSessions(workspaceId: string, filter: { missionId?: string; kind?: RuntimeKind; status?: RuntimeStatus; limit?: number; actor: string; internal?: boolean }): RuntimeSession[] {
   const clauses = ['workspace_id = ?', "kind = 'computer'"]; const values: Array<string | number> = [workspaceId];
   if (filter.missionId) { clauses.push('mission_id = ?'); values.push(filter.missionId); }
   if (filter.kind) { clauses.push('kind = ?'); values.push(filter.kind); }
   if (filter.status) { clauses.push('status = ?'); values.push(filter.status); }
   const limit = Math.min(Math.max(filter.limit ?? 50, 1), 200);
   const rows = getOsDb().prepare(`SELECT * FROM os_runtime_sessions WHERE ${clauses.join(' AND ')} ORDER BY created_at DESC LIMIT ?`).all(...values, limit) as Array<Record<string, string | number | null>>;
-  return rows.map(rowToSession);
+  const sessions = rows.map(rowToSession);
+  return filter.actor && filter.internal !== true
+    ? sessions.filter((session) => canAccessRuntimeSession(workspaceId, session, filter.actor))
+    : sessions;
 }
 
 function requireRunningSession(workspaceId: string, sessionId: string, actor: string, internal = false): RuntimeSession {
@@ -240,7 +243,7 @@ export function readSessionFile(input: { workspaceId: string; sessionId: string;
   return { path: input.path, content: raw.subarray(0, cap).toString('utf8'), bytes: raw.byteLength, truncated: raw.byteLength > cap };
 }
 
-export function listSessionFiles(workspaceId: string, sessionId: string, dir = '.', actor = '', internal = false): Array<{ name: string; type: string; size: number | null }> {
+export function listSessionFiles(workspaceId: string, sessionId: string, dir: string, actor: string, internal = false): Array<{ name: string; type: string; size: number | null }> {
   const session = requireRunningSession(workspaceId, sessionId, actor, internal);
   const target = resolveSessionPath(session.workspaceDir, dir);
   const stat = statSync(target);
@@ -268,16 +271,16 @@ export function addRuntimeArtifact(input: {
   return { id, name: input.name, kind: input.kind, mimeType: input.mimeType, sizeBytes: stat.size, createdAt, path: target };
 }
 
-export function listRuntimeArtifacts(workspaceId: string, filter: { missionId?: string; sessionId?: string; limit?: number; actor?: string; internal?: boolean } = {}): Array<{ id: string; sessionId: string; name: string; kind: string; mimeType: string; sizeBytes: number; createdAt: string }> {
+export function listRuntimeArtifacts(workspaceId: string, filter: { missionId?: string; sessionId?: string; limit?: number; actor: string; internal?: boolean }): Array<{ id: string; sessionId: string; name: string; kind: string; mimeType: string; sizeBytes: number; createdAt: string }> {
   const clauses = ['workspace_id = ?']; const values: Array<string | number> = [workspaceId];
   if (filter.missionId) { clauses.push('mission_id = ?'); values.push(filter.missionId); }
   if (filter.sessionId) { clauses.push('session_id = ?'); values.push(filter.sessionId); }
   const limit = Math.min(Math.max(filter.limit ?? 50, 1), 200);
   const rows = getOsDb().prepare(`SELECT * FROM os_runtime_artifacts WHERE ${clauses.join(' AND ')} ORDER BY created_at DESC LIMIT ?`).all(...values, limit) as Array<Record<string, string | number>>;
-  const visible = filter.actor && filter.internal !== true
+  const visible = filter.internal !== true
     ? rows.filter((row) => {
       const session = getRuntimeSession(workspaceId, String(row['session_id']));
-      return Boolean(session && canAccessRuntimeSession(workspaceId, session, filter.actor!));
+      return Boolean(session && canAccessRuntimeSession(workspaceId, session, filter.actor));
     })
     : rows;
   return visible.map((row) => ({ id: String(row['id']), sessionId: String(row['session_id']), name: String(row['name']), kind: String(row['kind']), mimeType: String(row['mime_type']), sizeBytes: Number(row['size_bytes']), createdAt: String(row['created_at']) }));
@@ -353,7 +356,7 @@ export function runtimeDigest(value: unknown): string {
 
 /** Stop sessions for a terminal mission after artifacts have been persisted. */
 export async function cleanupMissionSessions(workspaceId: string, missionId: string, actor: string): Promise<number> {
-  const sessions = listComputerSessions(workspaceId, { missionId, limit: 200 }).filter((session) => ['starting', 'running'].includes(session.status));
+  const sessions = listComputerSessions(workspaceId, { missionId, limit: 200, actor, internal: true }).filter((session) => ['starting', 'running'].includes(session.status));
   let count = 0;
   for (const session of sessions) {
     try { await stopComputerSession({ workspaceId, sessionId: session.id, actor, reason: 'mission finalized', internal: true }); count += 1; } catch { /* one bad session must not block finalization */ }

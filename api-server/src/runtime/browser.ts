@@ -21,7 +21,7 @@ import net from 'node:net';
 import { startBrowserProxy, type BrowserProxyHandle } from './browser-proxy.js';
 import { financialIntent } from './financial.js';
 import { assertSafeOutboundUrl } from '../lib/safe-fetch.js';
-import { assertRuntimeSessionAccess } from './auth.js';
+import { assertRuntimeSessionAccess, canAccessRuntimeSession } from './auth.js';
 
 interface Pending { resolve: (value: unknown) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }
 interface Runner { child: ChildProcessWithoutNullStreams; pending: Map<string, Pending>; buffer: string; session: RuntimeSession; lastActionAt: number; provider: BrowserProvider; containerName?: string }
@@ -49,10 +49,10 @@ function proxyTestOptions(): { allowPrivateForTests: boolean; testAllowedHosts?:
   return { allowPrivateForTests: allow, ...(hosts.length ? { testAllowedHosts: new Set(hosts) } : {}) };
 }
 
-async function browserProxyFor(host: string, allowedClients?: net.BlockList, blockedClient?: string, cacheKey = host): Promise<BrowserProxyHandle> {
+async function browserProxyFor(host: string, allowedClients?: net.BlockList, blockedClient?: string, cacheKey = host, socketPath?: string): Promise<BrowserProxyHandle> {
   const existing = proxies.get(cacheKey);
   if (existing) return existing;
-  const proxy = await startBrowserProxy({ host, ...proxyTestOptions(), ...(allowedClients ? { allowedClients } : {}), ...(blockedClient ? { blockedClient } : {}) });
+  const proxy = await startBrowserProxy({ host, ...proxyTestOptions(), ...(allowedClients ? { allowedClients } : {}), ...(blockedClient ? { blockedClient } : {}), ...(socketPath ? { socketPath } : {}) });
   proxies.set(cacheKey, proxy);
   return proxy;
 }
@@ -167,11 +167,12 @@ export function getBrowserSession(workspaceId: string, sessionId: string): Runti
   return row ? rowToRuntimeSession(row) : null;
 }
 
-export function listBrowserSessions(workspaceId: string, missionId?: string): RuntimeSession[] {
+export function listBrowserSessions(workspaceId: string, missionId: string | undefined, actor: string, internal = false): RuntimeSession[] {
   const rows = missionId
     ? getOsDb().prepare("SELECT * FROM os_runtime_sessions WHERE workspace_id = ? AND mission_id = ? AND kind = 'browser' ORDER BY created_at DESC LIMIT 50").all(workspaceId, missionId)
     : getOsDb().prepare("SELECT * FROM os_runtime_sessions WHERE workspace_id = ? AND kind = 'browser' ORDER BY created_at DESC LIMIT 50").all(workspaceId);
-  return (rows as Array<Record<string, string | number | null>>).map(rowToRuntimeSession);
+  const sessions = (rows as Array<Record<string, string | number | null>>).map(rowToRuntimeSession);
+  return internal ? sessions : sessions.filter((session) => canAccessRuntimeSession(workspaceId, session, actor));
 }
 
 export async function createBrowserSession(input: { workspaceId: string; actor: string; missionId?: string; taskId?: string; ttlMinutes?: number }): Promise<RuntimeSession> {
@@ -197,12 +198,10 @@ export async function createBrowserSession(input: { workspaceId: string; actor: 
     let sandbox: 'chromium' | 'container' | 'none';
     if (availability.provider === 'docker') {
       const mode: BrowserSandboxMode = browserSandboxMode();
-      const network = await ensureBrowserNetwork();
-      const [subnetAddress, subnetBits] = network.subnet.split('/');
-      const allowedClients = new net.BlockList();
-      allowedClients.addSubnet(subnetAddress!, Number(subnetBits), 'ipv4');
-      proxyUrl = (await browserProxyFor(network.gateway, allowedClients, network.gateway, `${network.gateway}:${network.subnet}`)).url;
-      const started = startDockerBrowser({ session, sessionDir: dir, proxyUrl, mode });
+      await ensureBrowserNetwork();
+      const proxySocketPath = path.join(dir, 'browser-proxy.sock');
+      proxyUrl = (await browserProxyFor('127.0.0.1', undefined, undefined, `socket:${proxySocketPath}`, proxySocketPath)).url;
+      const started = startDockerBrowser({ session, sessionDir: dir, proxyUrl, proxySocketPath, mode });
       child = started.child;
       containerName = started.containerName;
       sandbox = mode;

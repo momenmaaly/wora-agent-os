@@ -6,7 +6,7 @@
     "node": ">=22.0.0"
   },
   "scripts": {
-    "build": "esbuild src/index.ts --bundle --platform=node --target=node22 --format=esm --packages=external --outfile=dist/index.mjs && esbuild src/scripts/seed.ts --bundle --platform=node --target=node22 --format=esm --packages=external --outfile=dist/seed.mjs && esbuild src/scripts/issue-session.ts --bundle --platform=node --target=node22 --format=esm --packages=external --outfile=dist/issue-session.mjs && esbuild src/scripts/os-worker.ts --bundle --platform=node --target=node22 --format=esm --packages=external --outfile=dist/os-worker.mjs && esbuild src/runtime/browser-runner.ts --bundle --platform=node --target=node22 --format=esm --packages=external --outfile=dist/browser-runner.mjs",
+    "build": "esbuild src/index.ts --bundle --platform=node --target=node22 --format=esm --packages=external --outfile=dist/index.mjs && esbuild src/scripts/seed.ts --bundle --platform=node --target=node22 --format=esm --packages=external --outfile=dist/seed.mjs && esbuild src/scripts/issue-session.ts --bundle --platform=node --target=node22 --format=esm --packages=external --outfile=dist/issue-session.mjs && esbuild src/scripts/os-worker.ts --bundle --platform=node --target=node22 --format=esm --packages=external --outfile=dist/os-worker.mjs && esbuild src/runtime/browser-runner.ts --bundle --platform=node --target=node22 --format=esm --packages=external --outfile=dist/browser-runner.mjs && esbuild src/scripts/init-keyring.ts --bundle --platform=node --target=node22 --format=esm --packages=external --outfile=dist/init-keyring.mjs",
     "typecheck": "tsc --noEmit",
     "start": "node dist/index.mjs",
     "seed:prod": "node dist/seed.mjs",

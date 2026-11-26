@@ -8,6 +8,7 @@
  * where user namespaces are unavailable.
  */
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { RuntimeSession } from './cloud.js';
@@ -105,6 +106,7 @@ export function startDockerBrowser(input: {
   session: RuntimeSession;
   sessionDir: string;
   proxyUrl: string;
+  proxySocketPath?: string;
   mode: BrowserSandboxMode;
 }): DockerBrowserStart {
   const containerName = browserContainerName(input.session.id);
@@ -122,6 +124,7 @@ export function startDockerBrowser(input: {
     '-e', `NODE_ENV=${process.env['NODE_ENV'] ?? 'production'}`,
     '-e', 'TMPDIR=/tmp',
     '-e', `WORA_BROWSER_PROXY_URL=${input.proxyUrl}`,
+    ...(input.proxySocketPath ? ['-e', `WORA_BROWSER_PROXY_SOCKET=/workspace/${path.basename(input.proxySocketPath)}`] : []),
     ...(process.env['NODE_ENV'] === 'test' && process.env['WORA_ALLOW_PRIVATE_OUTBOUND_FOR_TESTS'] === '1' ? [
       '-e', 'WORA_ALLOW_PRIVATE_OUTBOUND_FOR_TESTS=1',
       ...(process.env['WORA_TEST_ALLOWED_PORTS'] ? ['-e', `WORA_TEST_ALLOWED_PORTS=${process.env['WORA_TEST_ALLOWED_PORTS']}`] : []),

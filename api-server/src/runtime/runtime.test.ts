@@ -192,7 +192,7 @@ test('browser research writes a Markdown document and records both artifacts', a
   assert.ok(String(result['markdown']).length > 40);
   assert.ok(result['documentArtifactId']);
   assert.ok(result['screenshotArtifactId']);
-  const artifacts = listRuntimeArtifacts(WS, { sessionId: session.id });
+  const artifacts = listRuntimeArtifacts(WS, { sessionId: session.id, actor: 'test' });
   assert.equal(artifacts.length, 2);
   assert.ok(artifacts.some((entry) => entry.kind === 'screenshot' && entry.sizeBytes > 0));
   await closeBrowserSession({ workspaceId: WS, sessionId: session.id, actor: 'test' });
@@ -226,13 +226,13 @@ test('mission lifecycle resolves the browser agent, executes real tools and stop
   assert.deepEqual(tools, ['browser.open', 'browser.inspect', 'cloud.write_file', 'browser.screenshot', 'browser.close']);
   const screenshotTask = detail!.tasks.find((task) => task.tool === 'browser.screenshot');
   assert.equal(screenshotTask?.status, 'completed');
-  const artifacts = listRuntimeArtifacts(WS, { missionId });
+  const artifacts = listRuntimeArtifacts(WS, { missionId, actor: 'test' });
   assert.ok(artifacts.some((artifact) => artifact.kind === 'screenshot'));
   assert.ok(artifacts.some((artifact) => artifact.kind === 'markdown'));
-  const sessions = listBrowserSessions(WS, missionId);
+  const sessions = listBrowserSessions(WS, missionId, 'test');
   assert.ok(sessions.length >= 1);
   assert.ok(sessions.every((session) => session.status === 'stopped'));
-  const computerSessions = listComputerSessions(WS, { missionId });
+  const computerSessions = listComputerSessions(WS, { missionId, actor: 'test' });
   assert.equal(computerSessions.length, 0, 'browser sessions are not reported as cloud computers');
   assert.equal(getComputerSession(WS, sessions[0]!.id), null, 'computer lookup rejects a browser session');
 });
@@ -310,6 +310,10 @@ test('runtime ownership rejects another user across computer, browser, files and
   });
   assert.equal(adminTool.ok, true, String(adminTool.error));
   assert.ok(getRuntimeArtifact(ownershipWs, artifact.id, 'alice'));
+  assert.equal(listRuntimeArtifacts(ownershipWs, { sessionId: computer.id, actor: 'alice' }).length, 1);
+  assert.deepEqual(listRuntimeArtifacts(ownershipWs, { sessionId: computer.id, actor: 'bob' }), []);
+  assert.equal(listComputerSessions(ownershipWs, { actor: 'alice' }).some((session) => session.id === computer.id), true);
+  assert.equal(listComputerSessions(ownershipWs, { actor: 'bob' }).some((session) => session.id === computer.id), false);
 
   const legacyMission = createMission({ workspaceId: ownershipWs, objective: 'Legacy agent session ownership check', actor: 'alice' });
   const legacySession = await createComputerSession({ workspaceId: ownershipWs, actor: 'legacy-agent', missionId: legacyMission });
@@ -331,6 +335,8 @@ test('runtime ownership rejects another user across computer, browser, files and
   await assert.rejects(() => browserResearch(ownershipWs, browser.id, { url: docUrl }, 'bob'), /not accessible|forbidden/iu);
   await assert.rejects(() => closeBrowserSession({ workspaceId: ownershipWs, sessionId: browser.id, actor: 'bob' }), /not accessible|forbidden/iu);
   assert.ok(await browserInspect(ownershipWs, browser.id, 'adminuser'));
+  assert.equal(listBrowserSessions(ownershipWs, undefined, 'alice').some((session) => session.id === browser.id), true);
+  assert.equal(listBrowserSessions(ownershipWs, undefined, 'bob').some((session) => session.id === browser.id), false);
   await browserScreenshot(ownershipWs, browser.id, { name: 'alice.png' }, 'alice');
   await closeBrowserSession({ workspaceId: ownershipWs, sessionId: browser.id, actor: 'alice' });
   await stopComputerSession({ workspaceId: ownershipWs, sessionId: computer.id, actor: 'alice' });

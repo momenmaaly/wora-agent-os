@@ -48,6 +48,7 @@ services:
   # SQLite is single-writer. Keep exactly one API replica while os-data is a
   # SQLite volume. Scale out only after moving the OS store to PostgreSQL.
   api:
+    image: ${WORA_API_IMAGE:-wora-api:release}
     build:
       context: .
       dockerfile: api-server/Dockerfile
@@ -73,13 +74,34 @@ services:
       AI_REQUEST_TIMEOUT_MS: ${AI_REQUEST_TIMEOUT_MS:-90000}
       WORA_OS_DB: /app/data/wora-os.db
       WORA_WORKSPACE: /app/data/workspace
+      WORA_RUNTIME_ROOT: /app/data/runtime
+      WORA_CLOUD_PROVIDER: docker
+      WORA_BROWSER_PROVIDER: docker
+      WORA_CLOUD_IMAGE: ${WORA_CLOUD_IMAGE:-node:22-alpine}
+      WORA_BROWSER_IMAGE: ${WORA_BROWSER_IMAGE:-wora-browser-runtime:1.0.0}
+      WORA_BROWSER_SANDBOX: ${WORA_BROWSER_SANDBOX:-chromium}
+      WORA_SECRET_KEY_FILE: /app/data/.wora-secret-key
+      DOCKER_HOST: tcp://runtime-docker:2376
+      DOCKER_TLS_VERIFY: "1"
+      DOCKER_CERT_PATH: /certs/api
     volumes:
       - os-data:/app/data
+      - runtime-data:/app/data/runtime
+      - runtime-certs:/certs:ro
     depends_on:
       redis:
         condition: service_healthy
+      keyring-init:
+        condition: service_completed_successfully
+      runtime-docker:
+        condition: service_healthy
+      runtime-certs-init:
+        condition: service_completed_successfully
+      runtime-bootstrap:
+        condition: service_completed_successfully
     networks:
       - wora-net
+      - wora-runtime-net
     healthcheck:
       test:
         [
@@ -102,6 +124,129 @@ services:
         limits:
           cpus: "1.0"
           memory: 768M
+
+  # ── Dedicated isolated runtime daemon (DinD) ───────────────────────
+  # The API never receives the host Docker socket. It talks to this dedicated
+  # daemon over TLS. Cloud computers and browser containers live here.
+  runtime-docker:
+    image: docker:27-dind
+    restart: unless-stopped
+    privileged: true
+    environment:
+      DOCKER_TLS_CERTDIR: /certs
+    volumes:
+      - runtime-docker-data:/var/lib/docker
+      - runtime-certs:/certs
+      - runtime-data:/app/data/runtime
+    networks:
+      - wora-net
+      - wora-runtime-net
+    healthcheck:
+      test: ["CMD-SHELL", "docker info >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+
+  # One-shot: make the DinD client certificates readable by the non-root API
+  # user without making them world-readable.
+  runtime-certs-init:
+    image: alpine:3.20
+    restart: "no"
+    volumes:
+      - runtime-certs:/certs
+    depends_on:
+      runtime-docker:
+        condition: service_healthy
+    command:
+      - sh
+      - -ec
+      - |
+        mkdir -p /certs/api
+        cp -R /certs/client/. /certs/api/
+        chown -R 1000:1000 /certs/api
+        chmod 600 /certs/api/*.pem
+
+  # One-shot: build the pinned browser image inside the dedicated runtime daemon.
+  runtime-bootstrap:
+    image: ${WORA_API_IMAGE:-wora-api:release}
+    restart: "no"
+    environment:
+      DOCKER_HOST: tcp://runtime-docker:2376
+      DOCKER_TLS_VERIFY: "1"
+      DOCKER_CERT_PATH: /certs/api
+    volumes:
+      - runtime-certs:/certs:ro
+    networks:
+      - wora-runtime-net
+    depends_on:
+      runtime-docker:
+        condition: service_healthy
+      runtime-certs-init:
+        condition: service_completed_successfully
+    command:
+      - sh
+      - -ec
+      - |
+        mkdir -p /tmp/browser-context/dist /tmp/browser-context/node_modules
+        cp /app/dist/browser-runner.mjs /tmp/browser-context/dist/
+        cp -R /app/node_modules/playwright-core /tmp/browser-context/node_modules/
+        cp /app/browser-runtime.Dockerfile /tmp/browser-context/
+        docker pull "${WORA_CLOUD_IMAGE:-node:22-alpine}"
+        docker build -f /tmp/browser-context/browser-runtime.Dockerfile -t "${WORA_BROWSER_IMAGE:-wora-browser-runtime:1.0.0}" /tmp/browser-context
+
+  # One-shot: generate a 0600 keyring only when the volume has no key yet.
+  keyring-init:
+    image: ${WORA_API_IMAGE:-wora-api:release}
+    restart: "no"
+    environment:
+      WORA_SECRET_KEY_FILE: /app/data/.wora-secret-key
+    volumes:
+      - os-data:/app/data
+    command: ["node", "dist/init-keyring.mjs"]
+
+  # Durable mission worker. It shares the file-backed SQLite store and the
+  # runtime-data volume, but not the API listener.
+  os-worker:
+    image: ${WORA_API_IMAGE:-wora-api:release}
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      WORA_OS_DB: /app/data/wora-os.db
+      WORA_WORKSPACE: /app/data/workspace
+      WORA_RUNTIME_ROOT: /app/data/runtime
+      WORA_OS_WORKSPACE_ID: ${WORA_OS_WORKSPACE_ID:?WORA_OS_WORKSPACE_ID must be set in .env}
+      WORA_OS_WORKER_INTERVAL_MS: ${WORA_OS_WORKER_INTERVAL_MS:-15000}
+      WORA_CLOUD_PROVIDER: docker
+      WORA_BROWSER_PROVIDER: docker
+      WORA_CLOUD_IMAGE: ${WORA_CLOUD_IMAGE:-node:22-alpine}
+      WORA_BROWSER_IMAGE: ${WORA_BROWSER_IMAGE:-wora-browser-runtime:1.0.0}
+      WORA_SECRET_KEY_FILE: /app/data/.wora-secret-key
+      DOCKER_HOST: tcp://runtime-docker:2376
+      DOCKER_TLS_VERIFY: "1"
+      DOCKER_CERT_PATH: /certs/api
+    volumes:
+      - os-data:/app/data
+      - runtime-data:/app/data/runtime
+      - runtime-certs:/certs:ro
+    depends_on:
+      keyring-init:
+        condition: service_completed_successfully
+      runtime-docker:
+        condition: service_healthy
+      runtime-certs-init:
+        condition: service_completed_successfully
+      runtime-bootstrap:
+        condition: service_completed_successfully
+    networks:
+      - wora-net
+      - wora-runtime-net
 
   # ── Frontend Static Bundle (React + Vite served by Nginx) ──
   client:
@@ -175,7 +320,13 @@ services:
 volumes:
   redis-data:
   os-data:
+  runtime-data:
+  runtime-docker-data:
+  runtime-certs:
 
 networks:
   wora-net:
     driver: bridge
+  wora-runtime-net:
+    driver: bridge
+    internal: true

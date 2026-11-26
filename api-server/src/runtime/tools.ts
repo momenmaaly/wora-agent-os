@@ -70,7 +70,7 @@ async function ensureBrowser(ctx: ToolContext, explicit?: string): Promise<Runti
     if (session.status !== 'running') throw new Error(`Browser session is ${session.status}, not running`);
     return session;
   }
-  const existing = listBrowserSessions(ctx.workspaceId, ctx.missionId).find((session) => session.status === 'running');
+  const existing = listBrowserSessions(ctx.workspaceId, ctx.missionId, principal(ctx)).find((session) => session.status === 'running');
   if (existing) return existing;
   return createBrowserSession({ workspaceId: ctx.workspaceId, actor: principal(ctx), missionId: ctx.missionId, taskId: ctx.taskId });
 }
@@ -142,7 +142,7 @@ const listTool: ToolDefinition = {
   schema: listSchema, permission: 'runtime:read', risk: 'low', environment: 'host', timeoutMs: 10_000,
   async execute(input: z.infer<typeof listSchema>, ctx) {
     const session = await ensureRuntimeSession(ctx, input.sessionId);
-    return { sessionId: session.id, dir: input.dir ?? '.', entries: listSessionFiles(ctx.workspaceId, session.id, input.dir, principal(ctx)) };
+    return { sessionId: session.id, dir: input.dir ?? '.', entries: listSessionFiles(ctx.workspaceId, session.id, input.dir ?? '.', principal(ctx)) };
   },
 };
 
@@ -259,14 +259,13 @@ export const RUNTIME_TOOLS: ToolDefinition[] = [
   openTool, inspectTool, clickTool, typeTool, selectTool, scrollTool, waitTool, screenshotTool, researchTool, closeTool,
 ];
 
-export function runtimeSessionsForWorkspace(workspaceId: string, missionId?: string, actor?: string) {
-  const visible = (session: RuntimeSession): boolean => !actor || canAccessRuntimeSession(workspaceId, session, actor);
+export function runtimeSessionsForWorkspace(workspaceId: string, missionId: string | undefined, actor: string) {
   return {
-    computer: listComputerSessions(workspaceId, { missionId }).filter(visible).map(publicSession),
-    browser: listBrowserSessions(workspaceId, missionId).filter(visible).map(publicSession),
+    computer: listComputerSessions(workspaceId, { missionId, actor }).map(publicSession),
+    browser: listBrowserSessions(workspaceId, missionId, actor).map(publicSession),
   };
 }
 
-export function runtimeArtifactsForWorkspace(workspaceId: string, missionId?: string, actor?: string) {
-  return listRuntimeArtifacts(workspaceId, { missionId, ...(actor ? { actor } : {}) }).map((artifact) => ({ ...artifact, contentUrl: `/api/os/runtime/artifacts/${artifact.id}` }));
+export function runtimeArtifactsForWorkspace(workspaceId: string, missionId: string | undefined, actor: string) {
+  return listRuntimeArtifacts(workspaceId, { missionId, actor }).map((artifact) => ({ ...artifact, contentUrl: `/api/os/runtime/artifacts/${artifact.id}` }));
 }

@@ -701,7 +701,7 @@ export async function executeMission(missionId: string, actor = 'orchestrator', 
     const finalStatus = (db.prepare('SELECT status FROM os_missions WHERE id = ?').get(missionId) as { status?: string } | undefined)?.status;
     if (finalStatus && ['completed', 'failed', 'cancelled'].includes(finalStatus)) {
       await cleanupMissionSessions(mission.workspace_id, missionId, actor).catch(() => undefined);
-      for (const session of listBrowserSessions(mission.workspace_id, missionId)) {
+      for (const session of listBrowserSessions(mission.workspace_id, missionId, 'system', true)) {
         if (['starting', 'running'].includes(session.status)) await closeBrowserSession({ workspaceId: mission.workspace_id, sessionId: session.id, actor, reason: 'mission finalized', internal: true }).catch(() => undefined);
       }
     }

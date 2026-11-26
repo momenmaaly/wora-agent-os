@@ -7,6 +7,9 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, request as httpRequest, type Server } from 'node:http';
+import { mkdtempSync, rmSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import net from 'node:net';
 import { startBrowserProxy, resolveBrowserTarget, type BrowserProxyHandle } from './browser-proxy.js';
 
@@ -15,6 +18,9 @@ let targetPort = 0;
 let proxy: BrowserProxyHandle;
 let restrictedProxy: BrowserProxyHandle;
 let blockedClientProxy: BrowserProxyHandle;
+let socketProxy: BrowserProxyHandle;
+const socketDir = mkdtempSync(path.join(os.tmpdir(), 'wora-proxy-sock-'));
+const socketPath = path.join(socketDir, 'proxy.sock');
 
 before(async () => {
   target = createServer((req, res) => {
@@ -39,12 +45,15 @@ before(async () => {
   const allowed = new net.BlockList();
   allowed.addSubnet('10.0.0.0', 8, 'ipv4');
   blockedClientProxy = await startBrowserProxy({ allowPrivateForTests: true, allowedPorts: new Set([80, 443, targetPort]), allowedClients: allowed });
+  socketProxy = await startBrowserProxy({ socketPath, allowPrivateForTests: true, allowedPorts: new Set([80, 443, targetPort]) });
 });
 
 after(async () => {
   await proxy.close();
   await restrictedProxy.close();
   await blockedClientProxy.close();
+  await socketProxy.close();
+  rmSync(socketDir, { recursive: true, force: true });
   await new Promise<void>((resolve) => target.close(() => resolve()));
 });
 
@@ -151,4 +160,19 @@ test('CONNECT refuses private destinations and accepts an explicitly allowed tes
   assert.match(denied, /^HTTP\/1\.1 403/u);
   const allowed = await connectRequest('127.0.0.1', targetPort);
   assert.match(allowed, /^HTTP\/1\.1 200/u);
+});
+
+test('the isolated browser proxy works over a shared Unix socket', async () => {
+  const response = await new Promise<{ status: number; body: string }>((resolve, reject) => {
+    const request = httpRequest({ socketPath, method: 'GET', path: `http://127.0.0.1:${targetPort}/socket`, headers: { host: `127.0.0.1:${targetPort}` } }, (result) => {
+      let body = '';
+      result.setEncoding('utf8');
+      result.on('data', (chunk: string) => { body += chunk; });
+      result.on('end', () => resolve({ status: result.statusCode ?? 0, body }));
+    });
+    request.on('error', reject);
+    request.end();
+  });
+  assert.equal(response.status, 200);
+  assert.match(response.body, /real-target:\/socket/u);
 });

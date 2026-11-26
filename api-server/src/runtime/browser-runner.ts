@@ -10,6 +10,7 @@ import { chromium, type Browser, type BrowserContext, type Locator, type Page } 
 import { existsSync, mkdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
+import net from 'node:net';
 import { assertSafeOutboundUrl } from '../lib/safe-fetch.js';
 
 type Request = { id: string; action: string; params?: Record<string, unknown> };
@@ -29,6 +30,16 @@ function executablePath(): string | undefined {
     '/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/google-chrome', '/usr/bin/google-chrome-stable',
   ].filter((entry): entry is string => Boolean(entry));
   return candidates.find((candidate) => existsSync(candidate));
+}
+
+const proxyBridge = process.env['WORA_BROWSER_PROXY_SOCKET'];
+if (proxyBridge) {
+  net.createServer((client) => {
+    const upstream = net.connect(proxyBridge);
+    client.pipe(upstream).pipe(client);
+    client.on('error', () => upstream.destroy());
+    upstream.on('error', () => client.destroy());
+  }).listen(3128, '127.0.0.1');
 }
 
 async function ensureBrowser(): Promise<Page> {
