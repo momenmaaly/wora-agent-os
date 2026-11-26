@@ -158,7 +158,22 @@ refresh();
 `,
   'test/app.test.mjs': `import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { request } from 'node:http';
 import { createApp } from '../server.mjs';
+
+function call(url, options = {}) {
+  return new Promise((resolve, reject) => {
+    const req = request(url, { method: options.method ?? 'GET', headers: options.headers }, (res) => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk) => { body += chunk; });
+      res.on('end', () => resolve({ status: res.statusCode, body, json: () => JSON.parse(body), text: () => body }));
+    });
+    req.on('error', reject);
+    if (options.body) req.write(options.body);
+    req.end();
+  });
+}
 
 test('serves the shell and a real task API end to end', async () => {
   const app = createApp([]);
@@ -166,20 +181,20 @@ test('serves the shell and a real task API end to end', async () => {
   const port = app.address().port;
   const base = 'http://127.0.0.1:' + port;
 
-  const html = await fetch(base + '/');
+  const html = await call(base + '/');
   assert.equal(html.status, 200);
-  assert.match(await html.text(), /WORA Built Board/);
+  assert.match(html.text(), /WORA Built Board/);
 
-  const list = await fetch(base + '/api/tasks');
-  assert.deepEqual(await list.json(), []);
+  const list = await call(base + '/api/tasks');
+  assert.deepEqual(list.json(), []);
 
-  const created = await fetch(base + '/api/tasks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title: 'Ship it' }) });
+  const created = await call(base + '/api/tasks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title: 'Ship it' }) });
   assert.equal(created.status, 201);
-  const task = await created.json();
+  const task = created.json();
   assert.equal(task.stage, 'todo');
 
-  const moved = await fetch(base + '/api/tasks/' + task.id, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ stage: 'doing' }) });
-  assert.equal((await moved.json()).stage, 'doing');
+  const moved = await call(base + '/api/tasks/' + task.id, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ stage: 'doing' }) });
+  assert.equal(moved.json().stage, 'doing');
 
   app.close();
 });
@@ -282,9 +297,15 @@ export const hostExecTool: ToolDefinition = {
       '--permission',
       `--allow-fs-read=${workspaceRoot}`,
       `--allow-fs-write=${workspaceRoot}`,
-      '--test', '--test-isolation=none', ...args.slice(1),
+      // Node 22 reserves a large Wasm address space for undici's HTTP parser;
+      // the trap-handler variant exceeds the 2 GB resource cap.
+      '--disable-wasm-trap-handler',
+      // Node 22 only exposes the experimental spelling; Node 24 accepts both.
+      '--test', '--experimental-test-isolation=none', ...args.slice(1),
     ];
-    const launch = resourceLimitedCommand(process.execPath, nodeArgs);
+    // Node 22 reserves a ~4 GB V8 pointer-compression cage; 2 GB makes the
+    // test process fail intermittently under parallel CI load.
+    const launch = resourceLimitedCommand(process.execPath, nodeArgs, { addressSpaceBytes: 6 * 1024 * 1024 * 1024 });
     const { stdout, stderr } = await execFileAsync(launch.command, launch.args, {
       cwd,
       timeout: 30_000,
