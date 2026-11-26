@@ -44,10 +44,14 @@ export function isolationStatus(): IsolationStatus {
   };
 }
 
-export function resourceLimitedCommand(command: string, args: string[]): { command: string; args: string[]; isolation: IsolationStatus } {
+export function resourceLimitedCommand(
+  command: string,
+  args: string[],
+  overrides: { addressSpaceBytes?: number } = {},
+): { command: string; args: string[]; isolation: IsolationStatus } {
   const status = isolationStatus();
   if (status.mode !== 'resource-limits' || !PRLIMIT) return { command, args, isolation: status };
-  const limits = status.limits;
+  const limits: Record<string, number> = { ...status.limits, ...overrides };
   return {
     command: PRLIMIT,
     args: [
@@ -60,6 +64,6 @@ export function resourceLimitedCommand(command: string, args: string[]): { comma
       command,
       ...args,
     ],
-    isolation: status,
+    isolation: { ...status, limits },
   };
 }

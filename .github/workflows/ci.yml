@@ -43,8 +43,10 @@ jobs:
           cache: npm
           cache-dependency-path: client/package-lock.json
       - run: npm ci
+      - run: npm ci
+        working-directory: api-server
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
-      # Browser E2E requires a Chromium binary. It is intentionally not
-      # installed here; run `npm run test:e2e` on a host with Chromium.
+      # The browser journeys start the real API server, so the client job
+      # installs api-server dependencies. They skip only when Chromium is absent.
