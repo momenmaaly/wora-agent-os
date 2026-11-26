@@ -4,7 +4,7 @@
  * t() reads nested keys with dot notation: t('nav.home').
  */
 import { createContext, useContext, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
-import { ar, en, type Dictionary, type Language } from './dictionaries.js';
+import { ar, en, directionFor, type Dictionary, type Language } from './dictionaries.js';
 
 const STORAGE_KEY = 'wora:lang';
 
@@ -31,7 +31,7 @@ export function LanguageProvider({ children }: { children: ReactNode }) {
   const [lang, setLangState] = useState<Language>(() => {
     try { return (localStorage.getItem(STORAGE_KEY) as Language) === 'en' ? 'en' : 'ar'; } catch { return 'ar'; }
   });
-  const dir: 'rtl' | 'ltr' = lang === 'ar' ? 'rtl' : 'ltr';
+  const dir: 'rtl' | 'ltr' = directionFor(lang);
 
   useEffect(() => {
     const root = document.documentElement;

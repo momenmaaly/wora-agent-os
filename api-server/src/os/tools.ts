@@ -7,15 +7,23 @@
  * the outside world ONLY through this registry. Results are structured;
  * errors are normalized; every execution is auditable.
  */
+import { repairRepository } from './code-repair.js';
 import { z } from 'zod';
 import os from 'node:os';
 import path from 'node:path';
-import { mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { getOsDb, audit, newId, nowIso } from './db.js';
-import { resolveInWorkspace, workspacePath } from './workspace.js';
+import { openWorkspaceFile, resolveInWorkspace, workspacePath } from './workspace.js';
+import { safeFetch } from '../lib/safe-fetch.js';
 import { solveAssignment, solveEmployeeSchedule, solveLp } from './ortools.js';
+import { PROBLEM_KINDS, selectAlgorithm, algorithmSelectionInputSchema } from './algorithms.js';
+import { classifyAction } from './actions.js';
+import { understandProblem } from './problem.js';
+import { selectScientificMethod } from './science.js';
+import { getApproval, consumeApproval, payloadDigest, actionScope, isApprovalExpired } from './governance.js';
+import type { SemanticContract } from './semantic-contracts.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -25,8 +33,23 @@ export interface ToolContext {
   workspaceId: string;
   actor: string;
   permissions: Set<string>;
+  /** When present, the tool must be explicitly enabled for the executing agent. */
+  toolAllowlist?: ReadonlySet<string>;
+  /** Aborted by runTool on timeout; plugin and network tools must honor it. */
+  signal?: AbortSignal;
   missionId?: string;
   taskId?: string;
+  /** The orchestrator's classification for this action; class C always needs a consumed approval. */
+  actionClass?: 'A' | 'B' | 'C';
+  /** Set only after a class C approval was consumed by the orchestrator. */
+  approvedAction?: { approvalId: string; payloadDigest: string; scope: string };
+  correlationId?: string;
+  /** Untrusted, approved skill knowledge selected for this task. Never authority. */
+  skillContext?: {
+    digest: string; tokensUsed: number; tokenBudget: number;
+    governance: string; text: string; policy: Record<string, unknown>;
+    selected: Array<{ key: string; version: string; instructionDigest: string; scope: string; scopeId: string; score: number }>;
+  };
 }
 
 export interface ToolDefinition {
@@ -36,9 +59,17 @@ export interface ToolDefinition {
   inputSchema: Record<string, unknown>;
   schema: z.ZodTypeAny;
   permission: string | null;
+  /** Additional permissions a plugin tool requires; all of them must be held. */
+  permissions?: string[];
   risk: ToolRisk;
   environment: 'host';
+  source?: 'core' | 'plugin';
+  pluginId?: string;
   timeoutMs: number;
+  /** True only when repeating the tool after an uncertain interruption is safe. */
+  idempotent?: boolean;
+  /** Machine-readable meaning/units/side effects used for semantic fallback checks. */
+  semanticContract?: SemanticContract;
   // `any` because tools are stored heterogeneously; runTool validates via `schema` before invoking.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   execute(input: any, ctx: ToolContext): unknown | Promise<unknown>;
@@ -48,6 +79,7 @@ export interface ToolResult {
   ok: boolean;
   output?: unknown;
   error?: string;
+  code?: string;
   durationMs: number;
   tool: string;
 }
@@ -143,11 +175,12 @@ const workspaceReadTool: ToolDefinition = {
   environment: 'host',
   timeoutMs: 5_000,
   execute(input: z.infer<typeof workspaceReadSchema>, ctx) {
-    const target = resolveInWorkspace(ctx.workspaceId, input.path);
     const cap = input.maxBytes ?? 200_000;
-    const raw = readFileSync(target);
+    const opened = openWorkspaceFile(ctx.workspaceId, input.path, 'read');
+    let raw: Buffer;
+    try { raw = readFileSync(opened.fd); } finally { closeSync(opened.fd); }
     const truncated = raw.byteLength > cap;
-    return { path: path.relative(workspacePath(ctx.workspaceId), target), bytes: raw.byteLength, truncated, content: raw.subarray(0, cap).toString('utf8') };
+    return { path: path.relative(workspacePath(ctx.workspaceId), opened.path), bytes: raw.byteLength, truncated, content: raw.subarray(0, cap).toString('utf8') };
   },
 };
 
@@ -529,14 +562,8 @@ const fetchReadTool: ToolDefinition = {
   environment: 'host',
   timeoutMs: 12_000,
   async execute(input: z.infer<typeof fetchReadSchema>) {
-    if (!/^https?:\/\//i.test(input.url)) throw new Error('Only http(s) URLs are allowed');
-    const response = await fetch(input.url, {
-      redirect: 'follow',
-      signal: AbortSignal.timeout(8_000),
-      headers: { 'user-agent': 'WORA-OS/1.0 (+authorized-research)', accept: 'text/html,text/plain,application/json' },
-    });
-    const bytes = await response.arrayBuffer();
-    const text = Buffer.from(bytes).toString('utf8').slice(0, 512_000);
+    const response = await safeFetch(input.url, { timeoutMs: 8_000, maxBytes: 512 * 1024 });
+    const text = response.body.toString('utf8');
     const title = /<title[^>]*>([^<]*)<\/title>/i.exec(text)?.[1]?.trim() ?? null;
     const stripped = text
       .replace(/<script[\s\S]*?<\/script>/gi, ' ')
@@ -674,8 +701,203 @@ const agentsCreateTool: ToolDefinition = {
   },
 };
 
+/* ─── meta.select_algorithm ────────────────────────────── */
+const algorithmSelectSchema = algorithmSelectionInputSchema;
+
+const algorithmSelectTool: ToolDefinition = {
+  id: 'meta.select_algorithm',
+  name: 'Algorithm Selection',
+  description: 'Selects an implemented WORA algorithm from an explicit problem kind, structured features or objective text. Returns required inputs, verification checks, limitations and alternatives; it never invents an unsupported solver.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      objective: { type: 'string', maxLength: 4000 },
+      kind: { enum: PROBLEM_KINDS },
+      features: { type: 'object' },
+    },
+    additionalProperties: false,
+  },
+  schema: algorithmSelectSchema,
+  permission: null,
+  risk: 'low',
+  environment: 'host',
+  timeoutMs: 5_000,
+  execute(input: z.infer<typeof algorithmSelectSchema>) {
+    return selectAlgorithm(input);
+  },
+};
+
+/* ─── meta.select_scientific_method ────────────────────── */
+const scientificSelectTool: ToolDefinition = {
+  id: 'meta.select_scientific_method',
+  name: 'Scientific Method Selection',
+  description: 'Selects an implemented scientific method from structured problem features, explains the domain, assumptions, rejected alternatives and gaps. It never claims an unimplemented method is executable.',
+  inputSchema: {
+    type: 'object',
+    properties: { objective: { type: 'string' }, kind: { enum: PROBLEM_KINDS }, features: { type: 'object' } },
+    additionalProperties: false,
+  },
+  schema: algorithmSelectionInputSchema,
+  permission: null,
+  risk: 'low',
+  environment: 'host',
+  timeoutMs: 5_000,
+  execute(input: z.infer<typeof algorithmSelectionInputSchema>) {
+    return selectScientificMethod(input);
+  },
+};
+
+/* ─── meta.classify_action ─────────────────────────────── */
+const actionClassifySchema = z.object({
+  action: z.string().trim().min(1).max(500),
+  risk: z.enum(['low', 'medium', 'high']),
+  reversible: z.boolean().optional(),
+  externalCommitment: z.boolean().optional(),
+  spendsMoney: z.boolean().optional(),
+  amountUsd: z.number().finite().min(0).max(100_000_000).optional(),
+  sensitiveData: z.boolean().optional(),
+  scope: z.string().trim().min(1).max(200).optional(),
+  expiresAt: z.string().datetime({ offset: true }).optional(),
+}).strict();
+
+const problemUnderstandSchema = z.object({
+  objective: z.string().trim().min(1).max(4000),
+  track: z.string().trim().min(1).max(40).optional(),
+}).strict();
+
+const problemUnderstandTool: ToolDefinition = {
+  id: 'meta.understand_problem',
+  name: 'Structured Problem Understanding',
+  description: 'Extracts explicit constraints, dependencies, resources, uncertainty, success criteria and algorithm features from an objective. Deterministic rules only; it does not claim semantic understanding.',
+  inputSchema: {
+    type: 'object',
+    properties: { objective: { type: 'string' }, track: { type: 'string' } },
+    required: ['objective'],
+    additionalProperties: false,
+  },
+  schema: problemUnderstandSchema,
+  permission: null,
+  risk: 'low',
+  environment: 'host',
+  timeoutMs: 5_000,
+  execute(input: z.infer<typeof problemUnderstandSchema>) {
+    return understandProblem(input);
+  },
+};
+
+const actionClassifyTool: ToolDefinition = {
+  id: 'meta.classify_action',
+  name: 'Action Classification',
+  description: 'Classifies a proposed action as A (safe automatic), B (controlled policy check) or C (explicit payload-bound approval). It does not grant authority or execute the action.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      action: { type: 'string' }, risk: { enum: ['low', 'medium', 'high'] },
+      reversible: { type: 'boolean' }, externalCommitment: { type: 'boolean' }, spendsMoney: { type: 'boolean' },
+      amountUsd: { type: 'number' }, sensitiveData: { type: 'boolean' }, scope: { type: 'string' }, expiresAt: { type: 'string' },
+    },
+    required: ['action', 'risk'],
+    additionalProperties: false,
+  },
+  schema: actionClassifySchema,
+  permission: null,
+  risk: 'low',
+  environment: 'host',
+  timeoutMs: 5_000,
+  execute(input: z.infer<typeof actionClassifySchema>) {
+    return classifyAction(input);
+  },
+};
+
+
+/* ─── code.repair ──────────────────────────────────────── */
+const codeRepairSchema = z.object({
+  repoPath: z.string().min(1).max(500),
+  defect: z.string().min(1).max(4_000),
+  patch: z.string().min(1).max(256_000),
+  testPath: z.string().min(1).max(500),
+  regressionPath: z.string().min(1).max(500).optional(),
+}).strict();
+
+const codeRepairTool: ToolDefinition = {
+  id: 'code.repair',
+  name: 'Repair Repository Defect',
+  description: 'Copies a workspace repository to a temporary directory, reproduces a failing Node test, applies a bounded unified diff, runs targeted and regression tests, verifies the diff, and never edits the source repository.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      repoPath: { type: 'string' }, defect: { type: 'string' }, patch: { type: 'string' },
+      testPath: { type: 'string' }, regressionPath: { type: 'string' },
+    },
+    required: ['repoPath', 'defect', 'patch', 'testPath'], additionalProperties: false,
+  },
+  schema: codeRepairSchema,
+  permission: 'workspace:write',
+  risk: 'medium',
+  environment: 'host',
+  timeoutMs: 120_000,
+  execute(input: z.infer<typeof codeRepairSchema>, ctx) {
+    return repairRepository({ workspaceId: ctx.workspaceId, actor: ctx.actor, ...input });
+  },
+};
+
 /* ─── Registry ─────────────────────────────────────────── */
 import { scaffoldWebappTool, hostExecTool } from './scaffold.js';
+import { incrementMetric, observeDuration } from '../lib/observability.js';
+
+/* ─── Plugin tool provider (extensions) ────────────────── */
+export interface PluginToolDefinition {
+  id: string;
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+  permissions: string[];
+  risk: ToolRisk;
+  timeoutMs: number;
+  idempotent?: boolean;
+  semanticContract?: SemanticContract;
+  pluginId: string;
+}
+
+type PluginToolLister = (workspaceId: string) => PluginToolDefinition[];
+type PluginToolRunner = (workspaceId: string, toolId: string, input: unknown, ctx: ToolContext) => Promise<unknown>;
+
+let pluginToolLister: PluginToolLister | null = null;
+let pluginToolRunner: PluginToolRunner | null = null;
+
+/** Wired once at boot by the extensions module; keeps this registry free of plugin imports. */
+export function registerPluginToolProvider(lister: PluginToolLister, runner: PluginToolRunner): void {
+  pluginToolLister = lister;
+  pluginToolRunner = runner;
+}
+
+function pluginTools(workspaceId: string | undefined): PluginToolDefinition[] {
+  if (!workspaceId || !pluginToolLister) return [];
+  try { return pluginToolLister(workspaceId); } catch { return []; }
+}
+
+function pluginToolAsDefinition(tool: PluginToolDefinition): ToolDefinition {
+  return {
+    id: tool.id,
+    name: tool.name,
+    description: tool.description,
+    inputSchema: tool.inputSchema,
+    schema: z.unknown(),
+    permission: null,
+    permissions: tool.permissions,
+    risk: tool.risk,
+    environment: 'host',
+    timeoutMs: tool.timeoutMs,
+    idempotent: tool.idempotent === true,
+    semanticContract: tool.semanticContract,
+    source: 'plugin',
+    pluginId: tool.pluginId,
+    async execute(input, ctx) {
+      if (!pluginToolRunner) throw new Error(`No plugin runtime is registered for ${tool.id}`);
+      return pluginToolRunner(ctx.workspaceId, tool.id, input, ctx);
+    },
+  };
+}
 
 const ALL_TOOLS: ToolDefinition[] = [
   diagnosticsTool,
@@ -693,46 +915,126 @@ const ALL_TOOLS: ToolDefinition[] = [
   securityScanTool,
   scaffoldWebappTool,
   hostExecTool,
+  codeRepairTool,
   orgBuildTool,
   agentsCreateTool,
+  algorithmSelectTool,
+  scientificSelectTool,
+  problemUnderstandTool,
+  actionClassifyTool,
 ];
 
 const toolMap = new Map(ALL_TOOLS.map((tool) => [tool.id, tool]));
 
-export function listTools() {
-  return ALL_TOOLS.map(({ id, name, description, inputSchema, permission, risk, environment, timeoutMs }) =>
-    ({ id, name, description, inputSchema, permission, risk, environment, timeoutMs }));
+/** Tools with no external side effect may be safely retried after a crash. */
+const IDEMPOTENT_TOOL_IDS = new Set([
+  'system.diagnostics', 'fs.workspace_list', 'fs.workspace_read',
+  'or.assignment', 'or.employee_schedule', 'or.solve_lp', 'sim.monte_carlo',
+  'stats.describe', 'forecast.linear', 'decision.weighted_matrix', 'text.extract_summary',
+  'web.fetch_read', 'security.scan', 'meta.select_algorithm', 'meta.select_scientific_method',
+  'meta.understand_problem', 'meta.classify_action',
+]);
+
+export function isIdempotentTool(id: string | null, workspaceId?: string): boolean {
+  if (!id) return true;
+  if (toolMap.has(id)) return IDEMPOTENT_TOOL_IDS.has(id);
+  const plugin = workspaceId ? pluginTools(workspaceId).find((tool) => tool.id === id) : null;
+  return plugin?.idempotent === true;
 }
 
-export function getTool(id: string): ToolDefinition | null {
-  return toolMap.get(id) ?? null;
+export function listTools(workspaceId?: string) {
+  const core = ALL_TOOLS.map(({ id, name, description, inputSchema, permission, risk, environment, timeoutMs }) =>
+    ({ id, name, description, inputSchema, permission, risk, environment, timeoutMs, source: 'core' as const, pluginId: null }));
+  const plugins = pluginTools(workspaceId).map(({ id, name, description, inputSchema, permissions, risk, timeoutMs, pluginId }) =>
+    ({ id, name, description, inputSchema, permission: null, permissions, risk, environment: 'host' as const, timeoutMs, source: 'plugin' as const, pluginId }));
+  return [...core, ...plugins];
+}
+
+export function getTool(id: string, workspaceId?: string): ToolDefinition | null {
+  const core = toolMap.get(id);
+  if (core) return core;
+  const plugin = pluginTools(workspaceId).find((tool) => tool.id === id);
+  return plugin ? pluginToolAsDefinition(plugin) : null;
 }
 
 /** Execute a tool with zod validation, permission check, timeout and audit. */
 export async function runTool(id: string, rawInput: unknown, ctx: ToolContext): Promise<ToolResult> {
   const started = Date.now();
-  const tool = toolMap.get(id);
+  const tool = getTool(id, ctx.workspaceId);
   if (!tool) return { ok: false, tool: id, error: `Unknown tool "${id}"`, durationMs: 0 };
+  if (ctx.toolAllowlist && !ctx.toolAllowlist.has(id)) {
+    incrementMetric('wora_tool_denied_total', { tool: id, reason: 'not_enabled_for_agent' });
+    audit(getOsDb(), { workspaceId: ctx.workspaceId, actor: ctx.actor, action: 'tool.denied', subject: id, detail: { reason: 'not_enabled_for_agent', missionId: ctx.missionId ?? null, taskId: ctx.taskId ?? null, correlationId: ctx.correlationId ?? null } });
+    return { ok: false, tool: id, error: `Tool "${id}" is not enabled for this agent`, durationMs: Date.now() - started };
+  }
   if (tool.permission && !ctx.permissions.has(tool.permission) && !ctx.permissions.has('*')) {
     return { ok: false, tool: id, error: `Permission "${tool.permission}" is required for ${id}`, durationMs: Date.now() - started };
+  }
+  const missing = (tool.permissions ?? []).filter((permission) => !ctx.permissions.has(permission) && !ctx.permissions.has('*'));
+  if (missing.length) {
+    incrementMetric('wora_tool_denied_total', { tool: id, reason: 'missing_permission' });
+    audit(getOsDb(), { workspaceId: ctx.workspaceId, actor: ctx.actor, action: 'tool.denied', subject: id, detail: { missing, correlationId: ctx.correlationId ?? null } });
+    return { ok: false, tool: id, error: `Missing permission(s) for ${id}: ${missing.join(', ')}`, durationMs: Date.now() - started };
   }
   const parsed = tool.schema.safeParse(rawInput ?? {});
   if (!parsed.success) {
     return { ok: false, tool: id, error: `Invalid input for ${id}: ${parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')}`, durationMs: Date.now() - started };
   }
+  if (tool.risk === 'high' || ctx.actionClass === 'C') {
+    const approved = ctx.approvedAction;
+    const expectedScope = actionScope(ctx.missionId, ctx.taskId, id);
+    const approval = approved?.approvalId ? getApproval(ctx.workspaceId, approved.approvalId) : null;
+    const valid = Boolean(
+      approved &&
+      approval &&
+      approval.status === 'approved' &&
+      !approval.consumedAt &&
+      approval.actionClass === 'C' &&
+      approval.toolId === id &&
+      approval.scope === expectedScope &&
+      approval.payloadDigest === payloadDigest(rawInput ?? {}) &&
+      (!ctx.missionId || approval.missionId === ctx.missionId) &&
+      (!ctx.taskId || approval.taskId === ctx.taskId) &&
+      !isApprovalExpired(approval.expiresAt),
+    );
+    if (!valid) {
+      audit(getOsDb(), { workspaceId: ctx.workspaceId, actor: ctx.actor, action: 'tool.denied', subject: id, detail: { reason: 'approval_required_or_invalid', missionId: ctx.missionId ?? null, taskId: ctx.taskId ?? null } });
+      return { ok: false, tool: id, error: 'This action requires a valid, payload-bound approval', code: 'APPROVAL_REQUIRED', durationMs: Date.now() - started };
+    }
+    try {
+      consumeApproval(ctx.workspaceId, approval!.id, {
+        payload: rawInput ?? {}, scope: expectedScope, actionClass: 'C', actor: ctx.actor,
+        missionId: ctx.missionId ?? null, taskId: ctx.taskId ?? null,
+      });
+    } catch (err) {
+      audit(getOsDb(), { workspaceId: ctx.workspaceId, actor: ctx.actor, action: 'tool.denied', subject: id, detail: { reason: 'approval_consume_failed', error: err instanceof Error ? err.message : String(err), missionId: ctx.missionId ?? null, taskId: ctx.taskId ?? null } });
+      return { ok: false, tool: id, error: 'This action requires a valid, payload-bound approval', code: 'APPROVAL_REQUIRED', durationMs: Date.now() - started };
+    }
+  }
   let timer: NodeJS.Timeout | undefined;
+  const controller = new AbortController();
+  const executionCtx: ToolContext = { ...ctx, signal: controller.signal };
   try {
     const output = await Promise.race([
-      Promise.resolve(tool.execute(parsed.data, ctx)),
-      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`Tool ${id} timed out after ${tool.timeoutMs}ms`)), tool.timeoutMs); }),
+      Promise.resolve(tool.execute(parsed.data, executionCtx)),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          controller.abort();
+          reject(new Error(`Tool ${id} timed out after ${tool.timeoutMs}ms`));
+        }, tool.timeoutMs);
+      }),
     ]);
     const durationMs = Date.now() - started;
-    audit(getOsDb(), { workspaceId: ctx.workspaceId, actor: ctx.actor, action: 'tool.execute', subject: id, detail: { ok: true, durationMs, missionId: ctx.missionId ?? null, taskId: ctx.taskId ?? null } });
+    incrementMetric('wora_tool_executions_total', { tool: id, outcome: 'ok' });
+    observeDuration('wora_tool_duration_ms', durationMs, { tool: id });
+    audit(getOsDb(), { workspaceId: ctx.workspaceId, actor: ctx.actor, action: 'tool.execute', subject: id, detail: { ok: true, durationMs, missionId: ctx.missionId ?? null, taskId: ctx.taskId ?? null, correlationId: ctx.correlationId ?? null } });
     return { ok: true, output, tool: id, durationMs };
   } catch (err) {
     const durationMs = Date.now() - started;
     const message = err instanceof Error ? err.message : String(err);
-    audit(getOsDb(), { workspaceId: ctx.workspaceId, actor: ctx.actor, action: 'tool.execute', subject: id, detail: { ok: false, error: message.slice(0, 500), durationMs, missionId: ctx.missionId ?? null, taskId: ctx.taskId ?? null } });
+    incrementMetric('wora_tool_executions_total', { tool: id, outcome: 'error' });
+    observeDuration('wora_tool_duration_ms', durationMs, { tool: id });
+    audit(getOsDb(), { workspaceId: ctx.workspaceId, actor: ctx.actor, action: 'tool.execute', subject: id, detail: { ok: false, error: message.slice(0, 500), durationMs, missionId: ctx.missionId ?? null, taskId: ctx.taskId ?? null, correlationId: ctx.correlationId ?? null } });
     return { ok: false, tool: id, error: message, durationMs };
   } finally {
     if (timer) clearTimeout(timer);

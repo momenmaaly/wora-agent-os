@@ -8,6 +8,7 @@ declare module 'three/examples/fonts/helvetiker_bold.typeface.json' {
 
 interface ImportMetaEnv {
   readonly VITE_API_URL?: string;
+  readonly VITE_OS_API?: string;
   readonly VITE_SOCKET_URL?: string;
 }
 

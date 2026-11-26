@@ -1,7 +1,7 @@
 import { lazy, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { CircleHelp } from 'lucide-react';
 import { CompanyHeader } from './components/CompanyHeader.js';
-import { CommandCenter } from './components/CommandCenter.js';
+import { TechnicalWorkspace } from './components/TechnicalWorkspace.js';
 import { OrganizationsPage } from './components/OrganizationsPage.js';
 import { WorkspacesPage } from './components/WorkspacesPage.js';
 import { CompanySidebar } from './components/CompanySidebar.js';
@@ -32,11 +32,20 @@ const Projects = lazy(() => import('./components/ProjectOSBoard.js').then((modul
 const Agents = lazy(() => import('./components/AgentRegistry.js').then((module) => ({ default: module.AgentRegistry })));
 const Execution = lazy(() => import('./components/ExecutionCenter.js').then((module) => ({ default: module.ExecutionCenter })));
 const Intelligence = lazy(() => import('./components/IntelligenceHub.js').then((module) => ({ default: module.IntelligenceHub })));
+const Extensions = lazy(() => import('./components/ExtensionsHub.js').then((module) => ({ default: module.ExtensionsHub })));
 const SystemConsole = lazy(() => import('./components/SystemConsole.js').then((module) => ({ default: module.SystemConsole })));
 const Studio = lazy(() => import('./components/ProductStudio.js').then((module) => ({ default: module.ProductStudio })));
 const Models = lazy(() => import('./components/ModelHub.js').then((module) => ({ default: module.ModelHub })));
 const Integrations = lazy(() => import('./components/IntegrationsHub.js').then((module) => ({ default: module.IntegrationsHub })));
 const Pricing = lazy(() => import('./components/PricingPlans.js').then((module) => ({ default: module.PricingPlans })));
+const Workflows = lazy(() => import('./components/WorkflowsPage.js').then((module) => ({ default: module.WorkflowsPage })));
+const TerminalLog = lazy(() => import('./components/TerminalPage.js').then((module) => ({ default: module.TerminalPage })));
+const Artifacts = lazy(() => import('./components/ArtifactsPage.js').then((module) => ({ default: module.ArtifactsPage })));
+const Knowledge = lazy(() => import('./components/KnowledgePage.js').then((module) => ({ default: module.KnowledgePage })));
+const Approvals = lazy(() => import('./components/ApprovalsPage.js').then((module) => ({ default: module.ApprovalsPage })));
+const ActivityLog = lazy(() => import('./components/ActivityPage.js').then((module) => ({ default: module.ActivityPage })));
+const HistoryLog = lazy(() => import('./components/HistoryPage.js').then((module) => ({ default: module.HistoryPage })));
+const Security = lazy(() => import('./components/SecurityPage.js').then((module) => ({ default: module.SecurityPage })));
 
 function Runtime({ initialRoomId }: { initialRoomId: string | null }) {
   useOfficeSimulation(initialRoomId);
@@ -90,12 +99,12 @@ export default function App() {
         await osApi.launchMission(brief);
         try { sessionStorage.removeItem('wora:os:launchError'); } catch { /* ignore */ }
       } catch (err) {
-        try { sessionStorage.setItem('wora:os:launchError', err instanceof Error ? err.message : 'تعذر إطلاق المهمة.'); } catch { /* ignore */ }
+        try { sessionStorage.setItem('wora:os:launchError', err instanceof Error ? err.message : t('workspace.launchError')); } catch { /* ignore */ }
       } finally {
         navigateHash('#execution');
       }
     })();
-  }, [navigateHash]);
+  }, [navigateHash, t]);
   const toPricing = useCallback(() => navigate('pricing'), [navigate]);
   const toProjects = useCallback(() => navigate('projects'), [navigate]);
   const toStudio = useCallback(() => navigate('studio'), [navigate]);
@@ -152,14 +161,23 @@ export default function App() {
       <main id="main-content" className="app-scroll hq-scroll" tabIndex={-1} ref={main}>
         {page !== 'director' && <div className={`page-frame page-${page}`} key={page}>
           <WorkspacePage>
-            {page === 'home' && <CommandCenter onNavigate={navigate} />}
+            {page === 'home' && <TechnicalWorkspace onNavigate={navigate} />}
             {page === 'campus' && <Campus roomId={roomId} tourIndex={tourIndex} onVisit={visit} onAssign={assign} onDirector={toDirector} />}
             {page === 'organizations' && <OrganizationsPage onNavigate={navigate} />}
             {page === 'workspaces' && <WorkspacesPage onNavigate={navigate} />}
             {page === 'projects' && <Projects onUpgrade={toPricing} onIntegrations={toIntegrations} />}
             {page === 'agents' && <Agents />}
             {page === 'execution' && <Execution />}
+            {page === 'workflows' && <Workflows onNavigate={navigate} />}
+            {page === 'terminal' && <TerminalLog onNavigate={navigate} />}
+            {page === 'artifacts' && <Artifacts onNavigate={navigate} />}
+            {page === 'knowledge' && <Knowledge onNavigate={navigate} />}
+            {page === 'approvals' && <Approvals onNavigate={navigate} />}
+            {page === 'activity' && <ActivityLog />}
+            {page === 'history' && <HistoryLog onNavigate={navigate} />}
+            {page === 'security' && <Security onNavigate={navigate} />}
             {page === 'intelligence' && <Intelligence />}
+            {page === 'extensions' && <Extensions />}
             {page === 'system' && <SystemConsole />}
             {page === 'studio' && <Studio onUpgrade={toPricing} onProjects={toProjects} />}
             {page === 'settings' && <WorkspaceSettings onNavigate={navigate} />}
@@ -169,12 +187,12 @@ export default function App() {
           </WorkspacePage>
         </div>}
         {(visitedDirector || page === 'director') && <div className="page-frame page-director" hidden={page !== 'director'}>
-          <WorkspacePage loading="جارٍ تحميل مكتب المدير…">
+          <WorkspacePage loading={t('app.loading')}>
             <Director key={activeRoom} focusInput={page === 'director' && hash === '#director/task'} onCampus={toCampus} onUpgrade={toPricing} />
           </WorkspacePage>
         </div>}
       </main>
-      <ExecutiveCommandBar onSubmit={launchCommand} />
+      {page !== 'home' && <ExecutiveCommandBar onSubmit={launchCommand} />}
     </div>
     {overlay === 'menu' && <Dialog key="menu" title={t('nav.navigation')} variant="navigation" onClose={() => setOverlay(null)}><div className="company-sidebar"><CompanySidebar page={page} onNavigate={navigate} onHelp={() => setOverlay('help')} /></div></Dialog>}
     {overlay === 'search' && <QuickSearch onClose={() => setOverlay(null)} onNavigate={navigate} onAgent={openAgent} onRoom={visit} />}

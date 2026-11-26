@@ -2,8 +2,9 @@ import { useCallback, useEffect, useState } from 'react';
 import {
   Check, CheckCircle2, CircleAlert, Database, History, LoaderCircle, MemoryStick, MonitorSmartphone, Plug2, Search, ServerCog, ShieldCheck, Trash2, Copy, Laptop, X,
 } from 'lucide-react';
-import { OsApiError, osApi, type AiUsageSummary, type ApprovalRecord, type DeviceRecord, type OsState } from '../os/api.js';
+import { OsApiError, osApi, type AiUsageSummary, type ApprovalRecord, type DeviceRecord, type ExecutionLimits, type OsState } from '../os/api.js';
 import { Users } from 'lucide-react';
+import { Button, RiskBadge } from './ui.js';
 
 type Tab = 'overview' | 'memory' | 'audit' | 'governance' | 'roles';
 const SCOPES = ['workspace', 'user', 'project', 'agent', 'organization', 'execution', 'episodic', 'semantic'] as const;
@@ -58,6 +59,8 @@ export function SystemConsole() {
   const [govBusy, setGovBusy] = useState(false);
   const [usage, setUsage] = useState<AiUsageSummary | null>(null);
   const [usageLocked, setUsageLocked] = useState(false);
+  const [limits, setLimits] = useState<ExecutionLimits | null>(null);
+  const [limitsBusy, setLimitsBusy] = useState(false);
 
   const [roles, setRoles] = useState<{ me: { userId: string; role: 'owner' | 'admin' | 'member' | 'viewer' }; members: Array<{ userId: string; role: string; grantedBy: string }> } | null>(null);
   const [rolesBusy, setRolesBusy] = useState(false);
@@ -78,10 +81,11 @@ export function SystemConsole() {
 
   const loadGovernance = useCallback(async () => {
     try {
-      const [autonomy, pending, deviceList] = await Promise.all([osApi.autonomy(), osApi.approvals('pending'), osApi.devices()]);
+      const [autonomy, pending, deviceList, executionLimits] = await Promise.all([osApi.autonomy(), osApi.approvals('pending'), osApi.devices(), osApi.executionLimits()]);
       setPolicy(autonomy.policy);
       setApprovals(pending);
       setDevices(deviceList);
+      setLimits(executionLimits);
     } catch (err) {
       setError(err instanceof OsApiError ? err.message : 'تعذر تحميل الحوكمة.');
     }
@@ -119,6 +123,13 @@ export function SystemConsole() {
     if (memVersions[id]) { setMemVersions((cur) => { const next = { ...cur }; delete next[id]; return next; }); return; }
     try { const versions = await osApi.memoryVersions(id); setMemVersions((cur) => ({ ...cur, [id]: versions })); }
     catch (err) { setError(err instanceof OsApiError ? err.message : 'تعذر تحميل الإصدارات.'); }
+  }
+
+  async function saveLimits(next: Partial<ExecutionLimits>) {
+    setLimitsBusy(true);
+    try { setLimits(await osApi.setExecutionLimits(next)); }
+    catch (err) { setError(err instanceof OsApiError ? err.message : 'تعذر حفظ حدود التنفيذ.'); }
+    finally { setLimitsBusy(false); }
   }
 
   async function changePolicy(next: 'balanced' | 'autopilot') {
@@ -286,6 +297,27 @@ export function SystemConsole() {
           </div>
 
           <div className="panel panel-pad">
+            <h2 className="os-section-title"><ServerCog size={16} aria-hidden="true" /> حدود التنفيذ المتوازي</h2>
+            <p className="subtle">كل عامل يحمل عقد مهمة (lease) ولا يستطيع عاملان تنفيذ المهمة نفسها. تعطّل الحدود لكل مساحة عمل وتُسجل في التدقيق.</p>
+            {limits ? (
+              <form className="os-memory-row" onSubmit={(event) => {
+                event.preventDefault();
+                const form = new FormData(event.currentTarget);
+                void saveLimits({
+                  maxConcurrentTasks: Number(form.get('maxConcurrentTasks')),
+                  leaseTtlMs: Number(form.get('leaseTtlMs')),
+                  maxAttempts: Number(form.get('maxAttempts')),
+                });
+              }}>
+                <label className="os-field">عمال متوازيون<input name="maxConcurrentTasks" type="number" min={1} max={8} defaultValue={limits.maxConcurrentTasks} disabled={limitsBusy} /></label>
+                <label className="os-field">مدة العقد (ms)<input name="leaseTtlMs" type="number" min={1000} max={600000} step={1000} defaultValue={limits.leaseTtlMs} disabled={limitsBusy} /></label>
+                <label className="os-field">محاولات لكل مهمة<input name="maxAttempts" type="number" min={1} max={5} defaultValue={limits.maxAttempts} disabled={limitsBusy} /></label>
+                <button type="submit" className="button primary small" disabled={limitsBusy}>حفظ الحدود</button>
+              </form>
+            ) : <p className="os-loading"><LoaderCircle size={16} className="os-spin" aria-hidden="true" /> جارٍ التحميل…</p>}
+          </div>
+
+          <div className="panel panel-pad">
             <h2 className="os-section-title"><CircleAlert size={16} aria-hidden="true" /> موافقات معلقة {approvals && approvals.length > 0 ? `(${approvals.length})` : ''}</h2>
             {approvals === null && <p className="os-loading"><LoaderCircle size={16} className="os-spin" aria-hidden="true" /> جارٍ التحميل…</p>}
             {approvals?.length === 0 && <p className="subtle">لا توجد موافقات معلقة — كل التنفيذات عالية الخطورة مرت بعينك أو لم تُطلب بعد.</p>}
@@ -295,10 +327,11 @@ export function SystemConsole() {
                   <div className="os-approval-head">
                     <ShieldCheck size={14} aria-hidden="true" />
                     <strong dir="auto">{approval.actionSummary}</strong>
+                    <RiskBadge risk={approval.risk} label={approval.risk} />
                   </div>
                   <div className="os-approval-actions">
-                    <button type="button" className="button primary small" onClick={() => void decideApproval(approval.id, 'approved')}><Check size={13} aria-hidden="true" /> وافق</button>
-                    <button type="button" className="button ghost small danger" onClick={() => void decideApproval(approval.id, 'denied')}><X size={13} aria-hidden="true" /> ارفض</button>
+                    <Button variant="primary" size="small" icon={Check} onClick={() => void decideApproval(approval.id, 'approved')}>وافق</Button>
+                    <Button variant="destructive" size="small" icon={X} onClick={() => void decideApproval(approval.id, 'denied')}>ارفض</Button>
                   </div>
                 </li>
               ))}

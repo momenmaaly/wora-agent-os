@@ -9,19 +9,44 @@
  */
 import { writeFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { getOsDb, newId, nowIso, parseJson, audit } from './db.js';
-import { runTool, getTool, type ToolContext } from './tools.js';
-import { requiresHumanApproval, createApproval, getTaskApproval, listMissionApprovals } from './governance.js';
+import { runTool, getTool, isIdempotentTool, type ToolContext } from './tools.js';
+import { requiresHumanApproval, createApproval, getTaskApproval, listMissionApprovals, actionScope, extractAmount, isApprovalExpired } from './governance.js';
+import { classifyAction } from './actions.js';
 import { maybeDistillPlaybook, findPlaybookFor, recordPlaybookReuse } from './playbooks.js';
-import { listAgents, pickAgent, ensureSeedAgents, type AgentRecord } from './registry.js';
-import { addMemory } from './memory.js';
+import { listAgents, getAgent, ensureSeedAgents, type AgentRecord } from './registry.js';
+import { addMemory, type MemoryScope } from './memory.js';
 import { workspacePath } from './workspace.js';
+import { resolveAndSnapshot, authorizeTool } from '../extensions/capabilities.js';
+import { listRegisteredTools, listCapabilitySnapshots, listSkillContexts } from '../extensions/store.js';
+import { applySkillPolicy, persistSkillContext, selectSkillsForTask, skillContextForTool } from '../extensions/skill-intelligence.js';
+import { selectAlgorithm } from './algorithms.js';
+import { recordVerification, listVerifications } from './verification.js';
+import { claimTask, heartbeatTask, releaseTaskLease, checkpointTask, latestTaskCheckpoint, listTaskLeases, clearMissionLeases, clearMissionLease, recoverExpiredTaskLeases, getExecutionLimits, getTaskLease, claimMissionLease, heartbeatMissionLease, releaseMissionLease, getMissionLease, recoverExpiredMissionLeases } from './task-queue.js';
+import { understandProblem, saveProblemProfile, getProblemProfile } from './problem.js';
+import { verifyIndependently } from './independent-verification.js';
+import { redactSecrets } from './secrets.js';
+import { openTaskToolInput, sealTaskToolInput } from '../security/task-fields.js';
+import { collectCandidateLessons } from './lessons.js';
+import { comparePlans, savePlanVersion, listPlanVersions, verifyPlanExecution, replanMission } from './planning.js';
+import { compareSolutionStrategies, saveDecisionRecord, listDecisionRecords, assessReplan } from './decision.js';
+import { applyAdaptiveReplan, alternativeForTask } from './adaptive-replan.js';
+import { composeMissionPlan, saveComposition, getComposition } from './capability-composition.js';
+import { filterProblemForActor, modelProblem, saveProblemModel, getProblemModel } from './problem-model.js';
+import { inferProblemStructure } from './problem-structure.js';
+import { evaluateSemanticCompatibility } from './semantic-contracts.js';
+import { verifyMissionOutcome, getMissionOutcome } from './outcome-verification.js';
+import { buildDeterministicReasoning, filterReasoningForActor, summarizeReasoning } from './reasoning-engine.js';
+import { saveReasoningModel, getReasoningModel, recordOutcomeReasoningEvidence } from './reasoning-store.js';
+import { matchCapabilities } from '../extensions/capability-intelligence.js';
+import { persistTeamPlan, resolveTaskAgent, selectReplacement, recordAgentPerformance, getTeamPlan, listSelectionDecisions } from './selection.js';
 import { logger } from '../lib/logger.js';
 
-export type MissionStatus = 'planning' | 'running' | 'awaiting_approval' | 'completed' | 'failed';
-export type TaskStatus = 'created' | 'planned' | 'assigned' | 'running' | 'reviewing' | 'completed' | 'failed' | 'blocked';
+export type MissionStatus = 'planning' | 'running' | 'awaiting_approval' | 'paused' | 'cancelled' | 'completed' | 'failed';
+export type TaskStatus = 'created' | 'planned' | 'assigned' | 'running' | 'reviewing' | 'completed' | 'failed' | 'blocked' | 'cancelled';
 
-interface PlanTask {
+export interface PlanTask {
   title: string;
   objective: string;
   specialization: string;
@@ -30,6 +55,20 @@ interface PlanTask {
   dependsOn: number[];
   acceptance: string[];
   detail: string;
+  /** Optional persisted assignment for capability-guided plans. */
+  agentId?: string;
+  /** Only schema-compatible, already-authorized alternatives; never a silent substitution. */
+  fallbackTools?: string[];
+  /** Values copied from an earlier task's verified output before execution. */
+  inputBindings?: InputBinding[];
+}
+
+export interface InputBinding {
+  key: string;
+  /** Zero-based plan position of the upstream task. */
+  taskIndex: number;
+  /** Path into the upstream structured output; defaults to the whole output. */
+  path?: string[];
 }
 
 /* ─── Sample optimization data (clearly labeled) ────────── */
@@ -95,8 +134,9 @@ function extractUrls(objective: string): string[] {
   return (objective.match(/https?:\/\/[^\s)"'\]]+/g) ?? []).slice(0, 3);
 }
 
-export function buildPlan(objective: string, track?: string, workspaceId = 'wora-preview'): PlanTask[] {
+export function buildPlan(objective: string, track?: string, workspaceId = 'wora-preview', actor = 'system'): PlanTask[] {
   const text = objective.trim();
+  if (track === 'composite') return composeMissionPlan({ workspaceId, objective: text, track, actor }).tasks;
   // 'generic' forces the grounded fallback pipeline (used for kickoff missions so org building never recurses).
   if (track === 'generic') {
     return [
@@ -113,6 +153,74 @@ export function buildPlan(objective: string, track?: string, workspaceId = 'wora
     ];
   }
   const explicit = text;
+
+  // Capability-guided mission: derive required capability, search the existing
+  // registry, check trust/permissions, then either select one executable
+  // capability or record an honest gap. Never installs or invokes a package.
+  if (track === 'capability' || /\b(?:find|select|discover|use)\b.{0,40}\b(?:capability|extension|best\s+(?:tool|skill|plugin)|missing\s+capability)\b/i.test(text)) {
+    const match = matchCapabilities({ workspaceId, objective: text });
+    const selectedTool = match.selected?.tool ?? null;
+    if (selectedTool) {
+      const selected = match.selected!;
+      const rawJson = /with\s+(\{[\s\S]+\})/u.exec(text)?.[1];
+      let toolInput: Record<string, unknown> = {};
+      if (rawJson) { try { toolInput = JSON.parse(rawJson) as Record<string, unknown>; } catch { toolInput = { text: text.slice(0, 4_000) }; } }
+      else if (/\.echo$/u.test(selectedTool) || selectedTool.includes('echo')) toolInput = { text: text.slice(0, 4_000) };
+      return [{
+        title: `Use ${selected.kind} capability ${selectedTool}`,
+        objective: text,
+        specialization: selected.specialization ?? 'generalist',
+        agentId: selected.agentId ?? undefined,
+        tool: selectedTool,
+        toolInput,
+        dependsOn: [],
+        acceptance: [
+          'The selected capability is approved, enabled and authorized for the assigned agent',
+          'The capability is executable (not just discoverable)',
+          'Execution is recorded in the audit trail and independently verified',
+        ],
+        detail: `${match.explanation} Trust=${selected.trust}; permissions=${selected.permissions.join(', ') || 'none'}; health=${selected.health}.`,
+      }];
+    }
+    return [{
+      title: 'Report the capability gap honestly',
+      objective: text,
+      specialization: 'generalist',
+      tool: 'text.extract_summary',
+      toolInput: {
+        text: `CAPABILITY GAP — no approved executable capability matched this objective. Missing/requested: ${(match.gap?.missing ?? []).join(', ') || 'unknown'}. Search terms for an operator: ${(match.gap?.searchTerms ?? []).join(', ') || 'none'}. No extension was installed or invoked.`,
+        sentences: 3,
+      },
+      dependsOn: [],
+      acceptance: ['The gap is stated explicitly', 'No unverified extension is installed or invoked', 'The missing capability and search terms are recorded'],
+      detail: match.explanation,
+    }];
+  }
+
+  // Plugin tool execution: "run tool <plugin.tool> with {json}"
+  const pluginToolMatch = /(?:run|execute|call)\s+(?:the\s+)?(?:plugin\s+)?tool\s+([a-z0-9][a-z0-9._-]{1,80})(?:\s+with\s+([\s\S]+))?/iu.exec(text);
+  if (pluginToolMatch?.[1]) {
+    const toolId = pluginToolMatch[1];
+    const registered = listRegisteredTools(workspaceId, { activeOnly: true }).find((tool) => tool.toolId === toolId);
+    if (registered) {
+      const raw = pluginToolMatch[2]?.trim();
+      let toolInput: Record<string, unknown> = {};
+      if (raw) {
+        try { toolInput = JSON.parse(raw) as Record<string, unknown>; }
+        catch { toolInput = { text: raw.slice(0, 4_000) }; }
+      }
+      return [{
+        title: `Execute plugin tool ${toolId}`,
+        objective: text,
+        specialization: 'generalist',
+        tool: toolId,
+        toolInput,
+        dependsOn: [],
+        acceptance: ['The plugin tool executed under the agent capability profile', 'Execution recorded in the audit log', 'Output attached as evidence'],
+        detail: `Runs ${toolId} from plugin ${registered.pluginKey}. The agent must have the plugin assigned, enabled and approved; otherwise the task fails with a capability denial.`,
+      }];
+    }
+  }
 
   // Journey 2 — create a specialized agent
   if (/create\b.*\bagent\b|\bagent\b.*\b(named|called|to)\b/i.test(explicit) && /agent/i.test(text)) {
@@ -150,9 +258,10 @@ export function buildPlan(objective: string, track?: string, workspaceId = 'wora
   // Journey 5 — optimization / scheduling / allocation
   if (/optimi[sz]e|schedul|allocat|assignment|linear program|shift|employee|مخزون|جدولة|توزيع|تخصيص/i.test(text)) {
     const wantsEmployees = /employee|shift|staff|workforce|وردية|موظف/i.test(text);
+    const algorithmSelection = selectAlgorithm({ objective: text });
     const sample = sampleEmployeeInput();
     // A validated playbook distilled from an earlier mission outranks the bundled sample.
-    const playbook = findPlaybookFor(workspaceId, 'or.employee_schedule', text);
+    const playbook = findPlaybookFor(workspaceId, 'or.employee_schedule', text, actor);
     const playbookEmployees = playbook?.toolInput as { employees: typeof sample.employees; shifts: typeof sample.shifts } | undefined;
     const provenanceDetail = playbook
       ? `Reused validated playbook ${playbook.id} (${playbook.successRuns} successful re-solve${playbook.successRuns === 1 ? '' : 's'}) distilled from an earlier mission. Same data as before — for a fresh roster use Intelligence → الجدولة التشغيلية.`
@@ -170,7 +279,7 @@ export function buildPlan(objective: string, track?: string, workspaceId = 'wora
           toolInput: employeeToolInput,
           dependsOn: [],
           acceptance: ['Feasible MIP solution (HiGHS)', 'Demand met per shift', 'Availability respected', 'Min labor cost achieved', 'Constraints independently revalidated'],
-          detail: provenanceDetail,
+          detail: `${provenanceDetail} Algorithm selection: ${algorithmSelection.primary?.name ?? 'unresolved'} (${algorithmSelection.primary?.toolId ?? 'no tool'}); ${algorithmSelection.primary?.guarantee ?? 'No algorithm was selected.'}`,
         }
       : {
           title: 'Solve the assignment problem',
@@ -180,7 +289,7 @@ export function buildPlan(objective: string, track?: string, workspaceId = 'wora
           toolInput: { costMatrix: [[12, 7, 9], [8, 14, 5], [6, 9, 11]], rowLabels: ['option-A', 'option-B', 'option-C'], colLabels: ['candidate-1', 'candidate-2', 'candidate-3'] },
           dependsOn: [],
           acceptance: ['Optimal assignment found (Hungarian algorithm)', 'Total cost reported'],
-          detail: 'No numeric parameters were embedded in the instruction, so a small SAMPLE cost matrix was solved to demonstrate the pipeline. Provide the real matrix in Intelligence.',
+          detail: `No numeric parameters were embedded in the instruction, so a small SAMPLE cost matrix was solved to demonstrate the pipeline. Provide the real matrix in Intelligence. Algorithm selection: ${algorithmSelection.primary?.name ?? 'unresolved'} (${algorithmSelection.primary?.toolId ?? 'no tool'}); ${algorithmSelection.primary?.guarantee ?? 'No algorithm was selected.'}`,
         };
     return [task];
   }
@@ -263,6 +372,41 @@ export function buildPlan(objective: string, track?: string, workspaceId = 'wora
     }));
   }
 
+  // Forecasting with a reusable problem-structure check. A forecast is planned
+  // only when the target, horizon and at least eight observations are present.
+  const structure = inferProblemStructure(text);
+  if (structure.kind === 'forecasting' && structure.forecasting) {
+    const forecast = structure.forecasting;
+    if (forecast.canExecute && forecast.observations.length >= 8 && forecast.horizon?.steps) {
+      return [{
+        title: `Forecast ${forecast.targetVariable ?? 'the target'} with the implemented linear baseline`,
+        objective: text,
+        specialization: 'data_analyst',
+        tool: 'forecast.linear',
+        toolInput: { series: forecast.observations, steps: forecast.horizon.steps },
+        dependsOn: [],
+        acceptance: [
+          'Only the supplied chronological observations are used',
+          'At least eight observations and a 1–90 period horizon are present',
+          'Honest holdout metrics and residual bands are reported',
+          'The linear baseline is not presented as a causal or guaranteed prediction',
+        ],
+        detail: `Problem structure: forecasting; target=${forecast.targetVariable ?? 'unspecified'}; horizon=${forecast.horizon.steps} ${forecast.horizon.unit} period(s); observations=${forecast.observations.length}. Method: forecast.linear (linear trend baseline, implemented). Limitations: ${forecast.assumptions.join(' ')}`,
+      }];
+    }
+    const gap = `FORECAST INPUT GAP — target=${forecast.targetVariable ?? 'unspecified'}; horizon=${forecast.horizon?.steps ?? 'unspecified'}; supplied observations=${forecast.observations.length}; missing: ${forecast.missingInputs.join('; ') || 'none'}. No observation was invented or replaced with a sample series.`;
+    return [{
+      title: 'Report the forecast input gap honestly',
+      objective: text,
+      specialization: 'data_analyst',
+      tool: 'text.extract_summary',
+      toolInput: { text: `${gap} The implemented forecast requires ${forecast.missingInputs.join(' and ') || 'valid inputs'}. Ask the user for those inputs or attach the real series; do not execute a forecast from fabricated data.`, sentences: 3 },
+      dependsOn: [],
+      acceptance: ['Missing forecast inputs are stated explicitly', 'No forecast is fabricated', 'No sample series is substituted'],
+      detail: gap,
+    }];
+  }
+
   // Default — grounded analysis + recorded rationale
   return [
     {
@@ -289,46 +433,86 @@ export function buildPlan(objective: string, track?: string, workspaceId = 'wora
 }
 
 /* ─── Mission lifecycle ─────────────────────────────────── */
-export function createMission(input: { workspaceId: string; objective: string; actor?: string; track?: string; requestedBy?: string }): string {
+export function createMission(input: {
+  workspaceId: string; objective: string; actor?: string; track?: string; requestedBy?: string; correlationId?: string;
+  memoryScopes?: MemoryScope[]; memoryScopeIds?: Partial<Record<MemoryScope, string[]>>;
+}): string {
   const objective = input.objective.trim().slice(0, 4000);
   if (!objective) throw new Error('Objective is required');
+  const actor = input.actor ?? 'system';
   ensureSeedAgents(input.workspaceId);
   const db = getOsDb();
-  const plan = buildPlan(objective, input.track, input.workspaceId);
   const missionId = newId('msn');
+  const composed = input.track === 'composite' ? composeMissionPlan({
+    workspaceId: input.workspaceId, objective, track: input.track, actor,
+    scopes: input.memoryScopes, scopeIds: input.memoryScopeIds,
+  }) : null;
+  const unified = composed?.model ?? modelProblem({
+    workspaceId: input.workspaceId, objective, track: input.track, actor, missionId,
+    scopes: input.memoryScopes, scopeIds: input.memoryScopeIds,
+  });
+  const reasoning = buildDeterministicReasoning({
+    workspaceId: input.workspaceId, objective, track: input.track, baseProblem: unified,
+    actor, scopes: input.memoryScopes, scopeIds: input.memoryScopeIds,
+  });
+  unified.reasoning = summarizeReasoning(reasoning);
+  const problem = unified.baseProfile;
+  const plan = composed?.tasks ?? buildPlan(objective, input.track, input.workspaceId, actor);
+  const planComparison = comparePlans(plan, input.workspaceId, problem);
+  const decision = compareSolutionStrategies(plan, input.workspaceId, problem);
   const ts = nowIso();
   db.exec('BEGIN');
   try {
-    db.prepare('INSERT INTO os_missions (id, workspace_id, objective, status, requested_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      .run(missionId, input.workspaceId, objective, 'planning', input.requestedBy ?? 'user', ts, ts);
+    db.prepare('INSERT INTO os_missions (id, workspace_id, objective, status, requested_by, correlation_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(missionId, input.workspaceId, objective, 'planning', input.requestedBy ?? actor, input.correlationId ?? null, ts, ts);
     const taskIds: string[] = [];
     const insertTask = db.prepare(
-      `INSERT INTO os_tasks (id, mission_id, workspace_id, order_index, title, objective, specialization, status, depends_on, acceptance, tool, tool_input, detail, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'planned', ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO os_tasks (id, mission_id, workspace_id, order_index, title, objective, specialization, agent_id, status, depends_on, acceptance, tool, tool_input, fallback_tools, input_bindings, detail, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'planned', ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     for (const [index, task] of plan.entries()) {
       const taskId = newId('tsk');
       taskIds.push(taskId);
-      insertTask.run(taskId, missionId, input.workspaceId, index, task.title, task.objective, task.specialization, JSON.stringify(task.dependsOn), JSON.stringify(task.acceptance), task.tool, JSON.stringify(task.toolInput), task.detail, ts, ts);
+      insertTask.run(taskId, missionId, input.workspaceId, index, task.title, task.objective, task.specialization, task.agentId ?? null, JSON.stringify(task.dependsOn), JSON.stringify(task.acceptance), task.tool, sealTaskToolInput(input.workspaceId, taskId, task.toolInput), JSON.stringify(task.fallbackTools ?? []), JSON.stringify(task.inputBindings ?? []), task.detail, ts, ts);
     }
     // Store resolved dependency ids
     const updateDeps = db.prepare('UPDATE os_tasks SET depends_on = ? WHERE id = ?');
     for (const [index, task] of plan.entries()) {
       if (task.dependsOn.length) updateDeps.run(JSON.stringify(task.dependsOn.map((i) => taskIds[i]!)), taskIds[index]!);
     }
+    saveProblemProfile(input.workspaceId, missionId, problem);
+    saveProblemModel(input.workspaceId, missionId, unified);
+    saveReasoningModel({ ...reasoning, missionId });
+    const chosenPlan = planComparison.plans.find((candidate) => candidate.strategy === decision.preferredPlan.planStrategy) ?? planComparison.preferred;
+    savePlanVersion({ workspaceId: input.workspaceId, missionId, plan: chosenPlan, comparison: { ...planComparison, decision }, reason: 'initial deterministic plan with scientific method comparison', actor: input.actor ?? 'user' });
+    saveDecisionRecord({ workspaceId: input.workspaceId, missionId, kind: 'initial', comparison: decision, reason: decision.reason, actor: input.actor ?? 'user' });
+    if (composed) {
+      saveComposition(input.workspaceId, missionId, composed);
+      saveDecisionRecord({
+        workspaceId: input.workspaceId, missionId, kind: 'composition-strategy',
+        comparison: { selected: composed.strategy.selected, candidates: composed.strategy.candidates, rejected: composed.strategy.rejected, graph: composed.graph },
+        reason: composed.strategy.explanation, actor: input.actor ?? 'user',
+      });
+    }
+    try {
+      persistTeamPlan({ workspaceId: input.workspaceId, missionId, plan, taskIds, problem, actor: input.actor ?? 'user' });
+    } catch (err) {
+      logger.warn({ err, missionId }, 'dynamic team selection failed; mission remains executable by capability resolution');
+      audit(db, { workspaceId: input.workspaceId, actor: input.actor ?? 'user', action: 'team.plan.failed', subject: missionId, detail: { reason: err instanceof Error ? err.message.slice(0, 300) : 'unknown' } });
+    }
     db.exec('COMMIT');
   } catch (err) {
     db.exec('ROLLBACK');
     throw err;
   }
-  audit(db, { workspaceId: input.workspaceId, actor: input.actor ?? 'user', action: 'mission.create', subject: missionId, detail: { objective: objective.slice(0, 300), tasks: plan.length } });
+  audit(db, { workspaceId: input.workspaceId, actor: input.actor ?? 'user', action: 'mission.create', subject: missionId, detail: { objective: objective.slice(0, 300), tasks: plan.length, domain: problem.domain, algorithmStatus: problem.algorithmSelection.status } });
   return missionId;
 }
 
 interface TaskRow {
   id: string; mission_id: string; workspace_id: string; order_index: number; title: string; objective: string;
   specialization: string; status: string; agent_id: string | null; depends_on: string; acceptance: string;
-  tool: string | null; tool_input: string; detail: string; created_at: string; updated_at: string;
+  tool: string | null; tool_input: string; fallback_tools: string; input_bindings: string; detail: string; created_at: string; updated_at: string;
 }
 
 function reviewRun(task: TaskRow, toolOk: boolean, output: unknown, error: string | null): { passed: boolean; issues: string[] } {
@@ -367,17 +551,93 @@ function reviewRun(task: TaskRow, toolOk: boolean, output: unknown, error: strin
   return { passed: issues.length === 0, issues };
 }
 
+function maybeTestStage(stage: string): void {
+  if (process.env['NODE_ENV'] !== 'test') return;
+  try { process.stdout.write(`WORA_TEST_STAGE:${stage}\n`); } catch { /* stdout may be closed */ }
+  if (process.env['WORA_TEST_KILL_AT'] === stage) process.kill(process.pid, 'SIGKILL');
+}
+
+function resolveInputBindings(workspaceId: string, missionId: string, task: TaskRow, input: Record<string, unknown>): { input: Record<string, unknown>; error: string | null } {
+  const bindings = parseJson<InputBinding[]>(task.input_bindings ?? '[]', []);
+  if (!bindings.length) return { input, error: null };
+  const db = getOsDb();
+  const resolved = { ...input };
+  for (const binding of bindings) {
+    if (!binding.key || !Number.isInteger(binding.taskIndex) || binding.taskIndex < 0) return { input, error: `invalid input binding for ${binding.key ?? 'unknown'}` };
+    const upstream = db.prepare('SELECT id, status FROM os_tasks WHERE mission_id = ? AND order_index = ?').get(missionId, binding.taskIndex) as { id?: string; status?: string } | undefined;
+    if (!upstream?.id || upstream.status !== 'completed') return { input, error: `upstream task ${binding.taskIndex} is not completed` };
+    const run = db.prepare("SELECT evidence FROM os_runs WHERE task_id = ? AND status = 'completed' ORDER BY finished_at DESC LIMIT 1").get(upstream.id) as { evidence?: string } | undefined;
+    if (!run?.evidence) return { input, error: `upstream task ${binding.taskIndex} has no completed evidence` };
+    const evidence = parseJson<Array<Record<string, unknown>>>(run.evidence, []);
+    const output = evidence.find((entry) => entry['output'] !== undefined)?.['output'];
+    let value: unknown = output;
+    for (const segment of binding.path ?? []) {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) { value = undefined; break; }
+      value = (value as Record<string, unknown>)[segment];
+    }
+    if (value === undefined || value === null) return { input, error: `upstream output has no value at ${binding.path?.join('.') ?? '<root>'}` };
+    resolved[binding.key] = value;
+  }
+  return { input: resolved, error: null };
+}
+
 const digest = (value: unknown, cap = 6000): string => {
   try { const s = JSON.stringify(value); return s.length > cap ? `${s.slice(0, cap)}…[truncated ${s.length - cap} chars]` : s; } catch { return '[unserializable]'; }
 };
 
-export async function executeMission(missionId: string, actor = 'orchestrator'): Promise<void> {
+export async function executeMission(missionId: string, actor = 'orchestrator', options: { workerId?: string; leaseTtlMs?: number; maxAttempts?: number; concurrency?: number; workerMode?: boolean; missionLeaseOwner?: string; missionLeaseTtlMs?: number; skipMissionLease?: boolean } = {}): Promise<void> {
   const db = getOsDb();
-  const mission = db.prepare('SELECT * FROM os_missions WHERE id = ?').get(missionId) as { id: string; workspace_id: string; objective: string; status: string } | undefined;
+  const mission = db.prepare('SELECT id, workspace_id, status FROM os_missions WHERE id = ?').get(missionId) as { id: string; workspace_id: string; status: string } | undefined;
   if (!mission) throw new Error(`Mission ${missionId} not found`);
-  // Completed missions never re-run. Failed/awaiting missions re-enter: completed tasks are skipped,
-  // the failed/blocked ones re-plan from their stored objective (retry after a fix or a restart).
-  if (mission.status === 'completed') return;
+  if (['completed', 'paused', 'cancelled'].includes(mission.status)) return;
+  const workerId = options.missionLeaseOwner ?? options.workerId ?? `wora-worker:${os.hostname()}:${process.pid}`;
+  const missionTtlMs = options.missionLeaseTtlMs ?? options.leaseTtlMs ?? getExecutionLimits(mission.workspace_id).leaseTtlMs;
+  const ownsMissionLease = !options.skipMissionLease;
+  if (ownsMissionLease) {
+    const lease = claimMissionLease({ workspaceId: mission.workspace_id, missionId, ownerId: workerId, ttlMs: missionTtlMs });
+    if (!lease) return;
+  }
+  const missionHeartbeat = setInterval(() => {
+    try {
+      heartbeatMissionLease({ workspaceId: mission.workspace_id, missionId, ownerId: workerId, ttlMs: missionTtlMs });
+    } catch { /* lease expiry is handled by the next worker */ }
+  }, Math.max(250, Math.floor(missionTtlMs / 3)));
+  missionHeartbeat.unref?.();
+  try {
+    await executeMissionInner(missionId, actor, { ...options, missionLeaseOwner: workerId, skipMissionLease: true });
+  } finally {
+    clearInterval(missionHeartbeat);
+    if (ownsMissionLease) releaseMissionLease({ workspaceId: mission.workspace_id, missionId, ownerId: workerId });
+  }
+}
+
+async function executeMissionInner(missionId: string, actor = 'orchestrator', options: { workerId?: string; leaseTtlMs?: number; maxAttempts?: number; concurrency?: number; workerMode?: boolean; missionLeaseOwner?: string; missionLeaseTtlMs?: number; skipMissionLease?: boolean } = {}): Promise<void> {
+  const db = getOsDb();
+  const mission = db.prepare('SELECT * FROM os_missions WHERE id = ?').get(missionId) as { id: string; workspace_id: string; objective: string; status: string; correlation_id?: string | null } | undefined;
+  if (!mission) throw new Error(`Mission ${missionId} not found`);
+  // Completed, paused and cancelled missions never run. Failed/awaiting missions
+  // re-enter: completed tasks are skipped and the failed/blocked ones retry.
+  if (mission.status === 'completed' || mission.status === 'paused' || mission.status === 'cancelled') return;
+  const workerId = options.workerId ?? `wora-worker:${os.hostname()}:${process.pid}`;
+  const limits = getExecutionLimits(mission.workspace_id);
+  const leaseTtlMs = Math.min(Math.max(options.leaseTtlMs ?? limits.leaseTtlMs, 1_000), 10 * 60_000);
+  const maxAttempts = Math.min(Math.max(options.maxAttempts ?? limits.maxAttempts, 1), 5);
+  const concurrency = Math.min(Math.max(options.concurrency ?? 1, 1), limits.maxConcurrentTasks, 8);
+  if (concurrency > 1 && !options.workerMode) {
+    recoverExpiredTaskLeases(mission.workspace_id);
+    const workers = Array.from({ length: concurrency }, (_, index) => `${workerId}:${index}`);
+    const rounds = Math.max(2, (db.prepare('SELECT COUNT(*) AS c FROM os_tasks WHERE mission_id = ?').get(missionId) as { c: number }).c + 1);
+    for (let round = 0; round < rounds; round += 1) {
+      await Promise.all(workers.map((owner) => executeMission(missionId, actor, {
+        ...options, concurrency: 1, workerMode: true, workerId: `${owner}:r${round}`,
+        missionLeaseOwner: options.missionLeaseOwner ?? workerId, skipMissionLease: true,
+      })));
+      const status = db.prepare('SELECT status FROM os_missions WHERE id = ?').get(missionId) as { status?: string } | undefined;
+      if (!status || ['completed', 'failed', 'cancelled', 'awaiting_approval'].includes(status.status ?? '')) break;
+    }
+    await afterMission(missionId, actor, mission);
+    return;
+  }
   db.prepare('UPDATE os_missions SET status = ?, updated_at = ? WHERE id = ?').run('running', nowIso(), missionId);
 
   const tasks = db.prepare('SELECT * FROM os_tasks WHERE mission_id = ? ORDER BY order_index ASC').all(missionId) as unknown as TaskRow[];
@@ -385,43 +645,133 @@ export async function executeMission(missionId: string, actor = 'orchestrator'):
   let failed = false;
 
   for (const task of tasks) {
+    const liveMission = db.prepare('SELECT status FROM os_missions WHERE id = ?').get(missionId) as { status?: string } | undefined;
+    if (!liveMission || liveMission.status === 'paused' || liveMission.status === 'cancelled' || liveMission.status === 'completed') return;
     const deps = parseJson<string[]>(task.depends_on, []);
-    const blockedBy = deps.filter((id) => !completed.has(id));
-    const depRows = deps.map((id) => tasks.find((t) => t.id === id));
-    const depFailed = depRows.some((t) => t?.status === 'failed' || t?.status === 'blocked');
-    if (failed || blockedBy.length > 0 || depFailed) {
-      if (task.status !== 'completed') {
-        db.prepare('UPDATE os_tasks SET status = ?, updated_at = ? WHERE id = ?').run('blocked', nowIso(), task.id);
-      }
+    const liveTasks = db.prepare('SELECT id, status, detail FROM os_tasks WHERE mission_id = ?').all(missionId) as Array<{ id: string; status: string; detail: string }>;
+    const byId = new Map(liveTasks.map((entry) => [entry.id, entry]));
+    const blockedBy = deps.filter((id) => byId.get(id)?.status !== 'completed');
+    const depRows = deps.map((id) => byId.get(id));
+    const depFailed = depRows.some((entry) => entry?.status === 'failed' || entry?.status === 'blocked' || entry?.status === 'cancelled');
+    if ((!options.workerMode && failed) || depFailed) {
+      if (task.status !== 'completed') db.prepare('UPDATE os_tasks SET status = ?, updated_at = ? WHERE id = ?').run('blocked', nowIso(), task.id);
+      continue;
+    }
+    if (blockedBy.length > 0) {
+      if (!options.workerMode && task.status !== 'completed') db.prepare('UPDATE os_tasks SET status = ?, updated_at = ? WHERE id = ?').run('blocked', nowIso(), task.id);
       continue;
     }
     if (task.status === 'completed') { completed.add(task.id); continue; }
+    if (task.status === 'cancelled') continue;
+    const recoveredCheckpoint = latestTaskCheckpoint(mission.workspace_id, task.id);
+    if (recoveredCheckpoint?.status === 'completed' && task.status !== 'completed') {
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        db.prepare('UPDATE os_tasks SET status = ?, detail = ?, updated_at = ? WHERE id = ?')
+          .run('completed', 'recovered_from_completed_checkpoint — verification completed before interruption', nowIso(), task.id);
+        const handoff = db.prepare('SELECT 1 FROM os_handoffs WHERE mission_id = ? AND task_id = ? LIMIT 1').get(missionId, task.id);
+        if (!handoff) {
+          const contract = {
+            taskId: task.id, taskState: 'completed_verified', recovered: true,
+            objective: task.objective, evidenceReferences: [],
+            workPerformed: 'Recovered from a durable completed checkpoint after a process interruption.',
+            recommendedNextAction: 'Dependents may proceed; inspect the verification record for evidence.',
+          };
+          db.prepare('INSERT INTO os_handoffs (id, mission_id, task_id, from_specialization, to_specialization, contract, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+            .run(newId('hof'), missionId, task.id, task.specialization, 'review', JSON.stringify(contract), nowIso());
+        }
+        db.exec('COMMIT');
+      } catch (error) {
+        try { db.exec('ROLLBACK'); } catch { /* preserve original */ }
+        throw error;
+      }
+      audit(db, { workspaceId: mission.workspace_id, actor: 'orchestrator', action: 'task.recovered', subject: task.id, detail: { missionId, checkpointId: recoveredCheckpoint.id } });
+      completed.add(task.id);
+      continue;
+    }
+    if (options.workerMode && task.status === 'failed') continue;
+    if (options.workerMode && task.status === 'blocked' && /side_effect_uncertain/i.test(task.detail)) continue;
 
-    const agent = pickAgent(mission.workspace_id, task.specialization);
+    const selection = resolveTaskAgent(mission.workspace_id, {
+      id: task.id, title: task.title, objective: task.objective, specialization: task.specialization,
+      tool: task.tool, acceptance: parseJson<string[]>(task.acceptance, []), dependsOn: [], agentId: task.agent_id,
+    }, missionId);
+    let agent = selection.agent;
+    if (!agent && task.agent_id) {
+      // Keep the persisted assignee for an authorization-denial audit when a
+      // capability was revoked after planning. Execution still re-resolves the
+      // profile and refuses the tool; this is not a permission bypass.
+      const persisted = getAgent(mission.workspace_id, task.agent_id);
+      const persistedCandidate = selection.decision.candidates.find((candidate) => candidate.agentId === task.agent_id);
+      const revokedCapability = persistedCandidate?.rejectionReasons.some((reason) => /missing (tool|permission)/iu.test(reason));
+      if (persisted?.status === 'active' && revokedCapability) agent = persisted;
+    }
     if (!agent) {
-      db.prepare('UPDATE os_tasks SET status = ?, detail = detail || ?, updated_at = ? WHERE id = ?').run('failed', ' No agent available for specialization.', nowIso(), task.id);
+      db.prepare('UPDATE os_tasks SET status = ?, detail = ?, updated_at = ? WHERE id = ?')
+        .run('failed', `capability_gap: ${selection.decision.gap ?? 'no eligible agent'}`, nowIso(), task.id);
       failed = true;
       continue;
     }
     db.prepare('UPDATE os_tasks SET status = ?, agent_id = ?, updated_at = ? WHERE id = ?').run('assigned', agent.id, nowIso(), task.id);
 
-    /* High-risk tools pause for an explicit human decision on the exact payload. */
+    /* Governance: classify the action, bind any approval to the exact payload,
+       scope and expiry, and fail closed on uncertainty. High-risk actions
+       always require approval; autopilot cannot bypass class C. */
     const toolDef = task.tool ? getTool(task.tool) : null;
-    if (toolDef && requiresHumanApproval(mission.workspace_id, toolDef.risk)) {
+    let taskInput = openTaskToolInput<Record<string, unknown>>(mission.workspace_id, task.id, task.tool_input, {});
+    const bound = resolveInputBindings(mission.workspace_id, missionId, task, taskInput);
+    if (bound.error) {
+      db.prepare('UPDATE os_tasks SET status = ?, detail = ?, updated_at = ? WHERE id = ?')
+        .run('blocked', `input_binding_failed: ${bound.error}`.slice(0, 500), nowIso(), task.id);
+      failed = true;
+      continue;
+    }
+    taskInput = bound.input;
+    const scope = toolDef ? actionScope(missionId, task.id, toolDef.id) : actionScope(missionId, task.id, null);
+    const amountUsd = extractAmount(taskInput);
+    const actionClass = toolDef
+      ? classifyAction({ action: task.title, risk: toolDef.risk, reversible: toolDef.risk !== 'high', scope, amountUsd })
+      : null;
+    let approvedAction: ToolContext['approvedAction'] | undefined;
+    if (toolDef && requiresHumanApproval(mission.workspace_id, toolDef.risk, {
+      action: task.title, reversible: toolDef.risk !== 'high', scope, amountUsd,
+    })) {
       const existing = getTaskApproval(mission.workspace_id, task.id);
+      if (existing && isApprovalExpired(existing.expiresAt)) {
+        db.prepare('UPDATE os_tasks SET status = ?, detail = ?, updated_at = ? WHERE id = ?')
+          .run('failed', 'Approval expired before execution — request a new approval', nowIso(), task.id);
+        failed = true;
+        continue;
+      }
       if (!existing || existing.status === 'pending') {
-        const approval = existing ?? createApproval({
-          workspaceId: mission.workspace_id,
-          missionId,
-          taskId: task.id,
-          toolId: toolDef.id,
-          actionSummary: `${agent.name} يطلب تنفيذ ${toolDef.id} من نوع "${task.title}" قبل المتابعة`,
-          risk: toolDef.risk,
-          toolInput: parseJson(task.tool_input, {}),
-          requestedBy: agent.name,
-        });
+        let approval;
+        try {
+          approval = existing ?? createApproval({
+            workspaceId: mission.workspace_id,
+            missionId,
+            taskId: task.id,
+            toolId: toolDef.id,
+            actionSummary: `${agent.name} يطلب تنفيذ ${toolDef.id} من نوع "${task.title}" قبل المتابعة`,
+            toolDescription: toolDef.description,
+            toolPermissions: [toolDef.permission, ...(toolDef.permissions ?? [])].filter((permission): permission is string => Boolean(permission)),
+            risk: toolDef.risk,
+            toolInput: taskInput,
+            requestedBy: agent.name,
+            actionClass: actionClass?.class ?? 'C',
+            scope,
+            amountUsd,
+          });
+        } catch (err) {
+          const reason = err instanceof Error ? err.message : 'Approval could not be created';
+          db.prepare('UPDATE os_tasks SET status = ?, detail = ?, updated_at = ? WHERE id = ?')
+            .run('failed', `Approval blocked: ${reason}`.slice(0, 500), nowIso(), task.id);
+          audit(db, { workspaceId: mission.workspace_id, actor: agent.name, action: 'approval.blocked', subject: task.id, detail: { missionId, reason, scope } });
+          failed = true;
+          continue;
+        }
         db.prepare('UPDATE os_tasks SET status = ?, detail = ?, updated_at = ? WHERE id = ?')
           .run('blocked', `awaiting_approval:${approval.id}`, nowIso(), task.id);
+        maybeTestStage('after-approval-wait');
         continue;
       }
       if (existing.status === 'denied') {
@@ -430,31 +780,135 @@ export async function executeMission(missionId: string, actor = 'orchestrator'):
         failed = true;
         continue;
       }
-      // approved → fall through into normal execution with evidence and review
+      if (existing.consumedAt) {
+        db.prepare('UPDATE os_tasks SET status = ?, detail = ?, updated_at = ? WHERE id = ?')
+          .run('failed', 'Approval was already consumed by another attempt; request a new approval', nowIso(), task.id);
+        failed = true;
+        continue;
+      }
+      if (existing.status !== 'approved') {
+        db.prepare('UPDATE os_tasks SET status = ?, detail = ?, updated_at = ? WHERE id = ?')
+          .run('failed', 'Approval is not active; request a new approval', nowIso(), task.id);
+        failed = true;
+        continue;
+      }
+      if (existing.actionClass !== 'C') {
+        db.prepare('UPDATE os_tasks SET status = ?, detail = ?, updated_at = ? WHERE id = ?')
+          .run('failed', 'Approval is not a class C approval', nowIso(), task.id);
+        failed = true;
+        continue;
+      }
+      // The tool boundary consumes the approval atomically after schema validation.
+      approvedAction = { approvalId: existing.id, payloadDigest: existing.payloadDigest, scope: existing.scope };
     }
 
+    const lease = claimTask({ workspaceId: mission.workspace_id, taskId: task.id, missionId, ownerId: workerId, ttlMs: leaseTtlMs });
+    if (!lease) continue;
+    const heartbeat = setInterval(() => {
+      try { heartbeatTask({ workspaceId: mission.workspace_id, taskId: task.id, ownerId: workerId, ttlMs: leaseTtlMs }); } catch { /* lease recovery handles failure */ }
+    }, Math.max(1_000, Math.floor(leaseTtlMs / 3)));
+    heartbeat.unref?.();
+    try {
+      const priorCheckpoint = latestTaskCheckpoint(mission.workspace_id, task.id);
+      if (priorCheckpoint?.status === 'started' && !isIdempotentTool(task.tool, mission.workspace_id)) {
+        db.prepare('UPDATE os_tasks SET status = ?, detail = ?, updated_at = ? WHERE id = ?')
+          .run('blocked', 'side_effect_uncertain — a prior attempt started but did not record completion; manual review is required', nowIso(), task.id);
+        failed = true;
+        continue;
+      }
+      if (priorCheckpoint?.status === 'started') {
+        db.prepare("UPDATE os_runs SET status = 'interrupted', finished_at = ?, summary = 'Interrupted before completion; safe retry because the tool is idempotent' WHERE task_id = ? AND status = 'running'")
+          .run(nowIso(), task.id);
+        audit(db, { workspaceId: mission.workspace_id, actor: 'orchestrator', action: 'task.safe_retry', subject: task.id, detail: { missionId, tool: task.tool, priorCheckpoint: priorCheckpoint.id } });
+      }
+
     let attempt = 1;
+    let reassignments = 0;
+    let adaptiveReplans = 0;
+    let fallbackAttempts = 0;
+    let fallbackTools = parseJson<string[]>(task.fallback_tools ?? '[]', []);
     let reviewPassed = false;
     let lastOutput: unknown = null;
     let lastIssues: string[] = [];
     let lastEvidence: Array<Record<string, unknown>> = [];
     let lastDuration = 0;
+    let lastProfile: ReturnType<typeof resolveAndSnapshot> | null = null;
+    let cancelledMidRun = false;
 
-    while (attempt <= 2 && !reviewPassed) {
+    while (attempt <= maxAttempts && !reviewPassed) {
       const startedAt = nowIso();
       const runId = newId('run');
+      checkpointTask({ workspaceId: mission.workspace_id, taskId: task.id, missionId, runId, attempt, status: 'started', checkpoint: { tool: task.tool, attempt } });
+      maybeTestStage('after-start-checkpoint');
       db.prepare('UPDATE os_tasks SET status = ?, updated_at = ? WHERE id = ?').run('running', nowIso(), task.id);
       db.prepare('INSERT INTO os_runs (id, task_id, mission_id, workspace_id, agent_id, status, started_at, attempt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
         .run(runId, task.id, missionId, mission.workspace_id, agent.id, 'running', startedAt, attempt);
 
+      // Resolve on every attempt: disabling a plugin or revoking a permission
+      // takes effect immediately, including for an already-running mission.
+      const profile = resolveAndSnapshot(mission.workspace_id, agent.id, { missionId, taskId: task.id, actor: agent.name });
+      lastProfile = profile;
+      if (task.tool) {
+        const decision = authorizeTool(mission.workspace_id, profile, task.tool);
+        if (!decision.allowed) {
+          const reason = decision.reason ?? 'Capability is not available to this agent';
+          lastIssues = [reason];
+          lastEvidence = [{ capabilityDenied: reason, digest: profile.digest }];
+          db.prepare('UPDATE os_runs SET status = ?, finished_at = ?, summary = ?, evidence = ?, issues = ? WHERE id = ?')
+            .run('failed', nowIso(), `Capability denied: ${reason}`, JSON.stringify(lastEvidence), JSON.stringify(lastIssues), runId);
+          audit(db, { workspaceId: mission.workspace_id, actor: agent.name, action: 'capability.denied', subject: task.tool, detail: { missionId, taskId: task.id, reason, digest: profile.digest } });
+          checkpointTask({ workspaceId: mission.workspace_id, taskId: task.id, missionId, runId, attempt, status: 'blocked', evidence: lastEvidence, checkpoint: { reason } });
+          recordVerification({
+            workspaceId: mission.workspace_id, missionId, taskId: task.id, runId,
+            objective: task.objective, acceptanceCriteria: parseJson<string[]>(task.acceptance, []),
+            expectedOutput: `A successful ${task.tool ?? 'task'} result satisfying the acceptance criteria`,
+            actualOutput: null, evidence: lastEvidence,
+            checks: [{ id: 'capability-authorization', kind: 'authorization', description: 'The agent is authorized for the assigned tool', status: 'failed', evidence: reason }],
+            result: 'blocked', failureReason: reason, verifier: 'wora.orchestrator/capability-check',
+          });
+          if (reassignments < 1) {
+            const replacement = selectReplacement(mission.workspace_id, {
+              id: task.id, title: task.title, objective: task.objective, specialization: task.specialization,
+              tool: task.tool, acceptance: parseJson<string[]>(task.acceptance, []), dependsOn: [], agentId: agent.id,
+            }, missionId, agent.id);
+            if (replacement.agent) {
+              audit(db, { workspaceId: mission.workspace_id, actor: 'orchestrator', action: 'task.reassign', subject: task.id, detail: { missionId, from: agent.id, to: replacement.agent.id, reason: `authorization: ${reason}`.slice(0, 300) } });
+              saveDecisionRecord({
+                workspaceId: mission.workspace_id, missionId, kind: 'authorization-reassignment',
+                comparison: { from: agent.id, to: replacement.agent.id, reason, selectedBy: 'dynamic-selection' },
+                reason: 'Authorization failed; a qualified alternate agent was available.', actor: 'orchestrator',
+              });
+              agent = replacement.agent;
+              task.agent_id = agent.id;
+              db.prepare('UPDATE os_tasks SET agent_id = ?, updated_at = ? WHERE id = ?').run(agent.id, nowIso(), task.id);
+              reassignments += 1;
+              attempt = 1;
+              continue;
+            }
+          }
+          break;
+        }
+      }
+      // Select only task-relevant, approved and auto-loadable skills. The
+      // context is untrusted data with a strict token budget and is recorded
+      // with versions/digests before the tool runs. Revocation is re-evaluated
+      // on every attempt because the profile is resolved above.
+      const skillSelection = selectSkillsForTask(profile, task, { missionId, taskId: task.id });
+      const policyResult = applySkillPolicy(task, taskInput, skillSelection);
+      const skillContextId = persistSkillContext(skillSelection, agent.name);
       const ctx: ToolContext = {
         workspaceId: mission.workspace_id,
         actor: agent.name,
-        permissions: new Set([...agent.permissions, 'memory:read', 'memory:write']),
+        permissions: new Set(profile.permissions),
+        toolAllowlist: new Set(profile.tools),
         missionId,
         taskId: task.id,
+        actionClass: actionClass?.class,
+        approvedAction,
+        correlationId: mission.correlation_id ?? undefined,
+        skillContext: skillSelection.selected.length ? skillContextForTool(skillSelection) : undefined,
       };
-      const toolInput = parseJson<Record<string, unknown>>(task.tool_input, {});
+      const toolInput = policyResult.input;
       const result = task.tool
         ? await runTool(task.tool, toolInput, ctx)
         : { ok: false, tool: 'none', error: 'No tool assigned to task', durationMs: 0 } as Awaited<ReturnType<typeof runTool>>;
@@ -462,25 +916,246 @@ export async function executeMission(missionId: string, actor = 'orchestrator'):
       lastOutput = result.output ?? null;
       lastDuration = result.durationMs;
       const review = reviewRun(task, result.ok, result.output, result.error ?? null);
-      reviewPassed = review.passed;
-      lastIssues = review.issues;
-      lastEvidence = [{ tool: result.tool, ok: result.ok, durationMs: result.durationMs, output: result.ok ? result.output : undefined, error: result.error, reviewAttempt: attempt }];
+      const independent = verifyIndependently({ tool: task.tool, toolInput, toolOk: result.ok, output: result.output, error: result.error ?? null, evidence: lastEvidence });
+      reviewPassed = review.passed && independent.passed;
+      lastOutput = redactSecrets(result.output ?? null).value;
+      const safeError = redactSecrets(result.error ?? '').value;
+      lastIssues = redactSecrets([...review.issues, ...independent.failures]).value;
+      lastEvidence = [{
+        tool: result.tool, ok: result.ok, durationMs: result.durationMs, output: result.ok ? lastOutput : undefined,
+        error: safeError, reviewAttempt: attempt,
+        artifactDigest: independent.artifactDigest,
+        independentChecks: redactSecrets(independent.checks).value,
+        capabilityDigest: lastProfile?.digest ?? null,
+        skills: skillSelection.selected.map((entry) => `${entry.skill.key}@${entry.skill.version}`),
+        plugins: lastProfile?.plugins.map((plugin) => `${plugin.key}@${plugin.version}`) ?? [],
+        skillContext: skillSelection.selected.length ? {
+          id: skillContextId, digest: skillSelection.digest, tokensUsed: skillSelection.tokensUsed,
+          tokenBudget: skillSelection.tokenBudget, appliedPolicy: policyResult.applied,
+          selected: skillSelection.selected.map((entry) => ({
+            key: entry.skill.key, version: entry.skill.version,
+            instructionDigest: entry.skill.instructionDigest, score: entry.score,
+          })),
+          omitted: skillSelection.omitted,
+        } : null,
+      }];
 
+      const liveAfterRun = db.prepare('SELECT status FROM os_missions WHERE id = ?').get(missionId) as { status?: string } | undefined;
+      if (liveAfterRun?.status === 'cancelled') {
+        db.prepare('UPDATE os_runs SET status = ?, finished_at = ?, summary = ?, evidence = ?, issues = ? WHERE id = ?')
+          .run('cancelled', nowIso(), 'Mission cancelled during execution; result not accepted', JSON.stringify(lastEvidence), JSON.stringify(['Mission cancelled']), runId);
+        db.prepare('UPDATE os_tasks SET status = ?, updated_at = ? WHERE id = ?').run('cancelled', nowIso(), task.id);
+        checkpointTask({ workspaceId: mission.workspace_id, taskId: task.id, missionId, runId, attempt, status: 'blocked', output: lastOutput, evidence: lastEvidence, checkpoint: { cancelled: true } });
+        audit(db, { workspaceId: mission.workspace_id, actor: agent.name, action: 'mission.cancel.observed', subject: task.id, detail: { missionId, runId } });
+        cancelledMidRun = true;
+        break;
+      }
       db.prepare('UPDATE os_runs SET status = ?, finished_at = ?, summary = ?, evidence = ?, issues = ? WHERE id = ?')
-        .run(reviewPassed ? 'completed' : attempt === 2 ? 'failed' : 'retrying', nowIso(),
+        .run(reviewPassed ? 'completed' : attempt === maxAttempts ? 'failed' : 'retrying', nowIso(),
           reviewPassed ? `Completed by ${agent.name}${attempt > 1 ? ` (after ${attempt} attempts)` : ''}` : `Review failed: ${review.issues.join('; ')}`,
           JSON.stringify(lastEvidence).slice(0, 60_000),
-          JSON.stringify(review.issues),
+          JSON.stringify(redactSecrets(review.issues).value),
           runId);
+      if (!reviewPassed) {
+        checkpointTask({
+          workspaceId: mission.workspace_id, taskId: task.id, missionId, runId, attempt,
+          status: 'failed', output: lastOutput, evidence: lastEvidence,
+          checkpoint: { tool: result.tool, ok: result.ok, reviewPassed, issues: review.issues },
+        });
+      }
 
-      if (!reviewPassed) attempt += 1;
+      recordVerification({
+        workspaceId: mission.workspace_id, missionId, taskId: task.id, runId,
+        objective: task.objective,
+        acceptanceCriteria: parseJson<string[]>(task.acceptance, []),
+        expectedOutput: task.tool ? `A successful ${task.tool} result satisfying the task acceptance criteria` : 'Task output satisfying the acceptance criteria',
+        actualOutput: lastOutput,
+        evidence: lastEvidence,
+        checks: [
+          { id: 'tool-execution', kind: 'runtime', description: 'The assigned tool completed without an execution error', status: result.ok ? 'passed' : 'failed', evidence: result.ok ? `${result.tool} returned in ${result.durationMs} ms` : (result.error ?? 'unknown tool error') },
+          { id: 'acceptance-review', kind: 'acceptance', description: 'Deterministic acceptance review over the actual output and evidence', status: review.passed ? 'passed' : 'failed', evidence: review.issues.join('; ') || 'All deterministic acceptance checks passed.' },
+          { id: 'dependency-satisfaction', kind: 'planning', description: 'Every dependency was completed before this task ran', status: deps.every((id) => (db.prepare('SELECT status FROM os_tasks WHERE id = ?').get(id) as { status?: string } | undefined)?.status === 'completed') ? 'passed' : 'failed', evidence: deps.length ? deps.join(', ') : 'No dependencies declared.' },
+          { id: 'lease-ownership', kind: 'concurrency', description: 'The executing worker held the durable lease for this task', status: getTaskLease(mission.workspace_id, task.id)?.ownerId === workerId ? 'passed' : 'failed', evidence: `worker ${workerId}` },
+          { id: 'checkpoint-continuity', kind: 'recovery', description: 'The run did not silently continue an uncertain prior side effect', status: 'passed', evidence: priorCheckpoint ? `prior checkpoint ${priorCheckpoint.status}` : 'no prior checkpoint' },
+          {
+            id: 'skill-context-provenance', kind: 'provenance',
+            description: 'Approved skill knowledge was selected with version and instruction digest, within the token budget',
+            status: skillSelection.selected.length ? 'passed' : 'not_run',
+            evidence: skillSelection.selected.length
+              ? `${skillSelection.selected.map((entry) => `${entry.skill.key}@${entry.skill.version}:${entry.skill.instructionDigest}`).join(', ')} (${skillSelection.tokensUsed}/${skillSelection.tokenBudget} tokens)`
+              : 'No task-relevant auto-load skill was selected.',
+          },
+          ...independent.checks,
+        ],
+        result: reviewPassed ? 'passed' : 'failed',
+        failureReason: reviewPassed ? '' : lastIssues.join('; '),
+        verifier: 'wora.verifier/independent',
+      });
+      maybeTestStage('after-verification');
+      if (reviewPassed) {
+        checkpointTask({
+          workspaceId: mission.workspace_id, taskId: task.id, missionId, runId, attempt,
+          status: 'completed', output: lastOutput, evidence: lastEvidence,
+          checkpoint: { tool: result.tool, ok: result.ok, reviewPassed, issues: review.issues },
+        });
+        maybeTestStage('after-completed-checkpoint');
+      }
+
+      recordAgentPerformance({
+        workspaceId: mission.workspace_id, agentId: agent.id, taskCategory: task.specialization,
+        result: reviewPassed ? 'passed' : 'failed', durationMs: lastDuration,
+      });
+      // Capability replacement: only a schema-compatible, already-authorized
+      // alternative may replace a failed capability. Completed tasks are not
+      // touched, the original failure stays in the decision record, and the
+      // replacement still runs through authorization and independent review.
+      if (!reviewPassed && attempt >= maxAttempts && fallbackAttempts < fallbackTools.length) {
+        const failedTool = task.tool;
+        const failureCategory = classifyFailure(lastIssues);
+        let replacement: { tool: string; remaining: string[] } | null = null;
+        let replacementSemantic: ReturnType<typeof evaluateSemanticCompatibility> | null = null;
+        let rejection = 'No schema-compatible fallback was available.';
+        while (fallbackAttempts < fallbackTools.length) {
+          const candidateTool = fallbackTools[fallbackAttempts]!;
+          fallbackAttempts += 1;
+          const currentDef = failedTool ? getTool(failedTool, mission.workspace_id) : null;
+          const candidateDef = getTool(candidateTool, mission.workspace_id);
+          const registered = new Map(listRegisteredTools(mission.workspace_id).map((tool) => [tool.toolId, tool]));
+          const outputEquivalent = JSON.stringify(registered.get(failedTool ?? '')?.outputSchema ?? null)
+            === JSON.stringify(registered.get(candidateTool)?.outputSchema ?? null);
+          const structural = Boolean(currentDef && candidateDef && outputEquivalent
+            && JSON.stringify(currentDef.inputSchema ?? {}) === JSON.stringify(candidateDef.inputSchema ?? {}));
+          const semantic = failedTool && candidateDef
+            ? evaluateSemanticCompatibility({ primaryTool: failedTool, fallbackTool: candidateTool, workspaceId: mission.workspace_id, risk: candidateDef.risk })
+            : null;
+          const authorized = Boolean(lastProfile && authorizeTool(mission.workspace_id, lastProfile, candidateTool).allowed);
+          if (structural && semantic?.compatible && authorized) {
+            replacement = { tool: candidateTool, remaining: fallbackTools.slice(fallbackAttempts) };
+            replacementSemantic = semantic;
+            break;
+          }
+          rejection = !candidateDef ? `Fallback ${candidateTool} is not registered.`
+            : !structural ? `Fallback ${candidateTool} has a different input/output contract; substitution refused.`
+              : !semantic?.compatible ? `Fallback ${candidateTool} failed semantic compatibility: ${semantic?.reasons.slice(0, 3).join('; ') ?? 'no contract'}.`
+                : `Fallback ${candidateTool} is not authorized for ${agent.name}.`;
+        }
+        if (replacement) {
+          db.exec('BEGIN IMMEDIATE');
+          try {
+            db.prepare("UPDATE os_tasks SET tool = ?, fallback_tools = ?, status = 'planned', detail = ?, updated_at = ? WHERE id = ?")
+              .run(replacement.tool, JSON.stringify(replacement.remaining),
+                `capability_replacement: ${failedTool ?? 'none'} -> ${replacement.tool}; input schema verified equivalent and agent authorized`.slice(0, 500),
+                nowIso(), task.id);
+            db.exec('COMMIT');
+          } catch (error) {
+            try { db.exec('ROLLBACK'); } catch { /* preserve original */ }
+            throw error;
+          }
+          saveDecisionRecord({
+            workspaceId: mission.workspace_id, missionId, kind: 'capability-replacement',
+            comparison: {
+              taskId: task.id, fromTool: failedTool, toTool: replacement.tool,
+              failureCategory, previousFailure: lastIssues.slice(0, 12), inputSchemaEquivalent: true, outputSchemaEquivalent: true, semanticCompatible: true, semanticChecks: replacementSemantic?.checks ?? [],
+              authorizedForAgent: agent.id, remainingFallbacks: replacement.remaining,
+            },
+            reason: `Compatible capability replacement ${failedTool ?? 'none'} -> ${replacement.tool}; original failure preserved.`,
+            actor: 'orchestrator',
+          });
+          audit(db, { workspaceId: mission.workspace_id, actor: 'orchestrator', action: 'task.capability_replacement', subject: task.id, detail: { missionId, from: failedTool, to: replacement.tool, failureCategory } });
+          try { replanMission(mission.workspace_id, missionId, `capability replacement ${failedTool ?? 'none'} -> ${replacement.tool}`, 'orchestrator'); } catch { /* plan version is best-effort; execution graph is already persisted */ }
+          task.tool = replacement.tool;
+          task.fallback_tools = JSON.stringify(replacement.remaining);
+          taskInput = openTaskToolInput<Record<string, unknown>>(mission.workspace_id, task.id, task.tool_input, {});
+          attempt = 1;
+          reassignments = 0;
+          lastOutput = null;
+          lastIssues = [];
+          lastEvidence = [];
+          fallbackTools = replacement.remaining;
+          fallbackAttempts = 0;
+          continue;
+        }
+        saveDecisionRecord({
+          workspaceId: mission.workspace_id, missionId, kind: 'capability-replacement-gap',
+          comparison: { taskId: task.id, fromTool: failedTool, rejection, fallbackTools },
+          reason: rejection, actor: 'orchestrator',
+        });
+      }
+      if (!reviewPassed && attempt >= maxAttempts && reassignments < 1) {
+        const replacement = selectReplacement(mission.workspace_id, {
+          id: task.id, title: task.title, objective: task.objective, specialization: task.specialization,
+          tool: task.tool, acceptance: parseJson<string[]>(task.acceptance, []), dependsOn: [], agentId: agent.id,
+        }, missionId, agent.id);
+        if (replacement.agent) {
+          audit(db, { workspaceId: mission.workspace_id, actor: 'orchestrator', action: 'task.reassign', subject: task.id, detail: { missionId, from: agent.id, to: replacement.agent.id, reason: lastIssues.join('; ').slice(0, 300) } });
+          agent = replacement.agent;
+          task.agent_id = agent.id;
+          db.prepare('UPDATE os_tasks SET agent_id = ?, updated_at = ? WHERE id = ?').run(agent.id, nowIso(), task.id);
+          reassignments += 1;
+          attempt = 1;
+          continue;
+        }
+      }
+      if (!reviewPassed) {
+        const adaptiveCandidate = alternativeForTask({ tool: task.tool, toolInput: taskInput });
+        const assessment = assessReplan({
+          failureCategory: classifyFailure(lastIssues),
+          methodFailed: true,
+          alternativesAvailable: Boolean(adaptiveCandidate),
+          previousReplans: adaptiveReplans,
+        });
+        saveDecisionRecord({
+          workspaceId: mission.workspace_id, missionId, kind: 'failure-assessment',
+          comparison: { ...assessment, candidate: adaptiveCandidate?.tool ?? null },
+          reason: assessment.reason,
+          actor: 'orchestrator',
+        });
+        if (assessment.action === 'replan' && adaptiveReplans < 1) {
+          db.prepare('UPDATE os_tasks SET status = ?, updated_at = ? WHERE id = ?').run('failed', nowIso(), task.id);
+          const transition = applyAdaptiveReplan({
+            workspaceId: mission.workspace_id, missionId, taskId: task.id,
+            reason: `method ${task.tool ?? 'none'} failed: ${lastIssues.join('; ').slice(0, 300)}`,
+            actor: 'orchestrator',
+          });
+          if (transition.applied) {
+            const fresh = db.prepare('SELECT tool, tool_input FROM os_tasks WHERE id = ?').get(task.id) as { tool: string | null; tool_input: string };
+            task.tool = fresh.tool;
+            task.tool_input = fresh.tool_input;
+            taskInput = openTaskToolInput<Record<string, unknown>>(mission.workspace_id, task.id, fresh.tool_input, {});
+            adaptiveReplans += 1;
+            attempt = 1;
+            reassignments = 0;
+            lastOutput = null;
+            lastIssues = [];
+            lastEvidence = [];
+            maybeTestStage('after-adaptive-replan');
+            continue;
+          }
+          saveDecisionRecord({
+            workspaceId: mission.workspace_id, missionId, kind: 'adaptive-replan-gap',
+            comparison: transition, reason: transition.reason, actor: 'orchestrator',
+          });
+        }
+        attempt += 1;
+      }
+    }
+    if (cancelledMidRun) continue;
+    const liveBeforeHandoff = db.prepare('SELECT status FROM os_missions WHERE id = ?').get(missionId) as { status?: string } | undefined;
+    if (liveBeforeHandoff?.status === 'cancelled') {
+      db.prepare('UPDATE os_tasks SET status = ?, updated_at = ? WHERE id = ?').run('cancelled', nowIso(), task.id);
+      continue;
     }
 
     // Mandatory handoff contract
+    const failureCategory = reviewPassed ? null : classifyFailure(lastIssues);
     const contract = {
       taskId: task.id,
+      fromAgent: { id: agent.id, name: agent.name, specialization: agent.specialization },
+      taskState: reviewPassed ? 'completed_verified' : 'failed_review',
+      failureCategory,
+      reassignmentCount: reassignments,
       objective: task.objective,
-      inputContext: { tool: task.tool, toolInput: parseJson(task.tool_input, {}), mission: missionId },
+      inputContext: { tool: task.tool, toolInput: openTaskToolInput(mission.workspace_id, task.id, task.tool_input, {}), mission: missionId },
       workPerformed: reviewPassed
         ? `${agent.name} executed ${task.tool} and passed review after ${attempt - 1 || 1} attempt(s).`
         : `${agent.name} executed ${task.tool}; review rejected the output: ${lastIssues.join('; ')}`,
@@ -489,31 +1164,65 @@ export async function executeMission(missionId: string, actor = 'orchestrator'):
       acceptanceCriteria: parseJson<string[]>(task.acceptance, []),
       acceptanceMet: reviewPassed,
       remainingIssues: lastIssues,
+      capabilities: {
+        digest: lastProfile?.digest ?? null,
+        skills: lastProfile?.skills.map((skill) => `${skill.key}@${skill.version}`) ?? [],
+        plugins: lastProfile?.plugins.map((plugin) => `${plugin.key}@${plugin.version}`) ?? [],
+        tools: lastProfile?.tools ?? [],
+        permissions: lastProfile?.permissions ?? [],
+      },
       dependencies: deps,
+      evidenceReferences: lastEvidence.map((entry) => entry['artifactDigest']).filter(Boolean),
       recommendedNextAction: reviewPassed
         ? (tasks.some((t) => parseJson<string[]>(t.depends_on, []).includes(task.id)) ? 'Hand off to dependent specialists; they will validate this contract before proceeding.' : 'Include in the mission deliverable for user review.')
         : 'Return to the authoring agent for correction or escalate — do not build on this output.',
     };
     db.prepare('INSERT INTO os_handoffs (id, mission_id, task_id, from_specialization, to_specialization, contract, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
       .run(newId('hof'), missionId, task.id, task.specialization, 'review', JSON.stringify(contract), nowIso());
+    maybeTestStage('after-handoff');
 
     if (reviewPassed) {
       db.prepare('UPDATE os_tasks SET status = ?, updated_at = ? WHERE id = ?').run('completed', nowIso(), task.id);
+      maybeTestStage('after-task-completed');
       completed.add(task.id);
-      addMemory({ workspaceId: mission.workspace_id, scope: 'execution', scopeId: missionId, content: `Task "${task.title}" completed by ${agent.name}. ${contract.deliverables.join(' ')}`, tags: ['execution', task.specialization], provenance: `mission:${missionId}`, agentId: agent.id, actor });
+      addMemory({ workspaceId: mission.workspace_id, scope: 'execution', scopeId: missionId, content: redactSecrets(`Task "${task.title}" completed by ${agent.name}. ${contract.deliverables.join(' ')}`).value, tags: ['execution', task.specialization], provenance: `mission:${missionId}`, agentId: agent.id, actor });
     } else {
       db.prepare('UPDATE os_tasks SET status = ?, updated_at = ? WHERE id = ?').run('failed', nowIso(), task.id);
       failed = true;
     }
+    } finally {
+      clearInterval(heartbeat);
+      releaseTaskLease({ workspaceId: mission.workspace_id, taskId: task.id, ownerId: workerId });
+    }
   }
 
+  if (options.workerMode) return;
+  await afterMission(missionId, actor, mission);
+}
+
+async function afterMission(missionId: string, actor: string, mission: { workspace_id: string; objective: string }): Promise<void> {
+  recoverExpiredTaskLeases(mission.workspace_id);
+  // Another worker may still hold tasks from this mission; never finalize over it.
+  if (listTaskLeases(mission.workspace_id, missionId).length > 0) return;
   finalizeMission(missionId, actor);
-  // Self-building intelligence: distill this mission's validated OR runs into reusable playbooks.
   try {
     await maybeDistillPlaybook({ workspaceId: mission.workspace_id, missionId, objective: mission.objective, actor });
+    if (getMissionDetail(mission.workspace_id, missionId)?.status === 'completed') {
+      collectCandidateLessons(mission.workspace_id, missionId, actor);
+    }
   } catch (err) {
-    logger.warn({ err, missionId }, 'playbook distillation failed (mission unaffected)');
+    logger.warn({ err, missionId }, 'playbook or lesson collection failed (mission unaffected)');
   }
+}
+
+function classifyFailure(issues: string[]): string {
+  const text = issues.join('; ').toLowerCase();
+  if (/permission|not enabled|not assigned|not available|authoriz|denied/u.test(text)) return 'authorization';
+  if (/timed out|timeout/u.test(text)) return 'timeout';
+  if (/invalid input|schema/u.test(text)) return 'invalid_input';
+  if (/no output|empty/u.test(text)) return 'empty_output';
+  if (/infeasible|solver|status:/u.test(text)) return 'solver_failure';
+  return 'verification_failed';
 }
 
 function summarizeDeliverables(tool: string | null, output: unknown): string[] {
@@ -540,13 +1249,23 @@ function summarizeDeliverables(tool: string | null, output: unknown): string[] {
 
 function finalizeMission(missionId: string, actor: string): void {
   const db = getOsDb();
-  const mission = db.prepare('SELECT * FROM os_missions WHERE id = ?').get(missionId) as { id: string; workspace_id: string; objective: string; created_at: string };
+  const mission = db.prepare('SELECT * FROM os_missions WHERE id = ?').get(missionId) as { id: string; workspace_id: string; objective: string; status: string; created_at: string };
+  if (mission.status === 'cancelled' || mission.status === 'paused' || mission.status === 'completed') return;
   const tasks = db.prepare('SELECT * FROM os_tasks WHERE mission_id = ? ORDER BY order_index').all(missionId) as unknown as TaskRow[];
+  const pending = tasks.filter((t) => ['planned', 'created', 'assigned', 'running'].includes(t.status));
+  if (pending.length) {
+    if (listTaskLeases(mission.workspace_id, missionId).length > 0) return;
+    for (const task of pending) {
+      db.prepare('UPDATE os_tasks SET status = ?, detail = ?, updated_at = ? WHERE id = ? AND status IN (?, ?, ?, ?)')
+        .run('blocked', 'orphaned_assignment — no worker held a lease for this task', nowIso(), task.id, 'planned', 'created', 'assigned', 'running');
+      task.status = 'blocked';
+      task.detail = 'orphaned_assignment — no worker held a lease for this task';
+    }
+  }
   const allDone = tasks.every((t) => t.status === 'completed');
   const anyFailed = tasks.some((t) => t.status === 'failed' || t.status === 'blocked');
   const anyAwaiting = tasks.some((t) => t.status === 'blocked' && t.detail.startsWith('awaiting_approval:'));
-  const status: MissionStatus = allDone ? 'completed' : anyAwaiting ? 'awaiting_approval' : 'failed';
-  // Ensure any never-run tasks are blocked rather than dangling
+  let status: MissionStatus = allDone ? 'completed' : anyAwaiting ? 'awaiting_approval' : 'failed';
   if (!allDone && !anyFailed) {
     for (const t of tasks) if (t.status !== 'completed') db.prepare('UPDATE os_tasks SET status = ?, updated_at = ? WHERE id = ?').run('blocked', nowIso(), t.id);
   }
@@ -569,7 +1288,7 @@ function finalizeMission(missionId: string, actor: string): void {
     `- Completion reflects passing deterministic acceptance checks on attached evidence, not agent self-report.`,
     `- No external side effects were performed beyond sandboxed file writes and allowlisted node --test executions.`,
   ];
-  const content = lines.join('\n');
+  const content = redactSecrets(lines.join('\n')).value;
   let artifactId: string | null = null;
   try {
     const dir = path.join(workspacePath(mission.workspace_id), 'reports');
@@ -584,9 +1303,28 @@ function finalizeMission(missionId: string, actor: string): void {
     db.prepare('INSERT INTO os_artifacts (id, mission_id, workspace_id, name, kind, content, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
       .run(artifactId, missionId, mission.workspace_id, `mission-${mission.id}.md`, 'report', content, nowIso());
   }
-  db.prepare('UPDATE os_missions SET status = ?, summary = ?, artifact_id = ?, updated_at = ? WHERE id = ?')
-    .run(status, allDone ? `${tasks.length} task(s) completed with evidence.` : `Finished with unresolved tasks — see failed/blocked below.`, artifactId, nowIso(), missionId);
-  audit(db, { workspaceId: mission.workspace_id, actor, action: 'mission.finalize', subject: missionId, detail: { status, tasks: tasks.length } });
+  const outcome = verifyMissionOutcome(mission.workspace_id, missionId);
+  // Completed work without retained verification is reported as an unverified
+  // outcome, not silently upgraded to verified. Missing evidence does not make
+  // already-completed work disappear; the outcome field carries that caveat.
+  if (allDone && !['verified', 'partially_verified', 'unverified'].includes(outcome.status)) status = 'failed';
+  const outcomeNote = outcome.status === 'verified'
+    ? 'Outcome independently verified.'
+    : outcome.status === 'partially_verified'
+      ? `Partially verified: ${outcome.reasons.join(' ') || 'some outcome evidence is not externally observable.'}`
+      : `Outcome not verified: ${outcome.status}. ${outcome.reasons.join(' ')}`.trim();
+  // A terminal mission must not retain a lease. Clear it before publishing the
+  // terminal status so an observer cannot see `completed` with a live lease.
+  clearMissionLeases(mission.workspace_id, missionId);
+  clearMissionLease(mission.workspace_id, missionId);
+  db.prepare('UPDATE os_missions SET status = ?, summary = ?, artifact_id = ?, outcome_status = ?, outcome_evidence = ?, updated_at = ? WHERE id = ?')
+    .run(status, allDone ? `${tasks.length} task(s) completed with evidence. ${outcomeNote}` : `Finished with unresolved tasks — see failed/blocked below. ${outcomeNote}`, artifactId, outcome.status, JSON.stringify(outcome).slice(0, 120_000), nowIso(), missionId);
+  try {
+    recordOutcomeReasoningEvidence({ workspaceId: mission.workspace_id, missionId, status: outcome.status, taskEvidence: outcome.taskEvidence });
+  } catch (err) {
+    logger.warn({ err, missionId }, 'outcome evidence could not be attached to the reasoning model');
+  }
+  audit(db, { workspaceId: mission.workspace_id, actor, action: 'mission.finalize', subject: missionId, detail: { status, tasks: tasks.length, reasoning: getReasoningModel(mission.workspace_id, missionId)?.version ?? null } });
 }
 
 /**
@@ -595,10 +1333,18 @@ function finalizeMission(missionId: string, actor: string): void {
  * tasks honestly so operators can resume via POST /missions/:id/execute
  * (re-entry is idempotent: completed tasks are skipped).
  */
-export function markInterruptedMissions(): number {
+export function markInterruptedMissions(workspaceId?: string): number {
   const db = getOsDb();
-  const stale = db.prepare("SELECT id, workspace_id FROM os_missions WHERE status IN ('running', 'planning')").all() as Array<{ id: string; workspace_id: string }>;
+  recoverExpiredTaskLeases();
+  recoverExpiredMissionLeases(workspaceId);
+  const stale = (workspaceId
+    ? db.prepare("SELECT id, workspace_id FROM os_missions WHERE workspace_id = ? AND status IN ('running', 'planning')").all(workspaceId)
+    : db.prepare("SELECT id, workspace_id FROM os_missions WHERE status IN ('running', 'planning')").all()) as Array<{ id: string; workspace_id: string }>;
   for (const mission of stale) {
+    // A live mission lease means another process is actively executing it.
+    // Boot recovery must never mark a worker's mission interrupted.
+    if (getMissionLease(mission.workspace_id, mission.id)) continue;
+    clearMissionLeases(mission.workspace_id, mission.id);
     db.prepare("UPDATE os_tasks SET status = 'blocked', detail = 'interrupted_by_restart — resume the mission to re-execute this task', updated_at = ? WHERE mission_id = ? AND status IN ('running', 'assigned', 'reviewing', 'planned', 'created')")
       .run(nowIso(), mission.id);
     db.prepare("UPDATE os_runs SET status = 'interrupted', finished_at = ?, summary = 'Interrupted by process restart' WHERE mission_id = ? AND status = 'running'")
@@ -608,6 +1354,37 @@ export function markInterruptedMissions(): number {
     audit(db, { workspaceId: mission.workspace_id, actor: 'system', action: 'mission.interrupted', subject: mission.id, detail: { reason: 'process restart' } });
   }
   return stale.length;
+}
+
+/** Pause before the next task boundary. Running tool calls are not aborted. */
+export function pauseMission(workspaceId: string, missionId: string, actor: string): boolean {
+  const db = getOsDb();
+  const result = db.prepare("UPDATE os_missions SET status = 'paused', updated_at = ? WHERE workspace_id = ? AND id = ? AND status NOT IN ('completed', 'cancelled')")
+    .run(nowIso(), workspaceId, missionId);
+  if (Number(result.changes) > 0) audit(db, { workspaceId, actor, action: 'mission.pause', subject: missionId, detail: {} });
+  return Number(result.changes) > 0;
+}
+
+/** Resume a paused or failed mission; the caller then invokes executeMission. */
+export function resumeMission(workspaceId: string, missionId: string, actor: string): boolean {
+  const db = getOsDb();
+  const result = db.prepare("UPDATE os_missions SET status = 'running', updated_at = ? WHERE workspace_id = ? AND id = ? AND status IN ('paused', 'failed', 'awaiting_approval')")
+    .run(nowIso(), workspaceId, missionId);
+  if (Number(result.changes) > 0) audit(db, { workspaceId, actor, action: 'mission.resume', subject: missionId, detail: {} });
+  return Number(result.changes) > 0;
+}
+
+/** Cancel a mission and invalidate any task leases so no worker can continue it. */
+export function cancelMission(workspaceId: string, missionId: string, actor: string): boolean {
+  const db = getOsDb();
+  const result = db.prepare("UPDATE os_missions SET status = 'cancelled', summary = 'Cancelled by an operator.', updated_at = ? WHERE workspace_id = ? AND id = ? AND status NOT IN ('completed', 'cancelled')")
+    .run(nowIso(), workspaceId, missionId);
+  if (Number(result.changes) > 0) {
+    clearMissionLeases(workspaceId, missionId);
+    db.prepare("UPDATE os_tasks SET status = 'cancelled', updated_at = ? WHERE mission_id = ? AND status NOT IN ('completed', 'cancelled')").run(nowIso(), missionId);
+    audit(db, { workspaceId, actor, action: 'mission.cancel', subject: missionId, detail: {} });
+  }
+  return Number(result.changes) > 0;
 }
 
 /* ─── Read models ───────────────────────────────────────── */
@@ -622,7 +1399,9 @@ const taskView = (row: TaskRow) => ({
   dependsOn: parseJson<string[]>(row.depends_on, []),
   acceptance: parseJson<string[]>(row.acceptance, []),
   tool: row.tool,
-  toolInput: parseJson(row.tool_input, {}),
+  toolInput: openTaskToolInput(String(row.workspace_id), String(row.id), row.tool_input, {}),
+  fallbackTools: parseJson<string[]>(row.fallback_tools ?? '[]', []),
+  inputBindings: parseJson<InputBinding[]>(row.input_bindings ?? '[]', []),
   detail: row.detail,
   createdAt: row.created_at,
   updatedAt: row.updated_at,
@@ -631,15 +1410,15 @@ const taskView = (row: TaskRow) => ({
 export function listMissions(workspaceId: string, limit = 30) {
   const db = getOsDb();
   const missions = db.prepare('SELECT * FROM os_missions WHERE workspace_id = ? ORDER BY created_at DESC LIMIT ?').all(workspaceId, Math.min(limit, 100)) as Array<Record<string, string>>;
-  return missions.map((m) => ({
-    id: m['id'], objective: m['objective'], status: m['status'], summary: m['summary'], requestedBy: m['requested_by'], artifactId: m['artifact_id'], createdAt: m['created_at'], updatedAt: m['updated_at'],
-  }));
+  return redactSecrets(missions.map((m) => ({
+    id: m['id'], objective: m['objective'], status: m['status'], outcomeStatus: m['outcome_status'] ?? 'unverified', summary: m['summary'], requestedBy: m['requested_by'], correlationId: m['correlation_id'] ?? null, artifactId: m['artifact_id'], createdAt: m['created_at'], updatedAt: m['updated_at'],
+  }))).value;
 }
 
-export function getMissionDetail(workspaceId: string, missionId: string) {
+export function getMissionDetail(workspaceId: string, missionId: string, actor?: string) {
   const db = getOsDb();
   const mission = db.prepare('SELECT * FROM os_missions WHERE workspace_id = ? AND id = ?').get(workspaceId, missionId) as
-    | { id: string; workspace_id: string; objective: string; status: string; summary: string; requested_by: string; artifact_id: string | null; created_at: string; updated_at: string }
+    | { id: string; workspace_id: string; objective: string; status: string; summary: string; requested_by: string; correlation_id?: string | null; artifact_id: string | null; outcome_status?: string; outcome_evidence?: string; created_at: string; updated_at: string }
     | undefined;
   if (!mission) return null;
   const tasks = db.prepare('SELECT * FROM os_tasks WHERE mission_id = ? ORDER BY order_index').all(missionId) as unknown as TaskRow[];
@@ -648,13 +1427,34 @@ export function getMissionDetail(workspaceId: string, missionId: string) {
   const handoffs = db.prepare('SELECT * FROM os_handoffs WHERE mission_id = ? ORDER BY created_at ASC').all(missionId) as Array<Record<string, string>>;
   const artifacts = db.prepare('SELECT id, name, kind, created_at FROM os_artifacts WHERE mission_id = ?').all(missionId) as Array<Record<string, string>>;
   const approvals = listMissionApprovals(workspaceId, missionId);
-  return {
+  const rawProblemModel = getProblemModel(workspaceId, missionId);
+  const rawReasoning = getReasoningModel(workspaceId, missionId);
+  const visibleProblemModel = rawProblemModel && actor && actor !== 'system'
+    ? filterProblemForActor(rawProblemModel, workspaceId, actor) : rawProblemModel;
+  const visibleReasoning = rawReasoning && actor && actor !== 'system'
+    ? filterReasoningForActor(rawReasoning, workspaceId, actor) : rawReasoning;
+  return redactSecrets({
     approvals,
+    problemProfile: getProblemProfile(workspaceId, missionId),
+    planVersions: listPlanVersions(workspaceId, missionId),
+    planVerification: verifyPlanExecution(tasks.map((task) => ({ id: task.id, status: task.status, dependsOn: parseJson<string[]>(task.depends_on, []) }))),
+    teamPlan: getTeamPlan(workspaceId, missionId),
+    selectionDecisions: listSelectionDecisions(workspaceId, missionId),
+    decisions: listDecisionRecords(workspaceId, missionId),
+    verifications: listVerifications(workspaceId, { missionId, limit: 100 }),
+    capabilitySnapshots: listCapabilitySnapshots(workspaceId, { missionId, limit: 100 }),
+    skillContexts: listSkillContexts(workspaceId, { missionId, limit: 100 }),
+    problemModel: visibleProblemModel,
+    composition: getComposition(workspaceId, missionId),
+    outcomeStatus: mission.outcome_status ?? 'unverified',
+    outcomeVerification: getMissionOutcome(workspaceId, missionId),
+    reasoning: visibleReasoning,
     id: mission.id,
     objective: mission.objective,
     status: mission.status,
     summary: mission.summary,
     requestedBy: mission.requested_by,
+    correlationId: mission.correlation_id ?? null,
     artifactId: mission.artifact_id,
     createdAt: mission.created_at,
     updatedAt: mission.updated_at,
@@ -668,7 +1468,7 @@ export function getMissionDetail(workspaceId: string, missionId: string) {
     })),
     handoffs: handoffs.map((h) => ({ id: h['id'], taskId: h['task_id'], from: h['from_specialization'], to: h['to_specialization'], contract: parseJson(h['contract'] as string, {}), createdAt: h['created_at'] })),
     artifacts,
-  };
+  }).value;
 }
 
 export function getOsState(workspaceId: string) {

@@ -9,6 +9,7 @@ test('the product-wide design system stays restrained and defines desktop/mobile
   const styles = [
     'index.css', 'styles/shell.css', 'styles/company-frame.css', 'styles/workbench.css',
     'styles/features.css', 'styles/studio.css', 'styles/floorplan.css', 'styles/campus.css',
+    'styles/design-system.css',
   ].map(read).join('\n');
   ok(!styles.includes('radial-gradient('), 'no decorative radial gradients');
   ok(!styles.includes('backdrop-filter:'), 'no unnecessary glass effects');
@@ -16,11 +17,27 @@ test('the product-wide design system stays restrained and defines desktop/mobile
   ok(!styles.includes('text-shadow:'), 'no glow text treatment');
 
   const tokens = read('index.css');
-  // Product reset 2026-11: intentional, restrained radii (8px panels / 6px controls)
-  match(tokens, /--panel-radius:\s*8px/);
-  match(tokens, /--control-radius:\s*6px/);
+  // Design System v1: burgundy brand, warm canvas, 8/12/16 radius scale.
+  match(tokens, /--brand:\s*#722F43/);
+  match(tokens, /--canvas:\s*#F5F3F1/);
+  match(tokens, /--ink:\s*#171719/);
+  match(tokens, /--text-secondary:\s*#6F6967/);
+  match(tokens, /--radius-card:\s*12px/);
+  match(tokens, /--radius-control:\s*8px/);
+  match(tokens, /--radius-dialog:\s*16px/);
   match(tokens, /--font-sans:\s*'Inter Variable'/);
   match(tokens, /\.page-heading h1[^}]*font-size:\s*clamp\(23px/);
+
+  const components = read('styles/design-system.css');
+  match(components, /\.status-badge/);
+  match(components, /\.risk-badge/);
+  match(components, /\.activity-timeline/);
+  match(components, /\.state-message/);
+
+  const ui = read('components/ui.tsx');
+  match(ui, /export function Button/);
+  match(ui, /export function StatusBadge/);
+  match(ui, /export function StateMessage/);
 
   const campus = read('styles/workbench.css');
   match(campus, /\.page-campus\s*\{[^}]*height:\s*100%/);

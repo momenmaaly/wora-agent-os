@@ -1,6 +1,6 @@
 .app-shell { width: 100%; height: 100dvh; display: flex; overflow: hidden; }
 .app-main { display: flex; flex-direction: column; flex: 1; min-width: 0; }
-.desktop-sidebar { flex: 0 0 clamp(154px, 11.5vw, 176px); }
+.desktop-sidebar { flex: 0 0 clamp(176px, 12.5vw, 196px); }
 .company-sidebar { min-width: 0; display: flex; flex-direction: column; border-inline-end: 1px solid var(--line); background: var(--surface-color); }
 .sidebar-brand { display: flex; align-items: center; padding-inline: 14px; min-height: 54px; border-bottom: 1px solid var(--line); }
 .wora-brand, .wora-word { display: inline-flex; align-items: center; }
@@ -10,7 +10,7 @@
 .sidebar-navigation { display: grid; gap: 3px; padding: 12px 8px; min-height: 0; overflow: auto; }
 .nav-link { position: relative; display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 39px; padding: 6px 8px; border: 1px solid transparent; border-radius: var(--control-radius); color: var(--subtle); font-size: 13px; font-weight: 550; text-align: start; transition: background 150ms, color 150ms; }
 .nav-link:hover { background: var(--raised); color: var(--ink); }
-.nav-link > span { flex: 1; }
+.nav-link > span { flex: 1; white-space: nowrap; }
 .nav-link[aria-current='page'] { background: var(--accent-wash); color: var(--accent); font-weight: 700; }
 .nav-link[aria-current='page']::before { content: ''; position: absolute; inset-inline-start: -1px; top: 11px; bottom: 11px; width: 2px; background: var(--accent); border-radius: 5px; }
 .nav-link.nav-settings { margin-top: 8px; }
@@ -81,7 +81,7 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 .language-toggle svg { color: var(--accent-quiet); }
 @media (max-width: 580px) { .language-toggle > span { display: none; } }
 
-/* ── Executive command field (label + input + lime submit) ───────────── */
+/* ── Executive command field (label + input + burgundy submit) ───────── */
 .executive-command-field { display: flex; flex: 1 1 auto; align-items: center; gap: clamp(10px, 1.4vw, 18px); min-width: 0; }
 .executive-command-field .executive-command-label { flex: 0 0 auto; }
 .executive-command-field .executive-command-label small { display: block; max-width: 30ch; }
