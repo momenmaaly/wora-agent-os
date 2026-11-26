@@ -23,6 +23,7 @@ import { classifyAction } from './actions.js';
 import { understandProblem } from './problem.js';
 import { selectScientificMethod } from './science.js';
 import { getApproval, consumeApproval, payloadDigest, actionScope, isApprovalExpired } from './governance.js';
+import { financialIntent } from '../runtime/financial.js';
 import type { SemanticContract } from './semantic-contracts.js';
 
 const execFileAsync = promisify(execFile);
@@ -41,6 +42,8 @@ export interface ToolContext {
   taskId?: string;
   /** The orchestrator's classification for this action; class C always needs a consumed approval. */
   actionClass?: 'A' | 'B' | 'C';
+  /** True only after the orchestrator validated and consumed a class C financial approval for this exact action. */
+  financialApproved?: boolean;
   /** Set only after a class C approval was consumed by the orchestrator. */
   approvedAction?: { approvalId: string; payloadDigest: string; scope: string };
   correlationId?: string;
@@ -68,6 +71,8 @@ export interface ToolDefinition {
   timeoutMs: number;
   /** True only when repeating the tool after an uncertain interruption is safe. */
   idempotent?: boolean;
+  /** Runtime risk refinement for inputs that can become class C (for example a financial browser click). */
+  riskForInput?: (input: unknown) => { risk: ToolRisk; spendsMoney?: boolean; amountUsd?: number; reason?: string };
   /** Machine-readable meaning/units/side effects used for semantic fallback checks. */
   semanticContract?: SemanticContract;
   // `any` because tools are stored heterogeneously; runTool validates via `schema` before invoking.
@@ -843,6 +848,7 @@ const codeRepairTool: ToolDefinition = {
 
 /* ─── Registry ─────────────────────────────────────────── */
 import { scaffoldWebappTool, hostExecTool } from './scaffold.js';
+import { RUNTIME_TOOLS } from '../runtime/tools.js';
 import { incrementMetric, observeDuration } from '../lib/observability.js';
 
 /* ─── Plugin tool provider (extensions) ────────────────── */
@@ -922,6 +928,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   scientificSelectTool,
   problemUnderstandTool,
   actionClassifyTool,
+  ...RUNTIME_TOOLS,
 ];
 
 const toolMap = new Map(ALL_TOOLS.map((tool) => [tool.id, tool]));
@@ -933,6 +940,7 @@ const IDEMPOTENT_TOOL_IDS = new Set([
   'stats.describe', 'forecast.linear', 'decision.weighted_matrix', 'text.extract_summary',
   'web.fetch_read', 'security.scan', 'meta.select_algorithm', 'meta.select_scientific_method',
   'meta.understand_problem', 'meta.classify_action',
+  'cloud.read_file', 'cloud.list_files', 'browser.inspect', 'browser.wait',
 ]);
 
 export function isIdempotentTool(id: string | null, workspaceId?: string): boolean {
@@ -955,6 +963,11 @@ export function getTool(id: string, workspaceId?: string): ToolDefinition | null
   if (core) return core;
   const plugin = pluginTools(workspaceId).find((tool) => tool.id === id);
   return plugin ? pluginToolAsDefinition(plugin) : null;
+}
+
+export function effectiveToolRisk(tool: ToolDefinition, input: unknown): { risk: ToolRisk; spendsMoney: boolean; amountUsd?: number; reason?: string } {
+  const refined = tool.riskForInput?.(input);
+  return { risk: refined?.risk ?? tool.risk, spendsMoney: refined?.spendsMoney === true, ...(refined?.amountUsd !== undefined ? { amountUsd: refined.amountUsd } : {}), ...(refined?.reason ? { reason: refined.reason } : {}) };
 }
 
 /** Execute a tool with zod validation, permission check, timeout and audit. */
@@ -980,7 +993,8 @@ export async function runTool(id: string, rawInput: unknown, ctx: ToolContext): 
   if (!parsed.success) {
     return { ok: false, tool: id, error: `Invalid input for ${id}: ${parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')}`, durationMs: Date.now() - started };
   }
-  if (tool.risk === 'high' || ctx.actionClass === 'C') {
+  const inputRisk = effectiveToolRisk(tool, rawInput ?? {});
+  if (tool.risk === 'high' || inputRisk.risk === 'high' || ctx.actionClass === 'C') {
     const approved = ctx.approvedAction;
     const expectedScope = actionScope(ctx.missionId, ctx.taskId, id);
     const approval = approved?.approvalId ? getApproval(ctx.workspaceId, approved.approvalId) : null;

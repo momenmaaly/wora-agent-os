@@ -7,6 +7,7 @@ import { useMissionFeed } from '../os/useMissionFeed.js';
 import type { PageId } from '../pages.js';
 import { extensionsApi, type ExtensionSummary } from '../extensions/api.js';
 import { Button, StateMessage, StatusBadge } from '../components/ui.js';
+import { RuntimePanel } from '../components/RuntimePanel.js';
 import { formatDate } from './model.js';
 
 export function BriefZone({ onNavigate }: { onNavigate: (page: PageId) => void }) {
@@ -147,6 +148,8 @@ export function BriefZone({ onNavigate }: { onNavigate: (page: PageId) => void }
           </div>
           <p className="op-muted">{runtime ? `${t('op.brief.runtime')}: ${runtime.mode} · ${runtime.durableStore ? t('op.system.durableStore') : t('op.capabilities.unavailable')}` : '—'}</p>
         </section>
+
+        <RuntimePanel compact />
 
         <section className="op-panel">
           <div className="op-panel-head"><div><h2>{t('op.brief.understood')}</h2><p>{t('op.brief.understoodHint')}</p></div></div>

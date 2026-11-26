@@ -58,3 +58,25 @@ jobs:
       - run: npm run build
       # The browser journeys start the real API server, so the client job
       # installs api-server dependencies. They skip only when Chromium is absent.
+
+  docker-runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: api-server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: api-server/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - run: docker build -f docker/browser-runtime.Dockerfile -t wora-browser-runtime:1.0.0 .
+      - run: docker pull node:22-alpine
+      - run: npx tsx --test src/runtime/runtime-docker.test.ts
+        env:
+          WORA_DOCKER_INTEGRATION: '1'
+          WORA_TEST_BROWSER_IMAGE: wora-browser-runtime:1.0.0

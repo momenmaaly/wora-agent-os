@@ -741,6 +741,16 @@ function startWriterLease(db: OsDatabase): void {
   }
 }
 
+/**
+ * Create the full baseline schema and guarded legacy columns on an arbitrary
+ * connection. Used by the real database-upgrade tests; the API still creates
+ * its singleton through `getOsDb`.
+ */
+export function initializeBaselineSchema(db: OsDatabase): void {
+  db.exec(SCHEMA);
+  migrate(db);
+}
+
 export function getOsDb(): OsDatabase {
   if (instance) {
     assertWriterLease(instance);

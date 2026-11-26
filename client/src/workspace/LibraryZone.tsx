@@ -5,6 +5,7 @@ import { OsApiError, osApi } from '../os/api.js';
 import { useMissionFeed } from '../os/useMissionFeed.js';
 import type { PageId } from '../pages.js';
 import { Button, EmptyState, StateMessage } from '../components/ui.js';
+import { RuntimePanel } from '../components/RuntimePanel.js';
 import { formatDate } from './model.js';
 
 type LibraryTab = 'artifacts' | 'memory';
@@ -139,7 +140,8 @@ export function LibraryZone({ onNavigate }: { onNavigate: (page: PageId) => void
       <button type="button" className="icon-button" onClick={() => { void feed.refresh(); }} aria-label={t('op.refresh')} title={t('op.refresh')}><RefreshCw size={16} aria-hidden="true" /></button>
     </div>
 
-    {tab === 'artifacts' && <div className="op-library-grid">
+    {tab === 'artifacts' && <><RuntimePanel missionId={selectedMission?.id} compact />
+    <div className="op-library-grid">
       <section className="op-panel">
         <div className="op-panel-head"><div><h2>{t('op.library.artifacts')}</h2><p>{selectedMission?.objective ?? t('op.library.noMission')}</p></div></div>
         {feed.loading && !feed.detail && <StateMessage variant="loading" title={t('op.loading')} />}
@@ -159,7 +161,7 @@ export function LibraryZone({ onNavigate }: { onNavigate: (page: PageId) => void
         {!artifact && !artifactBusy && !artifactError && <p className="op-muted">{t('op.library.emptyArtifact')}</p>}
         {artifact && <pre dir="ltr">{artifact.content.slice(0, 24000)}</pre>}
       </section>
-    </div>}
+    </div></>}
 
     {tab === 'memory' && <div className="op-library-grid">
       <section className="op-panel">

@@ -57,6 +57,7 @@ import { sampleEmployeeInput } from './orchestrator.js';
 import {
   getApproval, getAutonomyPolicy, setAutonomyPolicy, listApprovals, decideApproval, getActionBudget, setActionBudget,
   requestDevicePairing, redeemDevicePairing, revokeDevice, listDevices, deviceHeartbeat, findDeviceById,
+  createApproval, consumeApproval, payloadDigest, actionScope, isApprovalExpired,
 } from './governance.js';
 import { logger } from '../lib/logger.js';
 import { metricsPrometheus, metricsSnapshot, newCorrelationId } from '../lib/observability.js';
@@ -65,6 +66,16 @@ import { applyAdaptiveReplan, alternativeForTask } from './adaptive-replan.js';
 import { ensureWorkspaceExtensions } from '../extensions/index.js';
 import { executeForAgent } from '../extensions/capabilities.js';
 import { permissionSensitivity } from '../extensions/manifest.js';
+import {
+  createComputerSession, execComputer, expireRuntimeSessions, getRuntimeArtifact, getRuntimeSession, listRuntimeArtifacts,
+  listRuntimeEvents, recoverRuntimeSessions, runtimeStatus, stopComputerSession,
+} from '../runtime/cloud.js';
+import {
+  browserAvailability, browserClick, browserInspect, browserOpen, browserScroll, browserSelect, browserScreenshot,
+  browserType, browserWait, closeBrowserSession, createBrowserSession, expireBrowserSessions, getBrowserSession, recoverBrowserSessions,
+} from '../runtime/browser.js';
+import { runtimeArtifactsForWorkspace, runtimeSessionsForWorkspace } from '../runtime/tools.js';
+import { financialIntent } from '../runtime/financial.js';
 
 const AUTH_SECRET = sanitizeEnv(process.env['AUTH_SECRET']);
 const ADMIN_API_KEY = sanitizeEnv(process.env['ADMIN_API_KEY']);
@@ -202,11 +213,14 @@ export function createOsRouter(options: { production?: boolean } = {}): Router {
   const actor = (res: Response) => (res.locals['actor'] as string) ?? 'user';
   const correlation = (res: Response) => (res.locals['correlationId'] as string) ?? undefined;
   const roleOf = (res: Response) => (res.locals['role'] as WorkspaceRole) ?? 'viewer';
+  const canControlSession = (res: Response, session: { createdBy: string }): boolean => ['admin', 'owner'].includes(roleOf(res)) || session.createdBy === actor(res);
 
   // Interrupted-mission recovery runs once per process boot (idempotent).
   // A writer-lease conflict is fatal: another process owns this database.
   try {
     markInterruptedMissions();
+    void recoverBrowserSessions().catch((err: unknown) => logger.warn({ err }, 'browser session recovery failed'));
+    void recoverRuntimeSessions().catch((err: unknown) => logger.warn({ err }, 'runtime session recovery failed'));
   } catch (err) {
     if (err instanceof Error && err.message.includes('SQLite writer lease')) throw err;
     logger.warn({ err }, 'interrupted-mission recovery failed');
@@ -232,8 +246,10 @@ export function createOsRouter(options: { production?: boolean } = {}): Router {
   router.get('/recovery', asyncWrap((_req, res) => {
     res.json(recoveryReport(workspace(res)));
   }));
-  router.get('/runtime/status', asyncWrap((_req, res) => {
-    res.json(workerSnapshot(workspace(res)));
+  router.get('/runtime/status', asyncWrap(async (_req, res) => {
+    const workspaceId = workspace(res);
+    await Promise.all([expireRuntimeSessions(workspaceId), expireBrowserSessions(workspaceId)]).catch(() => undefined);
+    res.json({ ...workerSnapshot(workspaceId), cloud: await runtimeStatus(workspaceId), browser: await browserAvailability() });
   }));
   router.post('/recovery', asyncWrap((req, res) => {
     if (roleRank(roleOf(res)) < roleRank('admin')) { res.status(403).json({ error: 'Admin role required' }); return; }
@@ -1095,6 +1111,166 @@ function highRiskAgentCapabilities(permissions: readonly string[], tools: readon
       name: z.string().trim().min(1).max(120).optional(),
     }).strict().parse(req.body ?? {});
     res.status(201).json(await buildOrganization({ workspaceId: workspace(res), objective: body.objective, name: body.name, actor: actor(res) }));
+  }));
+
+  /* ─── Cloud computer & browser runtime ─── */
+  const sessionView = (session: ReturnType<typeof getRuntimeSession>) => session ? ({
+    id: session.id, kind: session.kind, provider: session.provider, status: session.status,
+    missionId: session.missionId, taskId: session.taskId, limits: session.limits, error: session.error,
+    metadata: { currentUrl: session.metadata['currentUrl'] ?? null, currentTitle: session.metadata['currentTitle'] ?? null, lastAction: session.metadata['lastAction'] ?? null, isolated: session.metadata['isolated'] ?? null, network: session.metadata['network'] ?? null, provider: session.metadata['provider'] ?? null, sandbox: session.metadata['sandbox'] ?? null },
+    createdAt: session.createdAt, startedAt: session.startedAt, endedAt: session.endedAt, expiresAt: new Date(session.expiresAt).toISOString(),
+  }) : null;
+
+  router.post('/runtime/browser-approvals', asyncWrap(async (req, res) => {
+    if (!rateLimit(workspace(res), 10, req.path)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    const body = z.object({
+      action: z.enum(['click', 'type', 'select']), sessionId: z.string().trim().min(1).max(80),
+      selector: z.string().max(500).optional(), text: z.string().max(10_000).optional(), value: z.string().max(500).optional(),
+    }).strict().parse(req.body ?? {});
+    const session = getBrowserSession(workspace(res), body.sessionId);
+    if (!session) { res.status(404).json({ error: 'Browser session not found' }); return; }
+    if (!canControlSession(res, session)) { res.status(403).json({ error: 'You cannot approve actions for a browser session created by another user' }); return; }
+    const toolId = `browser.${body.action}`;
+    const input = body.action === 'click'
+      ? { sessionId: body.sessionId, selector: body.selector, text: body.text }
+      : body.action === 'type'
+        ? { sessionId: body.sessionId, selector: body.selector, text: body.text, submit: false }
+        : { sessionId: body.sessionId, selector: body.selector, value: body.value };
+    const intent = financialIntent(body.action, input);
+    if (!intent.required) { res.status(400).json({ error: 'This browser action is not classified as financial', code: 'NOT_FINANCIAL' }); return; }
+    const approval = createApproval({
+      workspaceId: workspace(res), toolId, actionSummary: `Financial browser action: ${intent.reason}`,
+      risk: 'high', actionClass: 'C', scope: actionScope(undefined, undefined, toolId), toolInput: input,
+      requestedBy: actor(res), amountUsd: intent.amountUsd,
+      toolDescription: 'Browser action that can move money or capture payment credentials.',
+    });
+    res.status(201).json(approval);
+  }));
+
+  router.get('/runtime/sessions', asyncWrap(async (req, res) => {
+    const missionId = typeof req.query['missionId'] === 'string' ? req.query['missionId'] : undefined;
+    const kind = req.query['kind'] === 'computer' || req.query['kind'] === 'browser' ? req.query['kind'] : undefined;
+    const sessions = runtimeSessionsForWorkspace(workspace(res), missionId);
+    res.json(kind ? { sessions: sessions[kind] } : sessions);
+  }));
+
+  router.post('/runtime/sessions', asyncWrap(async (req, res) => {
+    if (!rateLimit(workspace(res), 20, req.path)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    const body = z.object({
+      kind: z.enum(['computer', 'browser']).optional(), ttlMinutes: z.number().int().min(1).max(1440).optional(), allowNetwork: z.boolean().optional(),
+    }).strict().parse(req.body ?? {});
+    if (body.allowNetwork === true && roleOf(res) !== 'admin' && roleOf(res) !== 'owner') { res.status(403).json({ error: 'Only an admin can enable cloud session network access' }); return; }
+    const session = body.kind === 'browser'
+      ? await createBrowserSession({ workspaceId: workspace(res), actor: actor(res), missionId: undefined, taskId: undefined, ttlMinutes: body.ttlMinutes })
+      : await createComputerSession({ workspaceId: workspace(res), actor: actor(res), ttlMinutes: body.ttlMinutes, allowNetwork: body.allowNetwork });
+    res.status(201).json(sessionView(session));
+  }));
+
+  router.get('/runtime/sessions/:id', asyncWrap((req, res) => {
+    const id = param(req, 'id');
+    const session = getRuntimeSession(workspace(res), id);
+    if (!session) { res.status(404).json({ error: 'Runtime session not found' }); return; }
+    res.json({ session: sessionView(session), events: listRuntimeEvents(workspace(res), id), artifacts: runtimeArtifactsForWorkspace(workspace(res)).filter((artifact) => artifact.sessionId === id) });
+  }));
+
+  router.post('/runtime/sessions/:id/stop', asyncWrap(async (req, res) => {
+    if (!rateLimit(workspace(res), 30, req.path)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    const id = param(req, 'id');
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason.slice(0, 500) : 'api request';
+    const current = getRuntimeSession(workspace(res), id);
+    if (!current) { res.status(404).json({ error: 'Runtime session not found' }); return; }
+    if (!canControlSession(res, current)) { res.status(403).json({ error: 'You cannot stop a session created by another user' }); return; }
+    const browser = getBrowserSession(workspace(res), id);
+    const session = browser
+      ? await closeBrowserSession({ workspaceId: workspace(res), sessionId: id, actor: actor(res), reason })
+      : await stopComputerSession({ workspaceId: workspace(res), sessionId: id, actor: actor(res), reason });
+    res.json(sessionView(session));
+  }));
+
+  router.post('/runtime/sessions/:id/exec', asyncWrap(async (req, res) => {
+    if (!rateLimit(workspace(res), 30, req.path)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    const id = param(req, 'id');
+    const body = z.object({ command: z.string().min(1).max(4000), cwd: z.string().max(500).optional(), timeoutMs: z.number().int().min(1000).max(120000).optional() }).strict().parse(req.body ?? {});
+    const session = getRuntimeSession(workspace(res), id);
+    if (!session || session.kind !== 'computer') { res.status(404).json({ error: 'Cloud session not found' }); return; }
+    if (!canControlSession(res, session)) { res.status(403).json({ error: 'You cannot execute in a session created by another user' }); return; }
+    res.json(await execComputer({ workspaceId: workspace(res), actor: actor(res), sessionId: id, ...body }));
+  }));
+
+  router.post('/runtime/sessions/:id/browser', asyncWrap(async (req, res) => {
+    if (!rateLimit(workspace(res), 60, req.path)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    const id = param(req, 'id');
+    const body = z.object({
+      action: z.enum(['open', 'inspect', 'screenshot', 'click', 'type', 'select', 'scroll', 'wait']),
+      url: z.string().url().max(2000).optional(), selector: z.string().max(500).optional(), text: z.string().max(10_000).optional(),
+      value: z.string().max(500).optional(), delta: z.number().int().min(-10_000).max(10_000).optional(),
+      timeoutMs: z.number().int().min(100).max(30000).optional(), fullPage: z.boolean().optional(), approvalId: z.string().trim().min(1).max(80).optional(),
+    }).strict().parse(req.body ?? {});
+    const session = getBrowserSession(workspace(res), id);
+    if (!session) { res.status(404).json({ error: 'Browser session not found' }); return; }
+    if (!canControlSession(res, session)) { res.status(403).json({ error: 'You cannot drive a browser session created by another user' }); return; }
+    if (body.action === 'open' && !body.url) { res.status(400).json({ error: 'url is required for open' }); return; }
+    if (body.action === 'click' && !body.selector && !body.text) { res.status(400).json({ error: 'selector or text is required for click' }); return; }
+    if (body.action === 'type' && (!body.selector || body.text === undefined)) { res.status(400).json({ error: 'selector and text are required for type' }); return; }
+    if (body.action === 'select' && (!body.selector || !body.value)) { res.status(400).json({ error: 'selector and value are required for select' }); return; }
+    const browserInput = body.action === 'click'
+      ? { sessionId: id, selector: body.selector, text: body.text }
+      : body.action === 'type'
+        ? { sessionId: id, selector: body.selector!, text: body.text ?? '', submit: false }
+        : body.action === 'select'
+          ? { sessionId: id, selector: body.selector!, value: body.value! }
+          : {};
+    const financialAction = body.action === 'click' || body.action === 'type' || body.action === 'select' ? body.action : null;
+    const intent = financialAction ? financialIntent(financialAction, browserInput) : { required: false, reason: '' };
+    let financialApproved = false;
+    if (intent.required) {
+      if (!body.approvalId) {
+        res.status(403).json({ error: 'Financial browser actions require an explicit WORA approval', code: 'FINANCIAL_APPROVAL_REQUIRED', reason: intent.reason });
+        return;
+      }
+      const toolId = `browser.${body.action}`;
+      const scope = actionScope(undefined, undefined, toolId);
+      const approval = getApproval(workspace(res), body.approvalId);
+      const valid = Boolean(approval && approval.status === 'approved' && !approval.consumedAt && approval.actionClass === 'C' &&
+        approval.toolId === toolId && approval.scope === scope && approval.payloadDigest === payloadDigest(browserInput) && !isApprovalExpired(approval.expiresAt));
+      if (!valid) {
+        res.status(403).json({ error: 'The financial approval is invalid, expired, consumed or bound to a different payload', code: 'FINANCIAL_APPROVAL_REQUIRED', reason: intent.reason });
+        return;
+      }
+      try {
+        consumeApproval(workspace(res), approval!.id, { payload: browserInput, scope, actionClass: 'C', actor: actor(res), missionId: null, taskId: null });
+      } catch {
+        res.status(403).json({ error: 'The financial approval could not be consumed', code: 'FINANCIAL_APPROVAL_REQUIRED', reason: intent.reason });
+        return;
+      }
+      financialApproved = true;
+    }
+    let result: Record<string, unknown>;
+    switch (body.action) {
+      case 'open': result = await browserOpen(workspace(res), id, body.url!, actor(res)); break;
+      case 'inspect': result = await browserInspect(workspace(res), id, actor(res)); break;
+      case 'screenshot': result = await browserScreenshot(workspace(res), id, { fullPage: body.fullPage }, actor(res)); break;
+      case 'click': result = await browserClick(workspace(res), id, { selector: body.selector, text: body.text }, actor(res), financialApproved); break;
+      case 'type': result = await browserType(workspace(res), id, { selector: body.selector!, text: body.text ?? '', submit: false }, actor(res), financialApproved); break;
+      case 'select': result = await browserSelect(workspace(res), id, { selector: body.selector!, value: body.value! }, actor(res), financialApproved); break;
+      case 'scroll': result = await browserScroll(workspace(res), id, body.delta, actor(res)); break;
+      case 'wait': result = await browserWait(workspace(res), id, body.timeoutMs, actor(res)); break;
+    }
+    res.json(result!);
+  }));
+
+  router.get('/runtime/artifacts', asyncWrap((req, res) => {
+    const missionId = typeof req.query['missionId'] === 'string' ? req.query['missionId'] : undefined;
+    const sessionId = typeof req.query['sessionId'] === 'string' ? req.query['sessionId'] : undefined;
+    res.json(listRuntimeArtifacts(workspace(res), { missionId, sessionId }).map((artifact) => ({ ...artifact, contentUrl: `/api/os/runtime/artifacts/${artifact.id}` })));
+  }));
+
+  router.get('/runtime/artifacts/:id', asyncWrap((req, res) => {
+    const found = getRuntimeArtifact(workspace(res), param(req, 'id'));
+    if (!found) { res.status(404).json({ error: 'Runtime artifact not found' }); return; }
+    res.setHeader('Content-Type', String(found.row['mime_type'] ?? 'application/octet-stream'));
+    res.setHeader('Content-Disposition', `inline; filename="${String(found.row['name']).replace(/[\r\n"\\]/g, '').slice(0, 200)}"`);
+    res.sendFile(found.absolutePath);
   }));
 
   /* ─── Audit & artifacts ─── */

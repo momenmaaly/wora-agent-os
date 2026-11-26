@@ -21,6 +21,51 @@ State is persisted under `WORA_OS_DB` (default `api-server/data/wora-os.db`, SQL
 
 SQLite is a single-writer store. Run exactly **one** API replica against the `os-data` volume. The API takes an atomic, fenced heartbeat lease before application schema/migration writes; a second process fails fast, and a process that loses renewal closes the database and refuses further writes. Scaling the API horizontally requires moving the OS store to PostgreSQL first. Workspace file access canonicalizes paths and rejects symlink escapes; the file-read tool and scaffold writes additionally use descriptor-verified opens; `web.fetch_read`, plugin HTTP tools and HTTP MCP all use the hardened outbound policy (private/metadata blocking, pinned DNS, revalidated redirects, streaming decompressed byte caps). Local marketplaces are limited to `WORA_EXTENSIONS_LOCAL_ROOTS`; `file://` sources enforce the same roots and Git refs are validated before every fetch. Stdio MCP is **disabled by default**; `WORA_MCP_STDIO_MODE=official` permits only the bundled trusted reference server, never community code. High-risk agent capabilities and plugin approvals require an admin, and a requester cannot approve their own high-risk request.
 
+## Cloud computer & browser runtime
+
+The OS can start real, persistent execution sessions and operate a real Chromium browser through the same Tool Registry, permissions and audit path as every other tool.
+
+- **Cloud computer** tools: `cloud.computer_start`, `cloud.exec`, `cloud.write_file`, `cloud.read_file`, `cloud.list_files`, `cloud.computer_stop`. Docker is the production provider: `--network none` by default, read-only root, dropped capabilities, `no-new-privileges`, CPU/memory/PID limits, and only the session workspace mounted. The process provider is an explicit, non-isolated development fallback; it is never selected in production unless `WORA_CLOUD_ALLOW_PROCESS_PROVIDER=1`, and that override is for controlled development deployments only.
+- **Browser automation** tools: `browser.open`, `browser.inspect`, `browser.screenshot`, `browser.click`, `browser.type`, `browser.select`, `browser.scroll`, `browser.wait`, `browser.research`, `browser.close`. In production Chromium runs inside a dedicated Docker container: read-only image, only the session workspace mounted, dropped capabilities, CPU/memory/PID limits, an internal network with no direct egress, and a connection-time validating proxy. The proxy resolves each destination itself, rejects loopback/private/link-local/cloud-metadata targets, ignores proxy bypass, forces the upstream `Host` header to the validated URL host, refuses plain `ws://` upgrades, and revalidates every redirect, subresource and CONNECT tunnel (including `wss`). Only source addresses inside the browser Docker subnet may use the proxy; the Docker gateway is explicitly rejected so host-local processes cannot use it as an open proxy. Chromium's own sandbox is required by default; the container fails closed when the host cannot provide it.
+- **Financial actions**: `browser.click`, `browser.type` and `browser.select` are reclassified as high-risk class C at execution time when their target is financial. They require a payload-bound, single-use approval; direct `/api/os/runtime/sessions/:id/browser` calls need an approval created through `/api/os/runtime/browser-approvals`. A denial, replay, payload change or session mismatch is rejected and audited.
+- **Artifacts**: real PNG screenshots and Markdown research documents are stored with workspace/session ownership and served through `/api/os/runtime/artifacts/:id`.
+- **UI**: the runtime panel is available on `#brief`, `#run`, `#library` and `#system` with live provider status, session start/stop, and downloadable screenshot/document artifacts. Arabic and English labels are both wired.
+- **Security**: sessions are workspace-scoped; non-admin users can only control sessions they created. Agent tool execution cannot enable network access for a cloud computer; only an explicit admin API request can. Session TTLs are enforced when runtime status is read, browser containers and proxy listeners are cleaned at boot and stop, and all actions emit redacted runtime events plus audit records. Application secrets are never passed to a browser child or container.
+
+Configuration:
+
+| Variable | Purpose |
+| --- | --- |
+| `WORA_CLOUD_PROVIDER` | `auto` (default), `docker`, or `process`. |
+| `WORA_CLOUD_IMAGE` | Docker runtime image (default `node:22-alpine`). Pulling is opt-in through `WORA_CLOUD_DOCKER_PULL=1`. |
+| `WORA_CLOUD_ALLOW_PROCESS_PROVIDER` | Explicitly enables the non-isolated process provider outside development. |
+| `WORA_CLOUD_MAX_SESSIONS` | Per-workspace active cloud + browser session cap (default 8). |
+| `WORA_RUNTIME_ROOT` | Root for session workspaces and screenshots. |
+| `WORA_BROWSER_PROVIDER` | `docker` or `process`. Production defaults to `docker`; development defaults to `process`. |
+| `WORA_BROWSER_IMAGE` | Isolated browser image (default `wora-browser-runtime:1.0.0`). Build it with `docker build -f docker/browser-runtime.Dockerfile -t wora-browser-runtime:1.0.0 .` from `api-server` after `npm run build`. |
+| `WORA_BROWSER_SANDBOX` | `chromium` (default and required in production) or `container` (container-only boundary, explicitly disabled in production unless `WORA_BROWSER_ALLOW_CONTAINER_SANDBOX=1`). |
+| `WORA_BROWSER_EXECUTABLE_PATH` | Chromium/Chrome path for the development process provider. When set, it must exist; there is no silent fallback. |
+
+Verified with `api-server/src/runtime/browser-proxy.test.ts` (real proxy listener, private/metadata rejection, DNS-rebinding revalidation, redirect revalidation, Host-header pinning, client-subnet restriction, plain-WebSocket refusal, CONNECT policy), `api-server/src/runtime/runtime.test.ts` (real development Chromium, financial class C approval and replay rejection, mission lifecycle, expiry and API authorization), `api-server/src/runtime/runtime-docker.test.ts` (real Docker computer and real Docker browser, internal network, proxy-only page access, screenshot and cleanup) and `client/tests/runtime-workspace.test.mjs` (real UI start → screenshot → refresh → download preview → stop against the preview API).
+
+### Chromium isolation status
+
+This is deliberately separated from container isolation; they are not equivalent.
+
+- **Verified on the current host:** the required Chromium sandbox probe fails, and the runtime fails closed: it reports the browser unavailable and refuses to start a browser session in the default `chromium` mode.
+- **Verified on the current host with real containers:** Docker cloud-computer isolation, Docker browser container isolation, the internal network with no direct egress, proxy-only page access, screenshots, cleanup, proxy SSRF/DNS-rebinding/redirect/Host-header/client-subnet tests, and financial class C approval/replay/session-binding tests.
+- **Not verified on the current host:** successful browsing while Chromium's own user-namespace/setuid sandbox is active. That mode cannot be claimed as working here.
+- **Container-only mode** (`WORA_BROWSER_SANDBOX=container` plus `WORA_BROWSER_ALLOW_CONTAINER_SANDBOX=1`) is a weaker boundary. It is explicitly test-only in this environment and must not be presented as equivalent to Chromium's own sandbox.
+
+Secure production requirements:
+
+- A Linux host with unprivileged user namespaces available to Docker containers.
+- A Docker seccomp/AppArmor profile that permits the namespace and setuid operations Chromium's sandbox needs.
+- Docker daemon access for the API process, and the `wora-browser-runtime:1.0.0` image built from this repository.
+- A host where the image's Chromium sandbox helper passes the probe. If the probe fails, production remains unavailable rather than silently downgrading.
+
+Browser containers need proxy-mediated outbound web access but never direct network access. A host that cannot provide Chromium's sandbox should use an approved container-only deployment only with an explicit risk decision, not as an automatic fallback.
+
 ## Run the workspace
 
 Use Node.js 22.18 or later and npm. To explore the client without external services:
