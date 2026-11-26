@@ -330,10 +330,34 @@ export interface OrgBuildResult {
   agentsCreated: number; agentsReused: number;
   reporting: Array<{ from: string; to: string }>;
 }
+export interface RecoveryReport {
+  workspaceId: string; interruptedMissions: number; blockedTasks: number;
+  activeLeases: number; expiredLeases: number; startedCheckpoints: number;
+  pendingApprovals: number; resumable: boolean;
+}
+
+export interface RuntimeStatus {
+  mode: string; durableStore: boolean; missionLease: boolean; taskLeases: boolean;
+  checkpoints: boolean; independentWorkers: string; limitations: string[];
+  limits: ExecutionLimits; recovery: RecoveryReport; activeLeases: number;
+  activeMissionLeases: number; runnableMissions: Array<{ id: string; status: string }>;
+}
+
+export interface MigrationStatus {
+  version: number;
+  applied: Array<{ version: number; name: string; appliedAt: string; rolledBackAt: string | null }>;
+  pending: number[];
+}
+
+export interface MetricsSnapshot { counters: Record<string, number>; gauges: Record<string, number>; histograms?: Record<string, unknown> }
 
 /* ─── Endpoints ─────────────────────────────────────────── */
 export const osApi = {
   state: () => request<OsState>('/state'),
+  runtimeStatus: () => request<RuntimeStatus>('/runtime/status'),
+  recovery: () => request<RecoveryReport>('/recovery'),
+  migrations: () => request<MigrationStatus>('/migrations'),
+  metrics: () => request<MetricsSnapshot>('/metrics'),
   specializations: () => request<Specialization[]>('/specializations'),
   tools: () => request<ToolInfo[]>('/tools'),
   sampleEmployeeSchedule: () => request<{ sample: boolean; employees: ScheduleRequest['employees']; shifts: ScheduleRequest['shifts']; note: string }>('/sample/employee-schedule'),
