@@ -190,6 +190,10 @@ test('browser journeys: mission, plan, workers, pause/resume/cancel, approval, e
     await page.getByRole('button', { name: 'معاينة النهج', exact: true }).waitFor({ timeout: 10_000 });
     await page.getByRole('button', { name: 'متقدم', exact: true }).click();
     await page.getByText('اعرض المنهج العلمي والبدائل والمتطلبات والسياق التنفيذي.').waitFor({ timeout: 10_000 });
+    await page.locator('textarea').first().fill('Assign three candidates to three options and minimize cost. Test data: {"costMatrix":[[12,7,9],[8,14,5],[6,9,11]],"forbidden":[{"row":0,"col":1}]}');
+    await page.getByRole('button', { name: 'معاينة النهج', exact: true }).click();
+    await page.getByRole('heading', { name: 'طرق مرشحة' }).waitFor({ timeout: 20_000 });
+    await page.getByText('Hungarian Assignment', { exact: false }).first().waitFor({ timeout: 10_000 });
     await page.locator('.language-toggle').click();
     await page.getByRole('button', { name: 'Simple', exact: true }).waitFor({ timeout: 10_000 });
     assert.equal(await page.evaluate(() => document.documentElement.dir), 'ltr');

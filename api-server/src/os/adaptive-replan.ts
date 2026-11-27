@@ -113,11 +113,127 @@ function employeeScheduleToLp(input: Record<string, unknown>): Record<string, un
   };
 }
 
+
+function lpToAssignment(input: Record<string, unknown>): Record<string, unknown> | null {
+  const sense = input['sense'];
+  if (sense !== 'minimize' && sense !== 'maximize') return null;
+  if (!Array.isArray(input['objective']) || !Array.isArray(input['constraints'])) return null;
+  const variablePattern = /^x_(\d+)_(\d+)$/u;
+  const costs = new Map<string, number>();
+  for (const entry of input['objective']) {
+    if (!entry || typeof entry !== 'object') return null;
+    const record = entry as Record<string, unknown>;
+    const variable = String(record['var'] ?? '');
+    const coefficient = Number(record['coeff']);
+    if (!variablePattern.test(variable) || !Number.isFinite(coefficient)) return null;
+    costs.set(variable, sense === 'maximize' ? -coefficient : coefficient);
+  }
+  if (!costs.size) return null;
+  const rowTerms = new Map<number, string[]>();
+  const colTerms = new Map<number, string[]>();
+  const forbidden: Array<{ row: number; col: number }> = [];
+  for (const entry of input['constraints']) {
+    if (!entry || typeof entry !== 'object') return null;
+    const constraint = entry as Record<string, unknown>;
+    if (!Array.isArray(constraint['terms'])) return null;
+    const terms = constraint['terms'] as Array<Record<string, unknown>>;
+    const rhs = Number(constraint['rhs']);
+    if (!Number.isFinite(rhs)) return null;
+    if (constraint['op'] === '=' && rhs === 0 && terms.length === 1) {
+      const match = variablePattern.exec(String(terms[0]?.['var'] ?? ''));
+      if (!match || Number(terms[0]?.['coeff']) !== 1) return null;
+      forbidden.push({ row: Number(match[1]), col: Number(match[2]) });
+      continue;
+    }
+    if (constraint['op'] !== '=' || rhs !== 1 || !terms.length) return null;
+    if (!terms.every((term) => Number(term['coeff']) === 1 && variablePattern.test(String(term['var'] ?? '')))) return null;
+    const parsed = terms.map((term) => variablePattern.exec(String(term['var'] ?? ''))!).map((match) => ({ row: Number(match[1]), col: Number(match[2]) }));
+    const rows = new Set(parsed.map((entry) => entry.row));
+    const cols = new Set(parsed.map((entry) => entry.col));
+    if (rows.size === 1) {
+      const row = [...rows][0]!;
+      const existing = rowTerms.get(row) ?? [];
+      if (existing.length && existing.join(',') !== terms.map((term) => String(term['var'])).join(',')) return null;
+      rowTerms.set(row, terms.map((term) => String(term['var'])));
+    } else if (cols.size === 1) {
+      const col = [...cols][0]!;
+      const existing = colTerms.get(col) ?? [];
+      if (existing.length && existing.join(',') !== terms.map((term) => String(term['var'])).join(',')) return null;
+      colTerms.set(col, terms.map((term) => String(term['var'])));
+    } else {
+      return null;
+    }
+  }
+  if (!rowTerms.size || !colTerms.size) return null;
+  const rows = Math.max(...[...rowTerms.keys()]) + 1;
+  const cols = Math.max(...[...colTerms.keys()]) + 1;
+  if (rows > 200 || cols > 200) return null;
+  const costMatrix = Array.from({ length: rows }, () => Array.from({ length: cols }, () => 0));
+  for (const [variable, cost] of costs) {
+    const match = variablePattern.exec(variable)!;
+    const row = Number(match[1]);
+    const col = Number(match[2]);
+    if (row >= rows || col >= cols) return null;
+    costMatrix[row]![col] = cost;
+  }
+  return { costMatrix, forbidden };
+}
+
+export type AdaptationAction = 'switch_method' | 'request_information' | 'repair_formulation' | 'decompose' | 'stop';
+
+export interface AdaptationPlan {
+  action: AdaptationAction;
+  reason: string;
+  alternative: { tool: string; input: Record<string, unknown>; rationale: string } | null;
+  requiredEvidence: string[];
+  gap: string | null;
+}
+
+/**
+ * Decide a bounded, justified response to a failed method. It never relaxes a
+ * constraint, never invents missing data and never switches to a method whose
+ * input translation is not proven equivalent.
+ */
+export function planAdaptation(input: {
+  tool: string | null;
+  toolInput: Record<string, unknown>;
+  failureCategory: string;
+  issues: string[];
+  semantics: { status: string; acceptable: boolean } | null;
+  previousAdaptations: number;
+}): AdaptationPlan {
+  if (input.previousAdaptations >= 1) {
+    return { action: 'stop', reason: 'An adaptive method transition already occurred for this task; stop instead of chaining changes.', alternative: null, requiredEvidence: ['new verified evidence or an explicit operator decision'], gap: 'adaptation_limit' };
+  }
+  if (input.semantics?.status === 'infeasible') {
+    return { action: 'stop', reason: 'The model is infeasible. Switching algorithms cannot satisfy contradictory constraints; corrected data or an explicitly authorized constraint change is required.', alternative: null, requiredEvidence: ['corrected data', 'or an explicitly authorized constraint change'], gap: 'infeasible_model' };
+  }
+  if (input.failureCategory === 'authorization') {
+    return { action: 'stop', reason: 'Authorization failed; a different algorithm does not grant permission.', alternative: null, requiredEvidence: ['an authorized agent/tool or an explicit permission grant'], gap: 'authorization' };
+  }
+  // A schema rejection can mean the selected tool cannot express a constraint
+  // that a translated method can. Prefer the proven translation; only call the
+  // failure an input gap when no equivalent method exists.
+  const alternative = alternativeForTask({ tool: input.tool, toolInput: input.toolInput });
+  if (alternative) {
+    return { action: 'switch_method', reason: alternative.rationale, alternative, requiredEvidence: ['the translated model must be equivalent', 'the replacement must pass independent verification'], gap: null };
+  }
+  const text = input.issues.join('; ').toLowerCase();
+  if (/missing|required input|invalid input|schema|malformed|no output|empty/iu.test(text) || input.failureCategory === 'invalid_input' || input.failureCategory === 'empty_output') {
+    return { action: 'request_information', reason: 'The failure is an input/data problem, not evidence that another algorithm would succeed.', alternative: null, requiredEvidence: ['the missing or invalid values, supplied by the user or an authorized source'], gap: 'missing_or_invalid_input' };
+  }
+  return { action: 'stop', reason: 'No implemented equivalent method exists for this failure; report the gap instead of switching blindly.', alternative: null, requiredEvidence: ['a verified equivalent method or new evidence'], gap: 'no_implemented_alternative' };
+}
+
 /** Return an implemented alternative only when the input translation is semantically equivalent. */
 export function alternativeForTask(task: { tool: string | null; toolInput: Record<string, unknown> }): { tool: string; input: Record<string, unknown>; rationale: string } | null {
   const target = getTool('or.solve_lp');
   if (!target) return null;
   if (!listAlgorithms().some((algorithm) => algorithm.toolId === 'or.solve_lp')) return null;
+  if (task.tool === 'or.solve_lp') {
+    const input = lpToAssignment(task.toolInput);
+    return input ? { tool: 'or.assignment', input, rationale: 'The LP is an exact binary assignment formulation with row/column equality constraints; it was converted back to the Hungarian method with the same forbidden pairs.' } : null;
+  }
   if (task.tool === 'or.assignment') {
     const input = assignmentToLp(task.toolInput);
     return input ? { tool: 'or.solve_lp', input, rationale: 'Hungarian assignment was reformulated as an exact binary MIP with the same row/column constraints; side constraints are encoded as forbidden assignments.' } : null;

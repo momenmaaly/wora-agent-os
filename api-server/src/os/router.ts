@@ -37,6 +37,7 @@ import { redactSecrets } from './secrets.js';
 import { runBenchmarkSuite, listBenchmarkRuns } from './benchmarks.js';
 import { listScientificDomains, scientificCatalogSummary, selectScientificMethod } from './science.js';
 import { compareSolutionStrategies, assessReplan, listDecisionRecords, saveDecisionRecord } from './decision.js';
+import { selectAdaptiveMethod } from './adaptive-intelligence.js';
 import { classifyAction } from './actions.js';
 import { repairRepository, inspectRepository } from './code-repair.js';
 import { recoveryReport, recoverWorkspace } from './recovery.js';
@@ -301,12 +302,13 @@ export function createOsRouter(options: { production?: boolean } = {}): Router {
       baseProblem: unified, actor: actor(res),
     });
     const problem = unified.baseProfile;
-    const plan = buildPlan(body.objective, body.track, workspace(res));
+    const adaptive = selectAdaptiveMethod({ workspaceId: workspace(res), objective: body.objective, profile: problem });
+    const plan = buildPlan(body.objective, body.track, workspace(res), 'preview', adaptive);
     const requirements = requirementsForPlan(plan, workspace(res));
     const team = previewTeam(workspace(res), plan, problem);
     const research = planResearch({ objective: body.objective, reasoning, problem: unified, urls: extractUrls(body.objective) });
     const clarifications = buildClarificationPlan({ problem, reasoning, plan, research });
-    res.json({ problem, plan, requirements, team, clarifications, research });
+    res.json({ problem, plan, requirements, team, clarifications, research, adaptive });
   }));
 
   router.get('/capabilities/performance', asyncWrap((req, res) => {
@@ -416,8 +418,9 @@ export function createOsRouter(options: { production?: boolean } = {}): Router {
       track: z.string().trim().min(1).max(40).optional(),
     }).strict().parse(req.body ?? {});
     const problem = understandProblem({ objective: body.objective, track: body.track });
-    const plan = buildPlan(body.objective, body.track, workspace(res));
-    res.json({ problem, plan, decision: compareSolutionStrategies(plan, workspace(res), problem) });
+    const adaptive = selectAdaptiveMethod({ workspaceId: workspace(res), objective: body.objective, profile: problem });
+    const plan = buildPlan(body.objective, body.track, workspace(res), 'preview', adaptive);
+    res.json({ problem, plan, decision: compareSolutionStrategies(plan, workspace(res), problem), adaptive });
   }));
 
   router.post('/decisions/replan-check', asyncWrap((req, res) => {

@@ -369,6 +369,23 @@ export interface ClarificationPlan {
 
 export interface ClarificationAnswer { questionId: string; answer: string }
 
+
+export interface AdaptiveMethodCandidate {
+  toolId: string; algorithmId: string; kind: string; name: string; eligible: boolean; executablePlan: boolean;
+  score: number; structureFit: number; inputFit: number; dataQuality: number; verificationFit: number;
+  textFit: number; historyFit: number; costFit: number;
+  history: { attempts: number; verified: number; failed: number; successRate: number; averageDurationMs: number | null };
+  reasons: string[]; rejectionReason: string | null; requiredInputs: string[]; verification: string[];
+  guarantee: string; limitations: string[];
+}
+export interface AdaptiveMethodDecision {
+  schemaVersion: string; objectiveDigest: string; scientificRequired: boolean; structureKinds: string[];
+  branches: Array<{ index: number; modelDigest: string | null; shapeKind: string | null; candidates: AdaptiveMethodCandidate[]; selected: AdaptiveMethodCandidate | null; rejected: AdaptiveMethodCandidate[]; rationale: string; missingInformation: string[]; research: unknown | null }>;
+  candidates: AdaptiveMethodCandidate[]; selected: AdaptiveMethodCandidate | null; rejected: AdaptiveMethodCandidate[];
+  rationale: string; assumptions: string[]; missingInformation: string[]; research: { status: string; requirement: string | null; candidates: Array<{ name: string; implementation: string; theoreticalFit: number; rationale: string; limitations: string[]; evidenceNeeded: string[]; benchmarkBaseline: string }>; benchmarkPlan: string[]; limitations: string[]; inventedAlgorithmClaim: false } | null;
+  confidence: number;
+}
+
 export interface ApproachPreview {
   problem: ProblemProfile;
   plan: ApproachTask[];
@@ -380,6 +397,7 @@ export interface ApproachPreview {
   };
   clarifications?: ClarificationPlan;
   research?: ResearchPlan;
+  adaptive?: AdaptiveMethodDecision;
 }
 
 export interface FormalTask {

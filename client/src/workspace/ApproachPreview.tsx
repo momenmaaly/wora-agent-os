@@ -53,6 +53,18 @@ export function ApproachPreviewPanel({ preview, advanced }: { preview: ApproachP
         <p><strong>{preview.problem.scientific.domainName ?? preview.problem.scientific.domain ?? '—'}</strong> · {preview.problem.scientific.status}</p>
         {preview.problem.scientific.rejectedAlternatives.length > 0 && <details className="op-evidence"><summary>{t('op.experience.rejected')}</summary><ul className="op-list">{preview.problem.scientific.rejectedAlternatives.slice(0, 6).map((item) => <li key={item.name}><strong>{item.name}</strong> — {item.reason}</li>)}</ul></details>}
       </section>}
+      {preview.adaptive && preview.adaptive.scientificRequired && <section className="op-approach-advanced">
+        <h4>{t('op.experience.candidates')}</h4>
+        <p className="op-muted">{preview.adaptive.rationale}</p>
+        <ul className="op-list">{preview.adaptive.candidates.slice(0, 8).map((candidate) => <li key={`${candidate.toolId}-${candidate.kind}`}>
+          <strong>{candidate.name}</strong> · {t('op.experience.score')} {candidate.score.toFixed(3)} · {candidate.eligible ? t('op.experience.selectedMethod') : t('op.experience.notEligible')}
+          {candidate.reasons.length > 0 && <small> — {candidate.reasons[0]}</small>}
+          {candidate.rejectionReason && <small> — {candidate.rejectionReason}</small>}
+        </li>)}</ul>
+        {preview.adaptive.research && preview.adaptive.research.status === 'research-required' && <div className="op-alert" role="status">
+          {preview.adaptive.research.requirement}: {preview.adaptive.research.candidates.map((candidate) => `${candidate.name} (${candidate.implementation})`).join('; ')}
+        </div>}
+      </section>}
       {missing.length > 0 && <section className="op-approach-advanced"><h4>{t('op.experience.missing')}</h4><ul className="op-list">{missing.slice(0, 8).map((item) => <li key={item}>{item}</li>)}</ul></section>}
       {preview.requirements.length > 0 && <section className="op-approach-advanced"><h4>{t('op.experience.requirements')}</h4><ul className="op-list">{preview.requirements.slice(0, 8).map((item) => <li key={item.id}><strong>{item.label}</strong><small>{item.requiredTools.join(', ') || '—'} · {item.risk}</small></li>)}</ul></section>}
       <p className="op-muted">{t('op.experience.adjustHint')}</p>

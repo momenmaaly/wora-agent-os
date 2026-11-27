@@ -31,7 +31,7 @@ import { openTaskToolInput, sealTaskToolInput } from '../security/task-fields.js
 import { collectCandidateLessons } from './lessons.js';
 import { comparePlans, savePlanVersion, listPlanVersions, verifyPlanExecution, replanMission } from './planning.js';
 import { compareSolutionStrategies, saveDecisionRecord, listDecisionRecords, assessReplan } from './decision.js';
-import { applyAdaptiveReplan, alternativeForTask } from './adaptive-replan.js';
+import { applyAdaptiveReplan, alternativeForTask, planAdaptation } from './adaptive-replan.js';
 import { composeMissionPlan, saveComposition, getComposition } from './capability-composition.js';
 import { cleanupMissionSessions } from '../runtime/cloud.js';
 import { closeBrowserSession, listBrowserSessions } from '../runtime/browser.js';
@@ -48,6 +48,10 @@ import { matchCapabilities } from '../extensions/capability-intelligence.js';
 import { persistTeamPlan, resolveTaskAgent, selectReplacement, recordAgentPerformance, getTeamPlan, listSelectionDecisions } from './selection.js';
 import { logger } from '../lib/logger.js';
 import { assessToolResult } from './result-semantics.js';
+import { extractStructuredJsonBlocks } from './structured-input.js';
+import { ADVANCED_SCIENTIFIC_KINDS, modelForScientificKind, scientificKindForTool, scientificToolForKind, structuredScientificKind } from './scientific-routing.js';
+import { selectAdaptiveMethod, type AdaptiveMethodDecision } from './adaptive-intelligence.js';
+import { researchUnresolvedMethod } from './method-research.js';
 
 export type MissionStatus = 'planning' | 'running' | 'awaiting_approval' | 'paused' | 'cancelled' | 'completed' | 'failed';
 export type TaskStatus = 'created' | 'planned' | 'assigned' | 'running' | 'reviewing' | 'completed' | 'failed' | 'blocked' | 'cancelled';
@@ -136,46 +140,6 @@ function parseCreateAgentObjective(objective: string): { name: string; role: str
   return { name: `${label} Agent`, role: `Persistent ${descriptor} specialist created from an instruction: "${objective.slice(0, 200)}"`, specialization };
 }
 
-function extractStructuredJsonBlocks(text: string): Record<string, unknown>[] {
-  const blocks: Record<string, unknown>[] = [];
-  let depth = 0;
-  let start = -1;
-  let inString = false;
-  let escaped = false;
-  for (let index = 0; index < text.length && blocks.length < 6; index += 1) {
-    const char = text[index];
-    if (inString) {
-      if (escaped) escaped = false;
-      else if (char === '\\') escaped = true;
-      else if (char === '"') inString = false;
-      continue;
-    }
-    if (char === '"') { inString = true; continue; }
-    if (char === '{') {
-      if (depth === 0) start = index;
-      depth += 1;
-    } else if (char === '}') {
-      depth -= 1;
-      if (depth === 0 && start >= 0) {
-        const candidate = text.slice(start, index + 1);
-        if (candidate.length <= 20_000) {
-          try {
-            const parsed = JSON.parse(candidate) as unknown;
-            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) blocks.push(parsed as Record<string, unknown>);
-          } catch { /* not a complete JSON object; keep scanning */ }
-        }
-        start = -1;
-      }
-    }
-  }
-  return blocks;
-}
-
-function extractStructuredJson(text: string): Record<string, unknown> | null {
-  const blocks = extractStructuredJsonBlocks(text);
-  return blocks.length === 1 ? blocks[0]! : null;
-}
-
 function scientificGapTask(text: string, missing: string[], kind: string): PlanTask {
   const gap = `SCIENTIFIC INPUT GAP — ${kind} cannot be formulated or executed. Missing: ${missing.join('; ') || 'supported structured input'}. No sample values were substituted.`;
   return {
@@ -231,123 +195,67 @@ function scientificAcceptance(kind: FormulationKind): string[] {
   }
 }
 
-const SCIENTIFIC_KIND_BY_TOOL: Record<string, FormulationKind> = {
-  'or.solve_lp': 'linear_programming',
-  'or.assignment': 'assignment',
-  'or.employee_schedule': 'employee_scheduling',
-  'graph.shortest_path': 'shortest_path',
-  'sim.monte_carlo': 'monte_carlo_simulation',
-  'forecast.linear': 'forecasting',
-  'decision.weighted_matrix': 'multi_criteria_decision',
-  'graph.max_flow': 'max_flow',
-  'graph.min_cost_flow': 'min_cost_flow',
-  'graph.bipartite_matching': 'bipartite_matching',
-  'routing.tsp': 'tsp',
-  'routing.vrp': 'vrp',
-  'decision.pareto': 'pareto_multi_objective',
-  'stats.bayes_update': 'bayesian_inference',
-  'sim.queue': 'queue_simulation',
-  'sim.scenario_compare': 'scenario_comparison',
-};
-
-const ADVANCED_SCIENTIFIC_KINDS = new Set<FormulationKind>([
-  'max_flow', 'min_cost_flow', 'bipartite_matching', 'tsp', 'vrp',
-  'pareto_multi_objective', 'bayesian_inference', 'queue_simulation', 'scenario_comparison',
-]);
-
-function structuredScientificKind(model: Record<string, unknown> | null): FormulationKind | null {
-  if (!model) return null;
-  const edges = Array.isArray(model['edges']) ? model['edges'] as Array<Record<string, unknown>> : [];
-  if (edges.length && typeof model['source'] === 'string' && typeof model['sink'] === 'string') {
-    const hasCost = edges.some((edge) => edge && typeof edge === 'object' && 'cost' in edge) || model['demand'] !== undefined;
-    return hasCost ? 'min_cost_flow' : 'max_flow';
-  }
-  if (Array.isArray(model['left']) && Array.isArray(model['right']) && edges.length) return 'bipartite_matching';
-  if (Array.isArray(model['depots']) && Array.isArray(model['customers']) && Array.isArray(model['vehicles'])) return 'vrp';
-  if ((Array.isArray(model['points']) || Array.isArray(model['distanceMatrix'])) && !model['depots']) return 'tsp';
-  if (Array.isArray(model['objectives']) && Array.isArray(model['candidates'])) return 'pareto_multi_objective';
-  if (model['type'] === 'beta_binomial' || model['type'] === 'normal_normal') return 'bayesian_inference';
-  if (Number.isInteger(model['customers']) && Number.isInteger(model['servers'])) return 'queue_simulation';
-  if (Array.isArray(model['scenarios'])) return 'scenario_comparison';
-  if (edges.length && typeof model['start'] === 'string' && typeof model['goal'] === 'string') return 'shortest_path';
-  if (Array.isArray(model['employees']) && Array.isArray(model['shifts'])) return 'employee_scheduling';
-  if (Array.isArray(model['objective']) && Array.isArray(model['constraints'])) {
-    return model['integerVars'] || model['binaryVars'] ? 'integer_programming' : 'linear_programming';
-  }
-  if (Array.isArray(model['costMatrix'])) return 'assignment';
-  if (Array.isArray(model['items'])) return 'monte_carlo_simulation';
-  if (Array.isArray(model['series'])) return 'forecasting';
-  if (Array.isArray(model['criteria']) && Array.isArray(model['alternatives'])) return 'multi_criteria_decision';
-  return null;
-}
-
-function modelForScientificKind(kind: FormulationKind, model: Record<string, unknown> | null): unknown | null {
-  if (!model) return null;
-  const shape = structuredScientificKind(model);
-  if (!shape) return null;
-  if (shape === kind) return model;
-  if (kind === 'integer_programming' && shape === 'linear_programming') return model;
-  if (kind === 'linear_programming' && shape === 'integer_programming') return model;
-  if (kind === 'min_cost_flow' && shape === 'max_flow') return model;
-  return null;
-}
-
-function multiScientificPlan(text: string, blocks: Record<string, unknown>[]): PlanTask[] | null {
+function multiScientificPlan(text: string, blocks: Record<string, unknown>[], workspaceId: string, adaptive?: AdaptiveMethodDecision): PlanTask[] | null {
   const profile = understandProblem({ objective: text });
-  const selectedTool = profile.scientific.method?.toolId ?? null;
-  const selectedKind = selectedTool ? SCIENTIFIC_KIND_BY_TOOL[selectedTool] ?? null : null;
-  const selectedKinds: Array<{ kind: FormulationKind; model: Record<string, unknown> }> = [];
-  for (const block of blocks) {
-    const shapeKind = structuredScientificKind(block);
-    const kind = selectedKind && modelForScientificKind(selectedKind, block) !== null ? selectedKind : shapeKind;
-    if (!kind || modelForScientificKind(kind, block) === null) continue;
-    if (selectedKinds.some((entry) => entry.kind === kind)) continue;
-    selectedKinds.push({ kind, model: block });
-  }
-  if (selectedKinds.length < 2) return null;
+  const decision = adaptive ?? selectAdaptiveMethod({ workspaceId, objective: text, profile, blocks });
+  if (decision.branches.length < 2) return null;
+  const selectedBranches = decision.branches.filter((branch) => branch.selected && modelForScientificKind(branch.selected.kind, blocks[branch.index] ?? null) !== null);
+  if (selectedBranches.length < 2) return null;
   const tasks: PlanTask[] = [];
-  for (const entry of selectedKinds) {
-    const planned = scientificPlan(text, entry.kind, entry.model);
+  for (const branch of selectedBranches) {
+    const selected = branch.selected!;
+    const model = modelForScientificKind(selected.kind, blocks[branch.index] ?? null);
+    if (model === null) continue;
+    const planned = scientificPlan(text, selected.kind, model);
     if (!planned) continue;
     const base = tasks.length;
-    const label = entry.kind.replaceAll('_', ' ');
+    const label = selected.kind.replaceAll('_', ' ');
     planned[0]!.title = `Formulate the ${label} problem explicitly`;
     planned[1]!.title = `Execute the ${label} method and verify the result`;
     planned[0]!.dependsOn = [];
     planned[1]!.dependsOn = [base];
     planned[1]!.inputBindings = [{ key: 'model', taskIndex: base, path: ['model'] }];
-    const method = profile.scientific.method?.toolId === SCIENTIFIC_KIND_BY_TOOL[entry.kind] ? profile.scientific.method?.name ?? label : label;
-    planned[0]!.detail = `${planned[0]!.detail} Automatically selected ${method} for this block; independent branches may execute in parallel.`;
-    planned[1]!.detail = `${planned[1]!.detail} Selected automatically; no user algorithm selection was required.`;
+    planned[0]!.detail = `${planned[0]!.detail} Adaptive branch ${branch.index + 1} selected ${selected.name} (${selected.score.toFixed(3)}). ${selected.reasons.join(' ')}`;
+    planned[1]!.detail = `${planned[1]!.detail} Selected automatically; no user algorithm selection was required. Independent branches may execute in parallel when worker capacity allows.`;
     tasks.push(...planned);
   }
   return tasks.length >= 4 ? tasks : null;
 }
 
-function automaticScientificPlan(text: string, structured: Record<string, unknown> | null, blocks: Record<string, unknown>[] = []): PlanTask[] | null {
-  const multi = blocks.length > 1 ? multiScientificPlan(text, blocks) : null;
-  if (multi) return multi;
+function automaticScientificPlan(text: string, structured: Record<string, unknown> | null, blocks: Record<string, unknown>[] = [], workspaceId = 'wora-preview', adaptive?: AdaptiveMethodDecision): PlanTask[] | null {
   const profile = understandProblem({ objective: text });
-  const selectedTool = profile.scientific.method?.toolId ?? null;
-  const selectedKind = selectedTool ? SCIENTIFIC_KIND_BY_TOOL[selectedTool] ?? null : null;
+  const decision = adaptive ?? selectAdaptiveMethod({ workspaceId, objective: text, profile, blocks });
+  if (blocks.length > 1) {
+    const multi = multiScientificPlan(text, blocks, workspaceId, decision);
+    if (multi) return multi;
+  }
+  const selected = decision.selected;
+  if (!selected && decision.research && (decision.research.status === 'research-required' || decision.research.status === 'missing-inputs')) {
+    const gap = scientificGapTask(text, decision.missingInformation.length ? decision.missingInformation : ['a complete structured model'], decision.research.requirement ?? 'unresolved method');
+    gap.detail = `${gap.detail} ${decision.rationale} Research: ${decision.research.status}; candidates: ${decision.research.candidates.slice(0, 3).map((candidate) => `${candidate.name} (${candidate.implementation})`).join('; ') || 'none'}.`;
+    return [gap];
+  }
+  const selectedKind = selected?.kind ?? scientificKindForTool(profile.scientific.method?.toolId ?? null);
   const shapeKind = structuredScientificKind(structured);
-  let kind = selectedKind;
-  if (!kind) kind = shapeKind;
-  else if (modelForScientificKind(kind, structured) === null && shapeKind) kind = shapeKind;
+  const kind = selectedKind ?? shapeKind;
   if (!kind) return null;
   // Preserve the established sample/playbook paths for legacy optimization
   // objectives that do not embed a real model. Advanced methods never invent data.
   if (!structured && !ADVANCED_SCIENTIFIC_KINDS.has(kind)) return null;
   const model = modelForScientificKind(kind, structured);
   if (model === null) {
-    const missing = profile.scientific.method?.requiredInputs ?? [];
-    return [scientificGapTask(text, missing.length ? missing : ['a complete structured model'], kind.replaceAll('_', ' '))];
+    const missing = selected?.requiredInputs ?? profile.scientific.method?.requiredInputs ?? [];
+    const research = decision.research ?? researchUnresolvedMethod({ objective: text, profile, excludeExisting: true });
+    const gap = scientificGapTask(text, missing.length ? missing : ['a complete structured model'], kind.replaceAll('_', ' '));
+    gap.detail = `${gap.detail} ${decision.rationale} Research: ${research.status}; candidates: ${research.candidates.slice(0, 3).map((candidate) => `${candidate.name} (${candidate.implementation})`).join('; ') || 'none'}.`;
+    return [gap];
   }
   const planned = scientificPlan(text, kind, model);
-  if (!planned) return [scientificGapTask(text, profile.scientific.method?.requiredInputs ?? ['a valid scientific model'], kind.replaceAll('_', ' '))];
-  const rationale = profile.scientific.rationale.join(' ') || 'Selected from structured model features.';
-  const methodName = profile.scientific.method?.name ?? kind.replaceAll('_', ' ');
-  planned[0]!.detail = `${planned[0]!.detail} Automatic method selection: ${methodName} (${selectedTool ?? 'shape-derived'}). ${rationale}`;
+  if (!planned) return [scientificGapTask(text, selected?.requiredInputs ?? profile.scientific.method?.requiredInputs ?? ['a valid scientific model'], kind.replaceAll('_', ' '))];
+  const rationale = selected ? `${selected.name} scored ${selected.score.toFixed(3)}. ${selected.reasons.join(' ')}` : profile.scientific.rationale.join(' ') || 'Selected from structured model features.';
+  const methodName = selected?.name ?? profile.scientific.method?.name ?? kind.replaceAll('_', ' ');
+  const toolId = selected?.toolId ?? profile.scientific.method?.toolId ?? scientificToolForKind(kind);
+  planned[0]!.detail = `${planned[0]!.detail} Adaptive method selection: ${methodName} (${toolId}). ${rationale}`;
   planned[1]!.detail = `${planned[1]!.detail} Selected automatically; no user algorithm selection was required.`;
   return planned;
 }
@@ -385,7 +293,7 @@ function scientificPlan(text: string, kind: FormulationKind, model: unknown): Pl
   ];
 }
 
-export function buildPlan(objective: string, track?: string, workspaceId = 'wora-preview', actor = 'system'): PlanTask[] {
+export function buildPlan(objective: string, track?: string, workspaceId = 'wora-preview', actor = 'system', adaptive?: AdaptiveMethodDecision): PlanTask[] {
   const text = objective.trim();
   if (track === 'composite') return composeMissionPlan({ workspaceId, objective: text, track, actor }).tasks;
   // 'generic' forces the grounded fallback pipeline (used for kickoff missions so org building never recurses).
@@ -510,7 +418,7 @@ export function buildPlan(objective: string, track?: string, workspaceId = 'wora
   // and solver tools. Missing values are reported, never replaced by samples.
   const structuredBlocks = extractStructuredJsonBlocks(text);
   const structured = structuredBlocks.length === 1 ? structuredBlocks[0]! : null;
-  const automatic = automaticScientificPlan(text, structured, structuredBlocks);
+  const automatic = automaticScientificPlan(text, structured, structuredBlocks, workspaceId, adaptive);
   if (automatic) return automatic;
   if (structured && Array.isArray(structured['edges']) && typeof structured['source'] === 'string' && typeof structured['sink'] === 'string') {
     const hasCost = structured['edges'].some((edge) => edge && typeof edge === 'object' && 'cost' in edge) || structured['demand'] !== undefined;
@@ -887,7 +795,8 @@ export function createMission(input: {
   };
   unified.reasoning = summarizeReasoning(reasoning);
   const problem = unified.baseProfile;
-  const plan = composed?.tasks ?? buildPlan(planningObjective, input.track, input.workspaceId, actor);
+  const adaptive = selectAdaptiveMethod({ workspaceId: input.workspaceId, objective: planningObjective, profile: problem });
+  const plan = composed?.tasks ?? buildPlan(planningObjective, input.track, input.workspaceId, actor, adaptive);
   const planComparison = comparePlans(plan, input.workspaceId, problem);
   const decision = compareSolutionStrategies(plan, input.workspaceId, problem);
   const ts = nowIso();
@@ -916,6 +825,19 @@ export function createMission(input: {
     const chosenPlan = planComparison.plans.find((candidate) => candidate.strategy === decision.preferredPlan.planStrategy) ?? planComparison.preferred;
     savePlanVersion({ workspaceId: input.workspaceId, missionId, plan: chosenPlan, comparison: { ...planComparison, decision }, reason: 'initial deterministic plan with scientific method comparison', actor: input.actor ?? 'user' });
     saveDecisionRecord({ workspaceId: input.workspaceId, missionId, kind: 'initial', comparison: decision, reason: decision.reason, actor: input.actor ?? 'user' });
+    saveDecisionRecord({
+      workspaceId: input.workspaceId, missionId, kind: 'adaptive-method-comparison',
+      comparison: adaptive, reason: adaptive.rationale, actor: input.actor ?? 'user',
+    });
+    if (adaptive.research && adaptive.research.status !== 'not-needed') {
+      saveDecisionRecord({
+        workspaceId: input.workspaceId, missionId, kind: 'method-research',
+        comparison: adaptive.research, reason: adaptive.research.status === 'research-required'
+          ? `No implemented method satisfies the stated requirement; ${adaptive.research.candidates.length} candidate(s) recorded without registration.`
+          : `Method research status: ${adaptive.research.status}.`,
+        actor: input.actor ?? 'user',
+      });
+    }
     if (composed) {
       saveComposition(input.workspaceId, missionId, composed);
       saveDecisionRecord({
@@ -1303,6 +1225,7 @@ async function executeMissionInner(missionId: string, actor = 'orchestrator', op
     let reviewPassed = false;
     let lastOutput: unknown = null;
     let lastIssues: string[] = [];
+    let lastSemantics: ReturnType<typeof assessToolResult> | null = null;
     let lastEvidence: Array<Record<string, unknown>> = [];
     let lastDuration = 0;
     let lastProfile: ReturnType<typeof resolveAndSnapshot> | null = null;
@@ -1396,6 +1319,7 @@ async function executeMissionInner(missionId: string, actor = 'orchestrator', op
       lastDuration = result.durationMs;
       const review = reviewRun(task, result.ok, result.output, result.error ?? null);
       const resultSemantics = assessToolResult(task.tool, result.ok, result.output, result.error ?? null);
+      lastSemantics = resultSemantics;
       const independent = verifyIndependently({ tool: task.tool, toolInput, toolOk: result.ok, output: result.output, error: result.error ?? null, evidence: lastEvidence });
       reviewPassed = review.passed && independent.passed;
       lastOutput = redactSecrets(result.output ?? null).value;
@@ -1522,6 +1446,19 @@ async function executeMissionInner(missionId: string, actor = 'orchestrator', op
         workspaceId: mission.workspace_id, agentId: agent.id, taskCategory: task.specialization,
         result: reviewPassed ? 'passed' : 'failed', durationMs: lastDuration,
       });
+      if (task.tool) {
+        saveDecisionRecord({
+          workspaceId: mission.workspace_id, missionId, kind: 'method-outcome',
+          comparison: {
+            tool: task.tool, taskId: task.id, status: resultSemantics.status,
+            verificationPassed: reviewPassed, reviewPassed,
+            durationMs: lastDuration, failureCategory: reviewPassed ? null : classifyFailure(lastIssues),
+            issues: lastIssues.slice(0, 8),
+          },
+          reason: `${task.tool} outcome: ${resultSemantics.status}; verification ${reviewPassed ? 'passed' : 'failed'}.`,
+          actor: 'orchestrator',
+        });
+      }
       // Capability replacement: only a schema-compatible, already-authorized
       // alternative may replace a failed capability. Completed tasks are not
       // touched, the original failure stays in the decision record, and the
@@ -1614,20 +1551,25 @@ async function executeMissionInner(missionId: string, actor = 'orchestrator', op
         }
       }
       if (!reviewPassed) {
-        const adaptiveCandidate = alternativeForTask({ tool: task.tool, toolInput: taskInput });
+        const failureCategory = classifyFailure(lastIssues);
+        const adaptation = planAdaptation({
+          tool: task.tool, toolInput, failureCategory, issues: lastIssues,
+          semantics: resultSemantics, previousAdaptations: adaptiveReplans,
+        });
+        const adaptiveCandidate = adaptation.alternative ?? alternativeForTask({ tool: task.tool, toolInput: taskInput });
         const assessment = assessReplan({
-          failureCategory: classifyFailure(lastIssues),
+          failureCategory,
           methodFailed: true,
           alternativesAvailable: Boolean(adaptiveCandidate),
           previousReplans: adaptiveReplans,
         });
         saveDecisionRecord({
           workspaceId: mission.workspace_id, missionId, kind: 'failure-assessment',
-          comparison: { ...assessment, candidate: adaptiveCandidate?.tool ?? null },
-          reason: assessment.reason,
+          comparison: { ...assessment, candidate: adaptiveCandidate?.tool ?? null, adaptation },
+          reason: `${assessment.reason} Adaptation: ${adaptation.action} — ${adaptation.reason}`.slice(0, 1_900),
           actor: 'orchestrator',
         });
-        if (assessment.action === 'replan' && adaptiveReplans < 1) {
+        if (adaptation.action === 'switch_method' && adaptiveReplans < 1) {
           db.prepare('UPDATE os_tasks SET status = ?, updated_at = ? WHERE id = ?').run('failed', nowIso(), task.id);
           const transition = applyAdaptiveReplan({
             workspaceId: mission.workspace_id, missionId, taskId: task.id,
@@ -1650,7 +1592,13 @@ async function executeMissionInner(missionId: string, actor = 'orchestrator', op
           }
           saveDecisionRecord({
             workspaceId: mission.workspace_id, missionId, kind: 'adaptive-replan-gap',
-            comparison: transition, reason: transition.reason, actor: 'orchestrator',
+            comparison: { transition, adaptation }, reason: transition.reason, actor: 'orchestrator',
+          });
+        } else {
+          saveDecisionRecord({
+            workspaceId: mission.workspace_id, missionId, kind: 'adaptation-gap',
+            comparison: { adaptation, semantics: resultSemantics.status, issues: lastIssues.slice(0, 8) },
+            reason: adaptation.reason, actor: 'orchestrator',
           });
         }
         attempt += 1;
@@ -1706,6 +1654,19 @@ async function executeMissionInner(missionId: string, actor = 'orchestrator', op
     } else {
       db.prepare('UPDATE os_tasks SET status = ?, updated_at = ? WHERE id = ?').run('failed', nowIso(), task.id);
       failed = true;
+    }
+    if (adaptiveReplans > 0) {
+      const transition = (db.prepare('SELECT detail FROM os_tasks WHERE id = ?').get(task.id) as { detail?: string } | undefined)?.detail ?? task.detail;
+      saveDecisionRecord({
+        workspaceId: mission.workspace_id, missionId, kind: 'adaptive-replan-outcome',
+        comparison: {
+          taskId: task.id, transition: transition.slice(0, 500), result: reviewPassed ? 'completed' : 'failed',
+          semantics: lastSemantics?.status ?? 'not_verified', durationMs: lastDuration,
+          issues: lastIssues.slice(0, 8),
+        },
+        reason: `Adaptive transition ${reviewPassed ? 'produced a verified result' : 'did not produce a verified result'}.`,
+        actor: 'orchestrator',
+      });
     }
     } finally {
       clearInterval(heartbeat);
