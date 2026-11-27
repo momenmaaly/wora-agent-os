@@ -372,7 +372,10 @@ function methodAssessments(base: UnifiedProblem, problemType: string, structure?
     add('mip', 'A linear/integer model is the relevant optimization family when the selected solver is not already the match.', true);
     if (/nonlinear|non-convex|غير خطي/iu.test(base.objective)) add('nonlinear-optimization', 'The problem is nonlinear or non-convex; no nonlinear solver is implemented.', true);
   }
-  if (/bayesian|posterior|prior probability|بايز/iu.test(base.objective)) add('bayesian-inference', 'A Bayesian posterior was requested; no Bayesian network or posterior sampler is implemented.', true);
+  if (/bayesian|posterior|prior probability|بايز/iu.test(base.objective)) {
+    for (const item of assessments.values()) item.selected = false;
+    add('bayesian-inference', 'A conjugate Beta–Binomial or Normal–Normal posterior update is implemented with credible intervals and prior sensitivity; general Bayesian networks remain unsupported.', true, true);
+  }
   if (/machine learning|classifier|classification model|تعلم آلي|تصنيف/iu.test(base.objective)) add('classification', 'A learned classifier was requested; no model-training capability is implemented.', true);
   if (problemType === 'forecasting') {
     for (const item of assessments.values()) item.selected = false;

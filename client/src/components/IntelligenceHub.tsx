@@ -1,16 +1,60 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  BarChart3, Boxes, BrainCircuit, CheckCircle2, CircleAlert, FlaskConical, GraduationCap, LoaderCircle, Play, Plus, Route, Scale, ShieldAlert, Trash2, Wrench,
+  BarChart3, Boxes, BrainCircuit, CheckCircle2, CircleAlert, FlaskConical, GraduationCap, LoaderCircle, Network, Play, Plus, Route, Scale, ShieldAlert, Trash2, Wrench,
 } from 'lucide-react';
 import {
   OsApiError, osApi,
   type BenchmarkRun, type DecisionResult, type Lesson, type LessonEvent, type MonteCarloResult, type ScheduleRequest, type ScheduleResult, type ToolInfo,
-  type TwinRecord, type TwinScenarioResult, type TwinDriverInput, type ShortestPathResult, type ScientificFormulationResult,
+  type TwinRecord, type TwinScenarioResult, type TwinDriverInput, type ShortestPathResult, type ScientificFormulationResult, type AdvancedProblemKind, type AdvancedSolverResult,
 } from '../os/api.js';
 
-type Tab = 'schedule' | 'graph' | 'montecarlo' | 'decision' | 'tools' | 'playbooks' | 'twins' | 'lessons' | 'benchmarks';
+type Tab = 'schedule' | 'graph' | 'advanced' | 'montecarlo' | 'decision' | 'tools' | 'playbooks' | 'twins' | 'lessons' | 'benchmarks';
 
 type EditableEmployee = ScheduleRequest['employees'][number] & { name: string };
+
+const ADVANCED_DEFAULTS: Record<AdvancedProblemKind, string> = {
+  max_flow: JSON.stringify({ source: 's', sink: 't', edges: [
+    { from: 's', to: 'a', capacity: 3 }, { from: 's', to: 'b', capacity: 2 },
+    { from: 'a', to: 'b', capacity: 1 }, { from: 'a', to: 't', capacity: 2 }, { from: 'b', to: 't', capacity: 3 },
+  ] }, null, 2),
+  min_cost_flow: JSON.stringify({ source: 's', sink: 't', demand: 3, edges: [
+    { from: 's', to: 'a', capacity: 2, cost: 1 }, { from: 's', to: 'b', capacity: 2, cost: 2 },
+    { from: 'a', to: 't', capacity: 2, cost: 1 }, { from: 'b', to: 't', capacity: 2, cost: 1 },
+  ] }, null, 2),
+  bipartite_matching: JSON.stringify({ left: ['a', 'b', 'c'], right: ['x', 'y', 'z'], edges: [
+    { left: 'a', right: 'x' }, { left: 'a', right: 'y' }, { left: 'b', right: 'y' }, { left: 'c', right: 'z' },
+  ] }, null, 2),
+  tsp: JSON.stringify({ points: [
+    { id: 'A', x: 0, y: 0 }, { id: 'B', x: 0, y: 1 }, { id: 'C', x: 1, y: 0 }, { id: 'D', x: 1, y: 1 },
+  ] }, null, 2),
+  vrp: JSON.stringify({ depots: [{ id: 'd', x: 0, y: 0 }], customers: [
+    { id: 'a', x: 0, y: 1, demand: 1 }, { id: 'b', x: 1, y: 0, demand: 1 }, { id: 'c', x: 1, y: 1, demand: 1 },
+  ], vehicles: [{ id: 'v1', capacity: 2 }, { id: 'v2', capacity: 2 }] }, null, 2),
+  pareto_multi_objective: JSON.stringify({ objectives: [
+    { id: 'cost', label: 'Cost', direction: 'minimize' }, { id: 'quality', label: 'Quality', direction: 'maximize' },
+  ], candidates: [
+    { name: 'A', values: { cost: 10, quality: 9 } }, { name: 'B', values: { cost: 8, quality: 7 } }, { name: 'C', values: { cost: 12, quality: 5 } },
+  ] }, null, 2),
+  bayesian_inference: JSON.stringify({ type: 'beta_binomial', prior: { alpha: 2, beta: 2 }, successes: 7, trials: 10,
+    alternativePriors: [{ label: 'uniform', alpha: 1, beta: 1 }, { label: 'strong', alpha: 10, beta: 10 }] }, null, 2),
+  queue_simulation: JSON.stringify({ customers: 500, interarrivalMean: 1, serviceMean: 1.2, servers: 2, seed: 77 }, null, 2),
+  scenario_comparison: JSON.stringify({ trials: 2000, seed: 11, scenarios: [
+    { name: 'base', items: [{ name: 'build', optimistic: 5, likely: 7, pessimistic: 10 }] },
+    { name: 'slow', items: [{ name: 'build', optimistic: 8, likely: 12, pessimistic: 16 }] },
+  ] }, null, 2),
+};
+
+const ADVANCED_LABELS: Record<AdvancedProblemKind, string> = {
+  max_flow: 'أقصى تدفق',
+  min_cost_flow: 'تدفق بأقل تكلفة',
+  bipartite_matching: 'مطابقة ثنائية',
+  tsp: 'جولة البائع',
+  vrp: 'توجيه المركبات',
+  pareto_multi_objective: 'أهداف متعددة / باريتو',
+  bayesian_inference: 'استدلال بايزي',
+  queue_simulation: 'محاكاة طابور',
+  scenario_comparison: 'مقارنة سيناريوهات',
+};
 
 const SHIFT_DEFAULTS = [
   { id: 'morning', name: 'Morning (06–14)', demand: 5 },
@@ -153,6 +197,51 @@ export function IntelligenceHub() {
       setError(err instanceof OsApiError ? err.message : 'تعذر تشغيل تحليل المسار.');
     } finally {
       setGraphBusy(false);
+    }
+  };
+
+  /* ─── Advanced optimization lab ─── */
+  const [advancedKind, setAdvancedKind] = useState<AdvancedProblemKind>('max_flow');
+  const [advancedModel, setAdvancedModel] = useState(ADVANCED_DEFAULTS.max_flow);
+  const [advancedFormulation, setAdvancedFormulation] = useState<ScientificFormulationResult | null>(null);
+  const [advancedResult, setAdvancedResult] = useState<AdvancedSolverResult | null>(null);
+  const [advancedBusy, setAdvancedBusy] = useState(false);
+
+  const chooseAdvancedKind = (kind: AdvancedProblemKind) => {
+    setAdvancedKind(kind);
+    setAdvancedModel(ADVANCED_DEFAULTS[kind]);
+    setAdvancedFormulation(null);
+    setAdvancedResult(null);
+    setError(null);
+  };
+
+  const runAdvanced = async () => {
+    setAdvancedBusy(true);
+    setError(null);
+    setAdvancedFormulation(null);
+    setAdvancedResult(null);
+    try {
+      const model = JSON.parse(advancedModel) as unknown;
+      const formulation = await osApi.formulateScientific({ kind: advancedKind, model });
+      setAdvancedFormulation(formulation);
+      if (!formulation.executable) {
+        setError(`البيانات غير مكتملة: ${formulation.missingInputs.join('؛ ')}`);
+        return;
+      }
+      const result = advancedKind === 'max_flow' ? await osApi.maxFlow(model)
+        : advancedKind === 'min_cost_flow' ? await osApi.minCostFlow(model)
+          : advancedKind === 'bipartite_matching' ? await osApi.bipartiteMatching(model)
+            : advancedKind === 'tsp' ? await osApi.tsp(model)
+              : advancedKind === 'vrp' ? await osApi.vrp(model)
+                : advancedKind === 'pareto_multi_objective' ? await osApi.pareto(model)
+                  : advancedKind === 'bayesian_inference' ? await osApi.bayes(model)
+                    : advancedKind === 'queue_simulation' ? await osApi.queue(model)
+                      : await osApi.scenarios(model);
+      setAdvancedResult(result);
+    } catch (err) {
+      setError(err instanceof OsApiError ? err.message : 'تعذر تشغيل المحلل المتقدم.');
+    } finally {
+      setAdvancedBusy(false);
     }
   };
 
@@ -305,6 +394,7 @@ export function IntelligenceHub() {
   const tabs: Array<{ id: Tab; label: string; icon: typeof BrainCircuit }> = [
     { id: 'schedule', label: 'الجدولة التشغيلية', icon: BarChart3 },
     { id: 'graph', label: 'المسار الأمثل', icon: Route },
+    { id: 'advanced', label: 'التحسين المتقدم', icon: Network },
     { id: 'montecarlo', label: 'مونتي كارلو', icon: FlaskConical },
     { id: 'decision', label: 'مصفوفة القرار', icon: Scale },
     { id: 'tools', label: 'سجل الأدوات', icon: Wrench },
@@ -453,6 +543,70 @@ export function IntelligenceHub() {
               <ul className="os-validation">{graphResult.verification.checks.map((check) => <li key={check.id}><span className={check.status === 'passed' ? 'os-ok' : 'os-bad'}>{check.status === 'passed' ? '✓' : '✕'}</span> {check.description} — <span dir="ltr">{check.evidence}</span></li>)}</ul>
               {graphResult.verification.failures.length > 0 && <ul className="os-validation">{graphResult.verification.failures.map((failure) => <li key={failure}><ShieldAlert size={12} aria-hidden="true" />{failure}</li>)}</ul>}
               <p className="subtle os-disclaimer">{graphResult.limitations.join(' ')}</p>
+            </div>
+          )}
+        </div>
+      )}
+
+      {tab === 'advanced' && (
+        <div className="os-graph">
+          <div className="os-schedule-head">
+            <div>
+              <h2>مختبر التحسين المتقدم: تدفق، توجيه، باريتو، بايز ومحاكاة</h2>
+              <p className="subtle">كل تشغيل يبني صياغة صريحة أولًا، ثم ينفّذ خوارزمية حقيقية ويعيد تحققًا مستقلًا. النتائج الاستدلالية والتقريبية تُوسم صراحة ولا تُقدَّم كأمثلية عالمية.</p>
+            </div>
+            <button type="button" className="button primary" disabled={advancedBusy} onClick={() => void runAdvanced()}>
+              {advancedBusy ? <LoaderCircle size={16} className="os-spin" aria-hidden="true" /> : <Play size={16} aria-hidden="true" />} صياغة وتنفيذ
+            </button>
+          </div>
+          <div className="os-decision-grid">
+            <div className="os-table-wrap panel panel-pad">
+              <h3>نوع المسألة</h3>
+              <label className="os-inline-field">الطريقة
+                <select value={advancedKind} onChange={(e) => chooseAdvancedKind(e.target.value as AdvancedProblemKind)} aria-label="نوع المسألة المتقدمة">
+                  {Object.entries(ADVANCED_LABELS).map(([kind, label]) => <option key={kind} value={kind}>{label}</option>)}
+                </select>
+              </label>
+              <h3>النموذج (JSON)</h3>
+              <textarea className="os-graph-editor" dir="ltr" rows={16} value={advancedModel} onChange={(e) => setAdvancedModel(e.target.value)} aria-label="نموذج المسألة المتقدمة" spellCheck={false} />
+            </div>
+            <div className="os-table-wrap panel panel-pad">
+              <h3>ما الذي يتحقق منه WORA</h3>
+              <ul className="os-validation">
+                <li><CheckCircle2 size={12} aria-hidden="true" /> التدفق: الحفظ والسعة وأقصى تدفق = أدنى قطع.</li>
+                <li><CheckCircle2 size={12} aria-hidden="true" /> التوجيه: زيارة كل عقدة/عميل مرة واحدة، السعة، وإعادة حساب المسافة.</li>
+                <li><CheckCircle2 size={12} aria-hidden="true" /> باريتو: عدم سيطرة أي حل على نقاط الجبهة، وترتيب الأوزان.</li>
+                <li><CheckCircle2 size={12} aria-hidden="true" /> بايز: معادلات Posterior وفاصل الثقة وتغيّر الأولوية.</li>
+                <li><CheckCircle2 size={12} aria-hidden="true" /> المحاكاة: البذرة، الترتيب الكمي، وإعادة التشغيل المطابقة.</li>
+              </ul>
+              <p className="subtle os-disclaimer">TSP دقيق حتى حد صغير فقط؛ فوقه نتيجة تقريبية صريحة. VRP وClarke–Wright تقريبية. الفواصل البايزية مشروطة بالنموذج وليست ضمانًا واقعيًا.</p>
+            </div>
+          </div>
+          {advancedFormulation && (
+            <div className="os-result panel panel-pad">
+              <div className="os-result-head">
+                {advancedFormulation.executable ? <CheckCircle2 size={18} className="os-ok" aria-hidden="true" /> : <CircleAlert size={18} className="os-bad" aria-hidden="true" />}
+                <h3>الصياغة: {advancedFormulation.problemClass} — {advancedFormulation.executable ? 'قابلة للتنفيذ' : 'ناقصة'}</h3>
+              </div>
+              <p><strong>الهدف:</strong> {advancedFormulation.objective}</p>
+              <p><strong>الحلّال:</strong> {advancedFormulation.solver}</p>
+              <p><strong>المتغيرات:</strong> {advancedFormulation.decisionVariables.join('، ')}</p>
+              <p><strong>القيود:</strong> {advancedFormulation.constraints.join('؛ ')}</p>
+              <p className="subtle"><strong>البصمة:</strong> <span dir="ltr">{advancedFormulation.digest.slice(0, 24)}…</span></p>
+              {advancedFormulation.missingInputs.length > 0 && <ul className="os-validation">{advancedFormulation.missingInputs.map((item) => <li key={item}><CircleAlert size={12} aria-hidden="true" />{item}</li>)}</ul>}
+            </div>
+          )}
+          {advancedResult && (
+            <div className="os-result panel panel-pad">
+              <div className="os-result-head">
+                {advancedResult.verification.passed ? <CheckCircle2 size={18} className="os-ok" aria-hidden="true" /> : <CircleAlert size={18} className="os-bad" aria-hidden="true" />}
+                <h3>{ADVANCED_LABELS[advancedKind]} — الحالة: {advancedResult.status}</h3>
+              </div>
+              <h4>تحقق مستقل</h4>
+              <ul className="os-validation">{advancedResult.verification.checks.map((check) => <li key={check.id}><span className={check.status === 'passed' ? 'os-ok' : 'os-bad'}>{check.status === 'passed' ? '✓' : '✕'}</span> {check.description} — <span dir="ltr">{check.evidence}</span></li>)}</ul>
+              {advancedResult.verification.failures.length > 0 && <ul className="os-validation">{advancedResult.verification.failures.map((failure) => <li key={failure}><ShieldAlert size={12} aria-hidden="true" />{failure}</li>)}</ul>}
+              <details><summary className="os-lp-summary">النتيجة الكاملة (JSON)</summary><pre className="os-pre" dir="ltr">{JSON.stringify(advancedResult, null, 2)}</pre></details>
+              {advancedResult.limitations && <p className="subtle os-disclaimer">{advancedResult.limitations.join(' ')}</p>}
             </div>
           )}
         </div>

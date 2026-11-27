@@ -19,7 +19,13 @@ import { openWorkspaceFile, resolveInWorkspace, workspacePath } from './workspac
 import { safeFetch } from '../lib/safe-fetch.js';
 import { solveAssignment, solveEmployeeSchedule, solveLp, type LpModel } from './ortools.js';
 import { solveShortestPath, type GraphModel } from './graph.js';
-import { formulateScientificProblem, type FormulationKind } from './scientific-formulation.js';
+import { solveMaxFlow, solveMinCostFlow, solveBipartiteMatching, type MaxFlowModel, type MinCostFlowModel, type BipartiteModel } from './network-flow.js';
+import { solveTsp, solveVrp, type TspModel, type VrpModel } from './routing.js';
+import { solvePareto, type ParetoModel } from './multi-objective.js';
+import { solveBayes, type BayesModel } from './bayesian.js';
+import { simulatePert, simulateQueue, type QueueModel } from './simulation.js';
+import { solveScenarios, type ScenarioModel } from './simulation-advanced.js';
+import { FORMULATION_KINDS, formulateScientificProblem, type FormulationKind } from './scientific-formulation.js';
 import { PROBLEM_KINDS, selectAlgorithm, algorithmSelectionInputSchema } from './algorithms.js';
 import { classifyAction } from './actions.js';
 import { understandProblem } from './problem.js';
@@ -365,7 +371,7 @@ const shortestPathTool: ToolDefinition = {
 };
 
 const formulateSchema = z.object({
-  kind: z.enum(['linear_programming', 'integer_programming', 'shortest_path', 'assignment', 'employee_scheduling', 'monte_carlo_simulation', 'forecasting', 'multi_criteria_decision']),
+  kind: z.enum(FORMULATION_KINDS),
   model: z.unknown().optional(),
   objective: z.string().max(4_000).optional(),
 }).strict();
@@ -374,7 +380,7 @@ const formulateTool: ToolDefinition = {
   id: 'meta.formulate_scientific_problem',
   name: 'Scientific Problem Formulation',
   description: 'Builds an explicit, inspectable formulation (variables, data, objective, constraints, assumptions, solver, outputs and verification) for a supported scientific problem. It does not invent missing numeric inputs.',
-  inputSchema: { type: 'object', properties: { kind: { enum: ['linear_programming', 'integer_programming', 'shortest_path', 'assignment', 'employee_scheduling', 'monte_carlo_simulation', 'forecasting', 'multi_criteria_decision'] }, model: { type: 'object' }, objective: { type: 'string' } }, required: ['kind'], additionalProperties: false },
+  inputSchema: { type: 'object', properties: { kind: { enum: [...FORMULATION_KINDS] }, model: { type: 'object' }, objective: { type: 'string' } }, required: ['kind'], additionalProperties: false },
   schema: formulateSchema,
   permission: null,
   risk: 'low',
@@ -386,16 +392,6 @@ const formulateTool: ToolDefinition = {
 };
 
 /* ─── sim.monte_carlo ──────────────────────────────────── */
-function mulberry32(seed: number) {
-  let a = seed >>> 0;
-  return () => {
-    a |= 0; a = (a + 0x6D2B79F5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
 const monteCarloModelSchema = z.object({
   trials: z.number().int().min(100).max(100_000).default(10_000),
   seed: z.number().int().default(42),
@@ -431,49 +427,7 @@ const monteCarloTool: ToolDefinition = {
   timeoutMs: 15_000,
   execute(input: z.infer<typeof monteCarloSchema>) {
     const resolved = input.model ?? { trials: input.trials ?? 10_000, seed: input.seed ?? 42, items: input.items! };
-    const rand = mulberry32(resolved.seed);
-    const triangular = (a: number, m: number, b: number) => {
-      const lo = Math.min(a, b), hi = Math.max(a, b);
-      const mode = Math.min(Math.max(m, lo), hi);
-      const u = rand();
-      const fc = (mode - lo) / (hi - lo || 1e-9);
-      return u < fc ? lo + Math.sqrt(u * (hi - lo) * (mode - lo)) : hi - Math.sqrt((1 - u) * (hi - lo) * (hi - mode));
-    };
-    const totals: number[] = [];
-    for (let t = 0; t < resolved.trials; t++) {
-      let sum = 0;
-      for (const item of resolved.items) sum += triangular(item.optimistic, item.likely, item.pessimistic);
-      totals.push(sum);
-    }
-    totals.sort((a, b) => a - b);
-    const q = (p: number) => totals[Math.min(totals.length - 1, Math.floor(p * totals.length))]!;
-    const mean = totals.reduce((a, b) => a + b, 0) / totals.length;
-    const variance = totals.reduce((acc, v) => acc + (v - mean) ** 2, 0) / totals.length;
-    const min = totals[0]!, max = totals[totals.length - 1]!;
-    const buckets = 12;
-    const histogram: Array<{ from: number; to: number; count: number }> = [];
-    const width = (max - min) / buckets || 1;
-    for (let b = 0; b < buckets; b++) histogram.push({ from: min + b * width, to: min + (b + 1) * width, count: 0 });
-    for (const v of totals) {
-      const idx = Math.min(buckets - 1, Math.floor((v - min) / width));
-      histogram[idx]!.count += 1;
-    }
-    const round = (n: number) => Math.round(n * 100) / 100;
-    return {
-      simulated: true,
-      method: 'triangular PERT Monte Carlo',
-      trials: resolved.trials,
-      seed: resolved.seed,
-      mean: round(mean),
-      stddev: round(Math.sqrt(variance)),
-      p10: round(q(0.1)),
-      p50: round(q(0.5)),
-      p90: round(q(0.9)),
-      min: round(min),
-      max: round(max),
-      histogram: histogram.map((h) => ({ ...h, from: round(h.from), to: round(h.to) })),
-      disclaimer: 'Simulated estimate from the provided three-point inputs — not a measurement of actual performance.',
-    };
+    return simulatePert(resolved.items, resolved.trials, resolved.seed);
   },
 };
 
@@ -663,6 +617,299 @@ const SUMMARY_STOP = new Set('the a an and or of to in for on with is are was we
 const stopwords = new Set([...SUMMARY_STOP, 'في', 'من', 'على', 'إلى', 'عن', 'أن', 'لا', 'ما', 'هو', 'هي', 'التي', 'هذا', 'هذه', 'مع', 'كل', 'كان', 'قد']);
 
 const summarySchema = z.object({ text: z.string().min(1).max(200_000), sentences: z.number().int().min(1).max(20).default(3) }).strict();
+
+/* ─── network flow, routing, Pareto, Bayes, advanced simulation ─── */
+const flowEdgeInput = z.object({
+  id: z.string().max(160).optional(),
+  from: z.string().min(1).max(120),
+  to: z.string().min(1).max(120),
+  capacity: z.number().finite().min(0),
+}).strict();
+const maxFlowModelSchema = z.object({
+  nodes: z.array(z.string().min(1).max(120)).max(2_000).optional(),
+  edges: z.array(flowEdgeInput).min(1).max(5_000),
+  source: z.string().min(1).max(120),
+  sink: z.string().min(1).max(120),
+}).strict();
+const maxFlowSchema = z.object({
+  model: maxFlowModelSchema.optional(),
+  nodes: z.array(z.string().min(1).max(120)).max(2_000).optional(),
+  edges: z.array(flowEdgeInput).min(1).max(5_000).optional(),
+  source: z.string().min(1).max(120).optional(),
+  sink: z.string().min(1).max(120).optional(),
+}).strict().refine((input) => Boolean(input.model || (input.edges && input.source && input.sink)), { message: 'Provide a model or edges, source and sink' });
+
+const maxFlowTool: ToolDefinition = {
+  id: 'graph.max_flow',
+  name: 'Maximum Flow (Dinic)',
+  description: 'Computes maximum single-commodity flow and the min-cut on a capacitated network, with independent conservation, capacity and max-flow/min-cut verification.',
+  inputSchema: { type: 'object', properties: { model: { type: 'object' }, nodes: { type: 'array' }, edges: { type: 'array' }, source: { type: 'string' }, sink: { type: 'string' } }, additionalProperties: false },
+  schema: maxFlowSchema,
+  permission: null,
+  risk: 'low',
+  environment: 'host',
+  timeoutMs: 10_000,
+  execute(input: z.infer<typeof maxFlowSchema>) {
+    const model: MaxFlowModel = input.model ?? { edges: input.edges!, source: input.source!, sink: input.sink!, ...(input.nodes ? { nodes: input.nodes } : {}) };
+    return solveMaxFlow(model);
+  },
+};
+
+const costEdgeInput = flowEdgeInput.extend({ cost: z.number().finite() });
+const minCostFlowModelSchema = z.object({
+  nodes: z.array(z.string().min(1).max(120)).max(2_000).optional(),
+  edges: z.array(costEdgeInput).min(1).max(5_000),
+  source: z.string().min(1).max(120),
+  sink: z.string().min(1).max(120),
+  demand: z.number().finite().min(0),
+}).strict();
+const minCostFlowSchema = z.object({
+  model: minCostFlowModelSchema.optional(),
+  nodes: z.array(z.string().min(1).max(120)).max(2_000).optional(),
+  edges: z.array(costEdgeInput).min(1).max(5_000).optional(),
+  source: z.string().min(1).max(120).optional(),
+  sink: z.string().min(1).max(120).optional(),
+  demand: z.number().finite().min(0).optional(),
+}).strict().refine((input) => Boolean(input.model || (input.edges && input.source && input.sink && input.demand !== undefined)), { message: 'Provide a model or edges, source, sink and demand' });
+
+const minCostFlowTool: ToolDefinition = {
+  id: 'graph.min_cost_flow',
+  name: 'Minimum Cost Flow (Successive Shortest Paths)',
+  description: 'Delivers an exact demand at minimum linear cost on a capacitated network, with independent conservation, capacity, cost and residual-optimality verification.',
+  inputSchema: { type: 'object', properties: { model: { type: 'object' }, nodes: { type: 'array' }, edges: { type: 'array' }, source: { type: 'string' }, sink: { type: 'string' }, demand: { type: 'number' } }, additionalProperties: false },
+  schema: minCostFlowSchema,
+  permission: null,
+  risk: 'low',
+  environment: 'host',
+  timeoutMs: 15_000,
+  execute(input: z.infer<typeof minCostFlowSchema>) {
+    const model: MinCostFlowModel = input.model ?? { edges: input.edges!, source: input.source!, sink: input.sink!, demand: input.demand!, ...(input.nodes ? { nodes: input.nodes } : {}) };
+    return solveMinCostFlow(model);
+  },
+};
+
+const bipartiteEdgeInput = z.object({ left: z.string().min(1).max(120), right: z.string().min(1).max(120) }).strict();
+const bipartiteModelSchema = z.object({
+  left: z.array(z.string().min(1).max(120)).min(1).max(2_000),
+  right: z.array(z.string().min(1).max(120)).min(1).max(2_000),
+  edges: z.array(bipartiteEdgeInput).min(1).max(10_000),
+}).strict();
+const bipartiteSchema = z.object({
+  model: bipartiteModelSchema.optional(),
+  left: z.array(z.string().min(1).max(120)).min(1).max(2_000).optional(),
+  right: z.array(z.string().min(1).max(120)).min(1).max(2_000).optional(),
+  edges: z.array(bipartiteEdgeInput).min(1).max(10_000).optional(),
+}).strict().refine((input) => Boolean(input.model || (input.left && input.right && input.edges)), { message: 'Provide a model or left, right and edges' });
+
+const bipartiteTool: ToolDefinition = {
+  id: 'graph.bipartite_matching',
+  name: 'Bipartite Maximum Matching',
+  description: 'Finds a maximum-cardinality one-to-one matching in a bipartite graph and verifies validity, uniqueness and the absence of augmenting paths.',
+  inputSchema: { type: 'object', properties: { model: { type: 'object' }, left: { type: 'array' }, right: { type: 'array' }, edges: { type: 'array' } }, additionalProperties: false },
+  schema: bipartiteSchema,
+  permission: null,
+  risk: 'low',
+  environment: 'host',
+  timeoutMs: 10_000,
+  execute(input: z.infer<typeof bipartiteSchema>) {
+    const model: BipartiteModel = input.model ?? { left: input.left!, right: input.right!, edges: input.edges! };
+    return solveBipartiteMatching(model);
+  },
+};
+
+const routePointInput = z.object({ id: z.string().min(1).max(120), x: z.number().finite(), y: z.number().finite() }).strict();
+const tspModelSchema = z.object({
+  points: z.array(routePointInput).min(1).max(200).optional(),
+  distanceMatrix: z.array(z.array(z.number().finite().min(0)).min(1).max(200)).min(1).max(200).optional(),
+  labels: z.array(z.string().min(1).max(120)).max(200).optional(),
+  start: z.string().min(1).max(120).optional(),
+  exactLimit: z.number().int().min(2).max(14).optional(),
+}).strict().refine((model) => Boolean(model.points?.length || model.distanceMatrix?.length), { message: 'Provide points or a distance matrix' });
+const tspSchema = z.object({
+  model: tspModelSchema.optional(),
+  points: z.array(routePointInput).min(1).max(200).optional(),
+  distanceMatrix: z.array(z.array(z.number().finite().min(0)).min(1).max(200)).min(1).max(200).optional(),
+  labels: z.array(z.string().min(1).max(120)).max(200).optional(),
+  start: z.string().min(1).max(120).optional(),
+  exactLimit: z.number().int().min(2).max(14).optional(),
+}).strict().refine((input) => Boolean(input.model || input.points?.length || input.distanceMatrix?.length), { message: 'Provide a model, points or a distance matrix' });
+
+const tspTool: ToolDefinition = {
+  id: 'routing.tsp',
+  name: 'Traveling Salesperson (Exact DP / 2-opt)',
+  description: 'Solves a closed TSP tour with Held-Karp exact dynamic programming for small instances and nearest-neighbour + 2-opt for larger ones. Heuristic results are labelled approximate, never optimal.',
+  inputSchema: { type: 'object', properties: { model: { type: 'object' }, points: { type: 'array' }, distanceMatrix: { type: 'array' }, labels: { type: 'array' }, start: { type: 'string' }, exactLimit: { type: 'number' } }, additionalProperties: false },
+  schema: tspSchema,
+  permission: null,
+  risk: 'low',
+  environment: 'host',
+  timeoutMs: 20_000,
+  execute(input: z.infer<typeof tspSchema>) {
+    const model: TspModel = input.model ?? {
+      ...(input.points ? { points: input.points } : {}), ...(input.distanceMatrix ? { distanceMatrix: input.distanceMatrix } : {}),
+      ...(input.labels ? { labels: input.labels } : {}), ...(input.start ? { start: input.start } : {}), ...(input.exactLimit ? { exactLimit: input.exactLimit } : {}),
+    };
+    return solveTsp(model);
+  },
+};
+
+const depotInput = z.object({ id: z.string().min(1).max(120), x: z.number().finite(), y: z.number().finite() }).strict();
+const customerInput = z.object({ id: z.string().min(1).max(120), x: z.number().finite(), y: z.number().finite(), demand: z.number().finite().min(0), depot: z.string().min(1).max(120).optional() }).strict();
+const vehicleInput = z.object({ id: z.string().min(1).max(120), capacity: z.number().finite().positive(), depot: z.string().min(1).max(120).optional() }).strict();
+const vrpModelSchema = z.object({
+  depots: z.array(depotInput).min(1).max(100),
+  customers: z.array(customerInput).min(1).max(2_000),
+  vehicles: z.array(vehicleInput).min(1).max(500),
+}).strict();
+const vrpSchema = z.object({
+  model: vrpModelSchema.optional(),
+  depots: z.array(depotInput).min(1).max(100).optional(),
+  customers: z.array(customerInput).min(1).max(2_000).optional(),
+  vehicles: z.array(vehicleInput).min(1).max(500).optional(),
+}).strict().refine((input) => Boolean(input.model || (input.depots && input.customers && input.vehicles)), { message: 'Provide a model or depots, customers and vehicles' });
+
+const vrpTool: ToolDefinition = {
+  id: 'routing.vrp',
+  name: 'Vehicle Routing (Clarke–Wright)',
+  description: 'Builds capacity-feasible multi-depot routes with Clarke–Wright savings. Reports feasible/approximate or infeasible; never claims global optimality.',
+  inputSchema: { type: 'object', properties: { model: { type: 'object' }, depots: { type: 'array' }, customers: { type: 'array' }, vehicles: { type: 'array' } }, additionalProperties: false },
+  schema: vrpSchema,
+  permission: null,
+  risk: 'low',
+  environment: 'host',
+  timeoutMs: 20_000,
+  execute(input: z.infer<typeof vrpSchema>) {
+    const model: VrpModel = input.model ?? { depots: input.depots!, customers: input.customers!, vehicles: input.vehicles! };
+    return solveVrp(model);
+  },
+};
+
+const objectiveInput = z.object({ id: z.string().min(1).max(60), label: z.string().min(1).max(120), direction: z.enum(['minimize', 'maximize']) }).strict();
+const candidateInput = z.object({ name: z.string().min(1).max(120), values: z.record(z.string(), z.number().finite()) }).strict();
+const paretoModelSchema = z.object({
+  objectives: z.array(objectiveInput).min(2).max(20),
+  candidates: z.array(candidateInput).min(2).max(2_000),
+  weights: z.record(z.string(), z.number().finite().min(0)).optional(),
+}).strict();
+const paretoSchema = z.object({
+  model: paretoModelSchema.optional(),
+  objectives: z.array(objectiveInput).min(2).max(20).optional(),
+  candidates: z.array(candidateInput).min(2).max(2_000).optional(),
+  weights: z.record(z.string(), z.number().finite().min(0)).optional(),
+}).strict().refine((input) => Boolean(input.model || (input.objectives && input.candidates)), { message: 'Provide a model or objectives and candidates' });
+
+const paretoTool: ToolDefinition = {
+  id: 'decision.pareto',
+  name: 'Pareto Multi-Objective Analysis',
+  description: 'Computes the Pareto frontier for an explicit candidate set, explains trade-offs, ranks under declared weights and stress-tests the winner. Exact only for the supplied candidate set.',
+  inputSchema: { type: 'object', properties: { model: { type: 'object' }, objectives: { type: 'array' }, candidates: { type: 'array' }, weights: { type: 'object' } }, additionalProperties: false },
+  schema: paretoSchema,
+  permission: null,
+  risk: 'low',
+  environment: 'host',
+  timeoutMs: 10_000,
+  execute(input: z.infer<typeof paretoSchema>) {
+    const model: ParetoModel = input.model ?? { objectives: input.objectives!, candidates: input.candidates!, ...(input.weights ? { weights: input.weights } : {}) };
+    return solvePareto(model);
+  },
+};
+
+const betaPriorInput = z.object({ alpha: z.number().finite().positive(), beta: z.number().finite().positive() }).strict();
+const betaAlternativeInput = z.object({ label: z.string().min(1).max(120).optional(), alpha: z.number().finite().positive(), beta: z.number().finite().positive() }).strict();
+const betaModelInput = z.object({
+  type: z.literal('beta_binomial'),
+  prior: betaPriorInput,
+  successes: z.number().int().min(0),
+  trials: z.number().int().min(0),
+  credibleLevel: z.number().finite().gt(0.5).lt(1).optional(),
+  alternativePriors: z.array(betaAlternativeInput).max(20).optional(),
+}).strict().refine((model) => model.successes <= model.trials, { message: 'successes must not exceed trials' });
+const normalPriorInput = z.object({ mean: z.number().finite(), sd: z.number().finite().positive() }).strict();
+const normalAlternativeInput = z.object({ label: z.string().min(1).max(120).optional(), mean: z.number().finite(), sd: z.number().finite().positive() }).strict();
+const normalModelInput = z.object({
+  type: z.literal('normal_normal'),
+  prior: normalPriorInput,
+  observations: z.array(z.number().finite()).min(1).max(100_000),
+  knownSd: z.number().finite().positive(),
+  credibleLevel: z.number().finite().gt(0.5).lt(1).optional(),
+  alternativePriors: z.array(normalAlternativeInput).max(20).optional(),
+}).strict();
+const bayesModelInput = z.discriminatedUnion('type', [betaModelInput, normalModelInput]);
+const bayesSchema = z.object({ model: bayesModelInput }).strict();
+
+const bayesTool: ToolDefinition = {
+  id: 'stats.bayes_update',
+  name: 'Bayesian Posterior Update',
+  description: 'Conjugate Beta–Binomial and Normal–Normal posterior updates with credible intervals and prior-sensitivity checks. Credible intervals are model-conditional, not real-world guarantees.',
+  inputSchema: { type: 'object', properties: { model: { type: 'object' }, type: { enum: ['beta_binomial', 'normal_normal'] }, prior: { type: 'object' }, successes: { type: 'number' }, trials: { type: 'number' }, observations: { type: 'array' }, knownSd: { type: 'number' }, credibleLevel: { type: 'number' }, alternativePriors: { type: 'array' } }, additionalProperties: false },
+  schema: bayesSchema,
+  permission: null,
+  risk: 'low',
+  environment: 'host',
+  timeoutMs: 10_000,
+  execute(input: z.infer<typeof bayesSchema>) {
+    return solveBayes(input.model as BayesModel);
+  },
+};
+
+const queueSchema = z.object({
+  model: z.object({
+    customers: z.number().int().min(1).max(100_000),
+    interarrivalMean: z.number().finite().positive(),
+    serviceMean: z.number().finite().positive(),
+    servers: z.number().int().min(1).max(100),
+    seed: z.number().int(),
+  }).strict().optional(),
+  customers: z.number().int().min(1).max(100_000).optional(),
+  interarrivalMean: z.number().finite().positive().optional(),
+  serviceMean: z.number().finite().positive().optional(),
+  servers: z.number().int().min(1).max(100).optional(),
+  seed: z.number().int().optional(),
+}).strict().refine((input) => Boolean(input.model || (input.customers && input.interarrivalMean && input.serviceMean && input.servers && input.seed !== undefined)), { message: 'Provide a model or complete queue inputs' });
+
+const queueTool: ToolDefinition = {
+  id: 'sim.queue',
+  name: 'Discrete-Event Queue Simulation',
+  description: 'Runs a seeded FCFS multi-server queue with exponential interarrival and service times. Reports waits, utilization and makespan as simulated results, not observations.',
+  inputSchema: { type: 'object', properties: { model: { type: 'object' }, customers: { type: 'number' }, interarrivalMean: { type: 'number' }, serviceMean: { type: 'number' }, servers: { type: 'number' }, seed: { type: 'number' } }, additionalProperties: false },
+  schema: queueSchema,
+  permission: null,
+  risk: 'low',
+  environment: 'host',
+  timeoutMs: 15_000,
+  execute(input: z.infer<typeof queueSchema>) {
+    const model: QueueModel = input.model ?? { customers: input.customers!, interarrivalMean: input.interarrivalMean!, serviceMean: input.serviceMean!, servers: input.servers!, seed: input.seed! };
+    return simulateQueue(model);
+  },
+};
+
+const scenarioItemInput = z.object({ name: z.string().min(1).max(120), optimistic: z.number().finite(), likely: z.number().finite(), pessimistic: z.number().finite() }).strict();
+const scenarioAdjustmentInput = z.object({ item: z.string().min(1).max(120), op: z.enum(['mul', 'add']), value: z.number().finite() }).strict();
+const scenarioInput = z.object({ name: z.string().min(1).max(120), items: z.array(scenarioItemInput).min(1).max(100), adjustments: z.array(scenarioAdjustmentInput).max(100).optional() }).strict();
+const scenarioModelSchema = z.object({ scenarios: z.array(scenarioInput).min(2).max(20), trials: z.number().int().min(100).max(100_000).optional(), seed: z.number().int().optional() }).strict();
+const scenarioSchema = z.object({
+  model: scenarioModelSchema.optional(),
+  scenarios: z.array(scenarioInput).min(2).max(20).optional(),
+  trials: z.number().int().min(100).max(100_000).optional(),
+  seed: z.number().int().optional(),
+}).strict().refine((input) => Boolean(input.model || input.scenarios), { message: 'Provide a model or scenarios' });
+
+const scenarioTool: ToolDefinition = {
+  id: 'sim.scenario_compare',
+  name: 'Scenario Comparison Simulation',
+  description: 'Runs the same seeded PERT model under multiple scenarios, reports baseline deltas and ranks by median. Reproducibility is verified by rerunning with the same seed.',
+  inputSchema: { type: 'object', properties: { model: { type: 'object' }, scenarios: { type: 'array' }, trials: { type: 'number' }, seed: { type: 'number' } }, additionalProperties: false },
+  schema: scenarioSchema,
+  permission: null,
+  risk: 'low',
+  environment: 'host',
+  timeoutMs: 30_000,
+  execute(input: z.infer<typeof scenarioSchema>) {
+    const model: ScenarioModel = input.model ?? { scenarios: input.scenarios!, ...(input.trials !== undefined ? { trials: input.trials } : {}), ...(input.seed !== undefined ? { seed: input.seed } : {}) };
+    return solveScenarios(model);
+  },
+};
+
 
 const summaryTool: ToolDefinition = {
   id: 'text.extract_summary',
@@ -1060,6 +1307,15 @@ const ALL_TOOLS: ToolDefinition[] = [
   statsTool,
   forecastTool,
   decisionTool,
+  maxFlowTool,
+  minCostFlowTool,
+  bipartiteTool,
+  tspTool,
+  vrpTool,
+  paretoTool,
+  bayesTool,
+  queueTool,
+  scenarioTool,
   summaryTool,
   fetchReadTool,
   securityScanTool,

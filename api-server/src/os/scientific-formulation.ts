@@ -12,7 +12,14 @@ import type { LpModel, ScheduleInput } from './ortools.js';
 
 export const FORMULATION_SCHEMA_VERSION = '1.0';
 
-export type FormulationKind = 'linear_programming' | 'integer_programming' | 'shortest_path' | 'assignment' | 'employee_scheduling' | 'monte_carlo_simulation' | 'forecasting' | 'multi_criteria_decision';
+export const FORMULATION_KINDS = [
+  'linear_programming', 'integer_programming', 'shortest_path', 'assignment', 'employee_scheduling',
+  'monte_carlo_simulation', 'forecasting', 'multi_criteria_decision', 'max_flow', 'min_cost_flow',
+  'bipartite_matching', 'tsp', 'vrp', 'pareto_multi_objective', 'bayesian_inference',
+  'queue_simulation', 'scenario_comparison',
+] as const;
+
+export type FormulationKind = (typeof FORMULATION_KINDS)[number];
 
 export interface ScientificFormulation {
   schemaVersion: typeof FORMULATION_SCHEMA_VERSION;
@@ -303,6 +310,258 @@ function formulateDecision(raw: unknown): ScientificFormulation {
   return finish(formulation, model);
 }
 
+function formulateMaxFlow(raw: unknown): ScientificFormulation {
+  const formulation = base('max_flow');
+  if (!isRecord(raw)) { formulation.missingInputs = ['capacitated edges', 'source', 'sink']; return finish(formulation, null); }
+  const edges = Array.isArray(raw['edges']) ? raw['edges'] : [];
+  const errors: string[] = [];
+  if (!edges.length) errors.push('at least one capacitated edge is required');
+  for (const [index, edge] of edges.entries()) {
+    if (!isRecord(edge) || typeof edge['from'] !== 'string' || typeof edge['to'] !== 'string' || !finite(edge['capacity'])) errors.push(`edge ${index + 1} needs from, to and a finite capacity`);
+    else if ((edge['capacity'] as number) < 0) errors.push(`edge ${index + 1} has a negative capacity`);
+  }
+  if (typeof raw['source'] !== 'string' || !raw['source'].trim()) errors.push('source is required');
+  if (typeof raw['sink'] !== 'string' || !raw['sink'].trim()) errors.push('sink is required');
+  if (errors.length) { formulation.missingInputs = errors; return finish(formulation, null); }
+  const model = { edges, source: raw['source'], sink: raw['sink'], ...(Array.isArray(raw['nodes']) ? { nodes: raw['nodes'] } : {}) };
+  formulation.decisionVariables = edges.map((edge, index) => `f_${(edge as Record<string, unknown>)['from']}_${(edge as Record<string, unknown>)['to']}_${index}`);
+  formulation.inputData = ['directed capacitated edges', 'source', 'sink'];
+  formulation.objective = 'maximize flow from source to sink';
+  formulation.constraints = ['flow conservation at intermediate nodes', '0 ≤ edge flow ≤ capacity'];
+  formulation.assumptions = ['The supplied network is the intended model.', 'Capacities are finite and additive.'];
+  formulation.feasibilityConditions = ['source and sink exist', 'capacities are non-negative'];
+  formulation.uncertainty = 'none for deterministic capacities.';
+  formulation.solver = 'graph.max_flow (Dinic)';
+  formulation.expectedOutputs = ['max-flow value', 'edge flows', 'min-cut partition and capacity', 'independent conservation/capacity verification'];
+  formulation.verification = ['capacity bounds', 'flow conservation', 'source outflow equals max flow', 'min-cut capacity equals max flow'];
+  formulation.limitations = ['Single-commodity flow only.', 'No lower bounds or gains.'];
+  return finish(formulation, model);
+}
+
+function formulateMinCostFlow(raw: unknown): ScientificFormulation {
+  const formulation = base('min_cost_flow');
+  if (!isRecord(raw)) { formulation.missingInputs = ['capacitated edges with costs', 'source', 'sink', 'demand']; return finish(formulation, null); }
+  const edges = Array.isArray(raw['edges']) ? raw['edges'] : [];
+  const errors: string[] = [];
+  if (!edges.length) errors.push('at least one capacitated edge is required');
+  for (const [index, edge] of edges.entries()) {
+    if (!isRecord(edge) || typeof edge['from'] !== 'string' || typeof edge['to'] !== 'string' || !finite(edge['capacity']) || !finite(edge['cost'])) errors.push(`edge ${index + 1} needs from, to, finite capacity and finite cost`);
+    else if ((edge['capacity'] as number) < 0) errors.push(`edge ${index + 1} has a negative capacity`);
+  }
+  if (typeof raw['source'] !== 'string' || !raw['source'].trim()) errors.push('source is required');
+  if (typeof raw['sink'] !== 'string' || !raw['sink'].trim()) errors.push('sink is required');
+  if (!finite(raw['demand']) || (raw['demand'] as number) < 0) errors.push('demand must be finite and non-negative');
+  if (errors.length) { formulation.missingInputs = errors; return finish(formulation, null); }
+  const model = { edges, source: raw['source'], sink: raw['sink'], demand: raw['demand'], ...(Array.isArray(raw['nodes']) ? { nodes: raw['nodes'] } : {}) };
+  formulation.decisionVariables = edges.map((edge, index) => `f_${(edge as Record<string, unknown>)['from']}_${(edge as Record<string, unknown>)['to']}_${index}`);
+  formulation.inputData = ['capacitated edges with unit costs', 'source', 'sink', 'demand'];
+  formulation.objective = 'minimize total cost while delivering exactly the requested demand';
+  formulation.constraints = ['flow conservation at intermediate nodes', '0 ≤ edge flow ≤ capacity', 'delivered flow equals demand'];
+  formulation.assumptions = ['Linear additive edge costs.', 'The residual network has no negative cycle at optimum.'];
+  formulation.feasibilityConditions = ['source and sink exist', 'max flow is at least the demand'];
+  formulation.uncertainty = 'none for deterministic costs.';
+  formulation.solver = 'graph.min_cost_flow (successive shortest paths)';
+  formulation.expectedOutputs = ['delivered flow', 'total cost', 'edge flows', 'independent conservation/capacity/cost verification'];
+  formulation.verification = ['exact demand delivered', 'capacity and conservation', 'cost recomputed', 'no negative residual cycle'];
+  formulation.limitations = ['Single-commodity flow only.', 'Successive shortest paths is not a general min-cost circulation with lower bounds.'];
+  return finish(formulation, model);
+}
+
+function formulateBipartite(raw: unknown): ScientificFormulation {
+  const formulation = base('bipartite_matching');
+  if (!isRecord(raw)) { formulation.missingInputs = ['left nodes', 'right nodes', 'edges']; return finish(formulation, null); }
+  const left = Array.isArray(raw['left']) ? raw['left'] : [];
+  const right = Array.isArray(raw['right']) ? raw['right'] : [];
+  const edges = Array.isArray(raw['edges']) ? raw['edges'] : [];
+  const errors: string[] = [];
+  if (!left.length) errors.push('left nodes are required');
+  if (!right.length) errors.push('right nodes are required');
+  if (!edges.length) errors.push('at least one bipartite edge is required');
+  for (const [index, edge] of edges.entries()) {
+    if (!isRecord(edge) || typeof edge['left'] !== 'string' || typeof edge['right'] !== 'string') errors.push(`edge ${index + 1} needs left and right`);
+  }
+  if (errors.length) { formulation.missingInputs = errors; return finish(formulation, null); }
+  const model = { left, right, edges };
+  formulation.decisionVariables = edges.map((edge, index) => `x_${(edge as Record<string, unknown>)['left']}_${(edge as Record<string, unknown>)['right']}_${index}`);
+  formulation.inputData = ['left and right node sets', 'allowed bipartite edges'];
+  formulation.objective = 'maximize the number of one-to-one matched pairs';
+  formulation.constraints = ['each left node at most once', 'each right node at most once', 'only supplied edges'];
+  formulation.assumptions = ['Unweighted maximum-cardinality matching; weighted matching requires assignment.'];
+  formulation.feasibilityConditions = ['both sides are non-empty', 'edges reference valid nodes'];
+  formulation.uncertainty = 'none.';
+  formulation.solver = 'graph.bipartite_matching (augmenting paths)';
+  formulation.expectedOutputs = ['matching', 'size', 'unmatched nodes', 'independent maximality verification'];
+  formulation.verification = ['every pair is a real edge and used once', 'size matches pairs', 'no augmenting path remains'];
+  formulation.limitations = ['Maximum cardinality only; no costs or capacities.', 'One-to-one matching only.'];
+  return finish(formulation, model);
+}
+
+function formulateTsp(raw: unknown): ScientificFormulation {
+  const formulation = base('tsp');
+  if (!isRecord(raw)) { formulation.missingInputs = ['points or a distance matrix']; return finish(formulation, null); }
+  const points = Array.isArray(raw['points']) ? raw['points'] : [];
+  const matrix = Array.isArray(raw['distanceMatrix']) ? raw['distanceMatrix'] : [];
+  const errors: string[] = [];
+  if (!points.length && !matrix.length) errors.push('points or a distance matrix is required');
+  if (points.length) {
+    if (new Set(points.map((point) => isRecord(point) ? point['id'] : undefined)).size !== points.length) errors.push('point ids must be unique');
+    for (const [index, point] of points.entries()) if (!isRecord(point) || typeof point['id'] !== 'string' || !finite(point['x']) || !finite(point['y'])) errors.push(`point ${index + 1} needs id and finite x/y`);
+  }
+  if (matrix.length) {
+    if (!matrix.every((row) => Array.isArray(row) && row.length === matrix.length && row.every((value) => finite(value) && value >= 0))) errors.push('distance matrix must be square with finite non-negative values');
+  }
+  if (errors.length) { formulation.missingInputs = errors; return finish(formulation, null); }
+  const model = { ...(points.length ? { points } : {}), ...(matrix.length ? { distanceMatrix: matrix } : {}), ...(typeof raw['start'] === 'string' ? { start: raw['start'] } : {}), ...(finite(raw['exactLimit']) ? { exactLimit: raw['exactLimit'] } : {}) };
+  formulation.decisionVariables = ['visit order permutation'];
+  formulation.inputData = ['points with coordinates or a square distance matrix', 'optional start'];
+  formulation.objective = 'minimize the closed tour length visiting every node once';
+  formulation.constraints = ['visit every node exactly once', 'return to the start'];
+  formulation.assumptions = ['Symmetric Euclidean distances when points are supplied.', 'Exact DP is limited to small instances.'];
+  formulation.feasibilityConditions = ['at least one node', 'valid finite distances'];
+  formulation.uncertainty = 'none.';
+  formulation.solver = 'routing.tsp (Held-Karp exact ≤ exactLimit; nearest-neighbour + 2-opt above)';
+  formulation.expectedOutputs = ['tour', 'cost', 'method', 'optimal/approximate status', 'MST lower bound', 'independent tour verification'];
+  formulation.verification = ['permutation visits every node once', 'cost recomputed', 'tour starts at start', 'exact small instances compared with brute force', 'heuristic results labelled approximate'];
+  formulation.limitations = ['Large instances are heuristic and not globally optimal.', 'No time windows, precedence or asymmetric TSP guarantees beyond exact small cases.'];
+  return finish(formulation, model);
+}
+
+function formulateVrp(raw: unknown): ScientificFormulation {
+  const formulation = base('vrp');
+  if (!isRecord(raw)) { formulation.missingInputs = ['depots', 'customers with demand', 'vehicles with capacity']; return finish(formulation, null); }
+  const depots = Array.isArray(raw['depots']) ? raw['depots'] : [];
+  const customers = Array.isArray(raw['customers']) ? raw['customers'] : [];
+  const vehicles = Array.isArray(raw['vehicles']) ? raw['vehicles'] : [];
+  const errors: string[] = [];
+  if (!depots.length) errors.push('at least one depot is required');
+  if (!customers.length) errors.push('at least one customer is required');
+  if (!vehicles.length) errors.push('at least one vehicle is required');
+  for (const [index, customer] of customers.entries()) if (!isRecord(customer) || typeof customer['id'] !== 'string' || !finite(customer['x']) || !finite(customer['y']) || !finite(customer['demand']) || (customer['demand'] as number) < 0) errors.push(`customer ${index + 1} needs id, finite coordinates and non-negative demand`);
+  for (const [index, vehicle] of vehicles.entries()) if (!isRecord(vehicle) || typeof vehicle['id'] !== 'string' || !finite(vehicle['capacity']) || (vehicle['capacity'] as number) <= 0) errors.push(`vehicle ${index + 1} needs id and positive capacity`);
+  if (errors.length) { formulation.missingInputs = errors; return finish(formulation, null); }
+  const model = { depots, customers, vehicles };
+  formulation.decisionVariables = ['customer-to-route assignment', 'route order'];
+  formulation.inputData = ['depot coordinates', 'customer coordinates and demands', 'vehicle capacities'];
+  formulation.objective = 'minimize total travel distance while respecting vehicle capacities';
+  formulation.constraints = ['every customer served once', 'route load ≤ vehicle capacity', 'routes start and end at a depot'];
+  formulation.assumptions = ['Euclidean distances.', 'Nearest-depot assignment; routes use Clarke–Wright savings.', 'Heuristic, not globally optimal.'];
+  formulation.feasibilityConditions = ['each demand ≤ some vehicle capacity', 'enough vehicles for the resulting routes'];
+  formulation.uncertainty = 'none for deterministic demands and travel times.';
+  formulation.solver = 'routing.vrp (multi-depot Clarke–Wright savings)';
+  formulation.expectedOutputs = ['routes', 'loads', 'total distance', 'feasible/approximate status', 'independent coverage/capacity verification'];
+  formulation.verification = ['every customer served exactly once', 'capacity respected', 'route distance recomputed', 'heuristic labelled feasible/approximate'];
+  formulation.limitations = ['No time windows, pickups/deliveries or exact global optimum.', 'Depot assignment is not jointly optimized with routing.'];
+  return finish(formulation, model);
+}
+
+function formulatePareto(raw: unknown): ScientificFormulation {
+  const formulation = base('pareto_multi_objective');
+  if (!isRecord(raw)) { formulation.missingInputs = ['objectives', 'candidate solutions with values']; return finish(formulation, null); }
+  const objectives = Array.isArray(raw['objectives']) ? raw['objectives'] : [];
+  const candidates = Array.isArray(raw['candidates']) ? raw['candidates'] : [];
+  const errors: string[] = [];
+  if (objectives.length < 2) errors.push('at least two objectives are required');
+  if (candidates.length < 2) errors.push('at least two candidates are required');
+  for (const [index, objective] of objectives.entries()) if (!isRecord(objective) || typeof objective['id'] !== 'string' || (objective['direction'] !== 'minimize' && objective['direction'] !== 'maximize')) errors.push(`objective ${index + 1} needs id and minimize/maximize direction`);
+  for (const [index, candidate] of candidates.entries()) if (!isRecord(candidate) || typeof candidate['name'] !== 'string' || !isRecord(candidate['values'])) errors.push(`candidate ${index + 1} needs name and values`);
+  if (errors.length) { formulation.missingInputs = errors; return finish(formulation, null); }
+  const model = { objectives, candidates, ...(isRecord(raw['weights']) ? { weights: raw['weights'] } : {}) };
+  formulation.decisionVariables = ['candidate selection'];
+  formulation.inputData = ['objective directions', 'candidate objective values', 'optional weights'];
+  formulation.objective = 'identify non-dominated candidates and explain trade-offs';
+  formulation.constraints = ['all candidate values are finite', 'directions are declared per objective'];
+  formulation.assumptions = ['The candidate set is the decision space.', 'Weights are judgments, not measured facts.'];
+  formulation.feasibilityConditions = ['at least two objectives and two candidates'];
+  formulation.uncertainty = 'weights are stress-tested ±20%; candidate values are treated as given.';
+  formulation.solver = 'decision.pareto (dominance + weighted ranking)';
+  formulation.expectedOutputs = ['Pareto frontier', 'dominated candidates', 'weighted ranking', 'trade-offs', 'sensitivity notes', 'independent dominance verification'];
+  formulation.verification = ['frontier completeness', 'no frontier point is dominated', 'weighted scores recomputed', 'trade-off differences recomputed'];
+  formulation.limitations = ['Exact only for the supplied candidate set.', 'No continuous Pareto front generation.', 'Weighted ranking is not a substitute for preference elicitation.'];
+  return finish(formulation, model);
+}
+
+function formulateBayes(raw: unknown): ScientificFormulation {
+  const formulation = base('bayesian_inference');
+  if (!isRecord(raw)) { formulation.missingInputs = ['model type and prior', 'observations']; return finish(formulation, null); }
+  const type = raw['type'];
+  const errors: string[] = [];
+  if (type === 'beta_binomial') {
+    const prior = raw['prior'];
+    if (!isRecord(prior) || !finite(prior['alpha']) || (prior['alpha'] as number) <= 0 || !finite(prior['beta']) || (prior['beta'] as number) <= 0) errors.push('beta prior needs positive alpha and beta');
+    if (!Number.isInteger(raw['successes']) || !Number.isInteger(raw['trials']) || (raw['successes'] as number) < 0 || (raw['trials'] as number) < (raw['successes'] as number)) errors.push('successes and trials must be valid integers');
+  } else if (type === 'normal_normal') {
+    const prior = raw['prior'];
+    if (!isRecord(prior) || !finite(prior['mean']) || !finite(prior['sd']) || (prior['sd'] as number) <= 0) errors.push('normal prior needs a finite mean and positive sd');
+    if (!Array.isArray(raw['observations']) || !raw['observations'].length || !raw['observations'].every(finite)) errors.push('at least one finite observation is required');
+    if (!finite(raw['knownSd']) || (raw['knownSd'] as number) <= 0) errors.push('knownSd must be positive');
+  } else errors.push('type must be beta_binomial or normal_normal');
+  if (errors.length) { formulation.missingInputs = errors; return finish(formulation, null); }
+  const model = raw;
+  formulation.decisionVariables = ['posterior distribution parameters'];
+  formulation.inputData = ['prior parameters', 'observed successes/trials or observations', 'likelihood assumptions'];
+  formulation.objective = 'update the prior with observed data and report uncertainty';
+  formulation.constraints = ['valid conjugate likelihood', 'positive prior parameters'];
+  formulation.assumptions = ['The likelihood and prior are the intended model.', 'Observations are exchangeable.'];
+  formulation.feasibilityConditions = ['valid prior and observations'];
+  formulation.uncertainty = 'explicit posterior credible interval; prior sensitivity is reported only when alternative priors are supplied.';
+  formulation.solver = 'stats.bayes_update (conjugate Beta–Binomial / Normal–Normal)';
+  formulation.expectedOutputs = ['posterior parameters', 'posterior mean and sd', 'credible interval', 'posterior predictive', 'prior sensitivity'];
+  formulation.verification = ['posterior parameters recomputed', 'mean/sd formulas', 'credible interval contains the mean', 'P(theta>0.5) recomputed', 'sensitivity explicitly assessed or marked absent'];
+  formulation.limitations = ['Conjugate models only; no MCMC or Bayesian network.', 'Credible intervals are model-conditional, not guaranteed real-world coverage.'];
+  return finish(formulation, model);
+}
+
+function formulateQueue(raw: unknown): ScientificFormulation {
+  const formulation = base('queue_simulation');
+  if (!isRecord(raw)) { formulation.missingInputs = ['customers', 'interarrival mean', 'service mean', 'servers', 'seed']; return finish(formulation, null); }
+  const errors: string[] = [];
+  if (!Number.isInteger(raw['customers']) || (raw['customers'] as number) < 1 || (raw['customers'] as number) > 100_000) errors.push('customers must be an integer between 1 and 100000');
+  if (!finite(raw['interarrivalMean']) || (raw['interarrivalMean'] as number) <= 0) errors.push('interarrivalMean must be positive');
+  if (!finite(raw['serviceMean']) || (raw['serviceMean'] as number) <= 0) errors.push('serviceMean must be positive');
+  if (!Number.isInteger(raw['servers']) || (raw['servers'] as number) < 1 || (raw['servers'] as number) > 100) errors.push('servers must be an integer between 1 and 100');
+  if (!Number.isInteger(raw['seed'])) errors.push('seed must be an integer');
+  if (errors.length) { formulation.missingInputs = errors; return finish(formulation, null); }
+  const model = { customers: raw['customers'], interarrivalMean: raw['interarrivalMean'], serviceMean: raw['serviceMean'], servers: raw['servers'], seed: raw['seed'] };
+  formulation.decisionVariables = ['customer wait and service timing'];
+  formulation.inputData = ['customer count', 'exponential interarrival mean', 'exponential service mean', 'server count', 'seed'];
+  formulation.objective = 'estimate waiting, utilization and makespan under a FCFS queue';
+  formulation.constraints = ['customers are served in arrival order', 'a customer waits for an available server', 'no negative waits'];
+  formulation.assumptions = ['Exponential interarrival and service distributions.', 'FCFS discipline.', 'No balking, reneging or priorities.'];
+  formulation.feasibilityConditions = ['positive means', 'at least one server'];
+  formulation.uncertainty = 'explicit simulated distribution; one seeded run is not a confidence interval.';
+  formulation.solver = 'sim.queue (seeded discrete-event FCFS simulation)';
+  formulation.expectedOutputs = ['mean/p90/max wait', 'utilization', 'makespan', 'served count', 'seed'];
+  formulation.verification = ['all customers served', 'non-negative waits', 'utilization in [0,1]', 'seed recorded'];
+  formulation.limitations = ['No system dynamics or agent-based behavior.', 'Short runs include warm-up bias.', 'Results are simulated, not observed.'];
+  return finish(formulation, model);
+}
+
+function formulateScenarios(raw: unknown): ScientificFormulation {
+  const formulation = base('scenario_comparison');
+  if (!isRecord(raw)) { formulation.missingInputs = ['scenarios with PERT items']; return finish(formulation, null); }
+  const scenarios = Array.isArray(raw['scenarios']) ? raw['scenarios'] : [];
+  const errors: string[] = [];
+  if (scenarios.length < 2) errors.push('at least two scenarios are required');
+  for (const [index, scenario] of scenarios.entries()) {
+    if (!isRecord(scenario) || typeof scenario['name'] !== 'string' || !Array.isArray(scenario['items']) || !scenario['items'].length) errors.push(`scenario ${index + 1} needs a name and items`);
+  }
+  if (errors.length) { formulation.missingInputs = errors; return finish(formulation, null); }
+  const model = { scenarios, ...(finite(raw['trials']) ? { trials: raw['trials'] } : {}), ...(finite(raw['seed']) ? { seed: raw['seed'] } : {}) };
+  formulation.decisionVariables = ['scenario choice'];
+  formulation.inputData = ['scenario PERT items and adjustments', 'trials', 'seed'];
+  formulation.objective = 'compare scenario distributions and their baseline deltas';
+  formulation.constraints = ['same seed and trial count across scenarios', 'explicit scenario definitions'];
+  formulation.assumptions = ['Scenarios are independent PERT models.', 'The baseline is the first scenario.'];
+  formulation.feasibilityConditions = ['at least two complete scenarios'];
+  formulation.uncertainty = 'explicit simulated distributions; ranking is by median, not a guarantee.';
+  formulation.solver = 'sim.scenario_compare (seeded PERT)';
+  formulation.expectedOutputs = ['scenario distributions', 'baseline deltas', 'ranking', 'reproducibility verification'];
+  formulation.verification = ['scenario count', 'quantile ordering', 'deltas recomputed', 'same-seed reproducibility', 'simulated labels'];
+  formulation.limitations = ['No correlation between scenarios.', 'Not a causal forecast or a single-run guarantee.'];
+  return finish(formulation, model);
+}
+
+
 export function formulateScientificProblem(input: { kind: FormulationKind; model?: unknown; objective?: string }): ScientificFormulation {
   switch (input.kind) {
     case 'linear_programming': return formulateLp('linear_programming', input.model);
@@ -313,6 +572,15 @@ export function formulateScientificProblem(input: { kind: FormulationKind; model
     case 'monte_carlo_simulation': return formulateSimulation(input.model);
     case 'forecasting': return formulateForecast(input.model);
     case 'multi_criteria_decision': return formulateDecision(input.model);
+    case 'max_flow': return formulateMaxFlow(input.model);
+    case 'min_cost_flow': return formulateMinCostFlow(input.model);
+    case 'bipartite_matching': return formulateBipartite(input.model);
+    case 'tsp': return formulateTsp(input.model);
+    case 'vrp': return formulateVrp(input.model);
+    case 'pareto_multi_objective': return formulatePareto(input.model);
+    case 'bayesian_inference': return formulateBayes(input.model);
+    case 'queue_simulation': return formulateQueue(input.model);
+    case 'scenario_comparison': return formulateScenarios(input.model);
     default: {
       const formulation = base(input.kind);
       formulation.missingInputs = ['a supported scientific problem class'];

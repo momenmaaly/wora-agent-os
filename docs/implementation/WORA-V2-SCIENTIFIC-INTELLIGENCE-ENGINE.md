@@ -85,10 +85,10 @@ Migration 18 (`scientific-graph-and-formulation-capabilities`) adds the new tool
 ## 9. Known limitations
 
 - Linear and mixed-integer models only; no nonlinear or global optimizer.
-- Graph support is shortest path; no max-flow, vehicle routing, TSP or min-cost flow yet.
+- The original slice covered shortest path only; the later advanced slice adds max flow, min-cost flow, bipartite matching, TSP, VRP, Pareto, conjugate Bayesian inference, queue simulation and scenario comparison (see `WORA-V2-ADVANCED-OPTIMIZATION-SIMULATION.md`).
 - Forecasting is a linear trend baseline; no seasonality, ARIMA or exogenous variables.
-- Simulation is independent triangular PERT; no discrete-event or agent-based engine, and no correlation modeling.
-- Multi-criteria decisions are weighted additive; no Pareto frontier or interactive trade-off exploration.
+- The original simulation was independent triangular PERT. The advanced slice adds a seeded discrete-event queue and same-seed scenario comparison; agent-based simulation and calibrated system dynamics remain unsupported.
+- The original decision matrix is weighted additive. The advanced slice adds exact Pareto analysis over a supplied candidate set; continuous frontier generation remains unsupported.
 - Verification is numerical and contract-based, not a formal proof checker.
 - The Intelligence Hub remains Arabic-first in its existing tabs; the new graph tab follows the same established layout.
 - No automatic method discovery or benchmark-driven method registration.
@@ -97,3 +97,8 @@ Migration 18 (`scientific-graph-and-formulation-capabilities`) adds the new tool
 ## 10. Manual configuration
 
 None for the new capability. HiGHS is already a dependency; no new secrets or external paid services are required.
+
+
+## 11. Advanced slice
+
+The follow-on workstream adds flow, routing, Pareto, Bayesian and simulation capabilities. See `WORA-V2-ADVANCED-OPTIMIZATION-SIMULATION.md` for the method table, selection rules, API routes, UI tab, migration 19 and the 27-test evidence suite.

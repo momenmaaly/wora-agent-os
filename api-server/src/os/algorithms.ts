@@ -13,7 +13,7 @@ import { z } from 'zod';
  * is unknown, the engine returns `needs_input` instead of fabricating a plan.
  */
 export const ALGORITHM_SCHEMA_VERSION = '1.0';
-export const ALGORITHM_CATALOG_VERSION = '2026-11-27.1';
+export const ALGORITHM_CATALOG_VERSION = '2026-11-28.1';
 
 export const PROBLEM_KINDS = [
   'assignment',
@@ -24,6 +24,15 @@ export const PROBLEM_KINDS = [
   'monte_carlo_simulation',
   'forecasting',
   'multi_criteria_decision',
+  'max_flow',
+  'min_cost_flow',
+  'bipartite_matching',
+  'tsp',
+  'vrp',
+  'pareto_multi_objective',
+  'bayesian_inference',
+  'queue_simulation',
+  'scenario_comparison',
   'extractive_summarization',
   'descriptive_statistics',
 ] as const;
@@ -48,6 +57,11 @@ export type ScientificRequirement =
   | 'deep_learning'
   | 'bayesian_inference'
   | 'graph'
+  | 'network_flow'
+  | 'routing'
+  | 'multi_objective'
+  | 'queueing'
+  | 'scenario'
   | 'mcts';
 
 export interface ProblemFeatures {
@@ -65,6 +79,15 @@ export interface ProblemFeatures {
   availableTools?: string[];
   hasCostMatrix?: boolean;
   hasGraph?: boolean;
+  hasNetworkFlow?: boolean;
+  hasMinCostFlow?: boolean;
+  hasBipartite?: boolean;
+  hasRouting?: boolean;
+  hasVehicles?: boolean;
+  hasPareto?: boolean;
+  hasBayes?: boolean;
+  hasQueue?: boolean;
+  hasScenarios?: boolean;
   graphNodes?: number;
   graphEdges?: number;
   negativeWeights?: boolean;
@@ -91,7 +114,7 @@ export const algorithmSelectionInputSchema = z.object({
   kind: z.enum(PROBLEM_KINDS).optional(),
   features: z.object({
     problemType: z.enum(['prediction', 'optimization', 'planning', 'causal_analysis', 'simulation', 'formal_verification', 'decision', 'allocation', 'scheduling', 'classification']).optional(),
-    requires: z.array(z.enum(['assignment', 'scheduling', 'optimization', 'simulation', 'forecasting', 'statistics', 'decision', 'summarization', 'planning', 'causal_analysis', 'formal_verification', 'reinforcement_learning', 'deep_learning', 'bayesian_inference', 'mcts'])).max(20).optional(),
+    requires: z.array(z.enum(['assignment', 'scheduling', 'optimization', 'simulation', 'forecasting', 'statistics', 'decision', 'summarization', 'planning', 'causal_analysis', 'formal_verification', 'reinforcement_learning', 'deep_learning', 'bayesian_inference', 'graph', 'network_flow', 'routing', 'multi_objective', 'queueing', 'scenario', 'mcts'])).max(20).optional(),
     uncertaintyLevel: z.enum(['none', 'low', 'medium', 'high']).optional(),
     constraintsCount: z.number().int().min(0).max(100_000).optional(),
     variableCount: z.number().int().min(0).max(100_000).optional(),
@@ -104,6 +127,15 @@ export const algorithmSelectionInputSchema = z.object({
     availableTools: z.array(z.string().min(1).max(120)).max(500).optional(),
     hasCostMatrix: z.boolean().optional(),
     hasGraph: z.boolean().optional(),
+    hasNetworkFlow: z.boolean().optional(),
+    hasMinCostFlow: z.boolean().optional(),
+    hasBipartite: z.boolean().optional(),
+    hasRouting: z.boolean().optional(),
+    hasVehicles: z.boolean().optional(),
+    hasPareto: z.boolean().optional(),
+    hasBayes: z.boolean().optional(),
+    hasQueue: z.boolean().optional(),
+    hasScenarios: z.boolean().optional(),
     graphNodes: z.number().int().positive().max(2_000).optional(),
     graphEdges: z.number().int().positive().max(5_000).optional(),
     negativeWeights: z.boolean().optional(),
@@ -425,6 +457,196 @@ const CATALOG: AlgorithmDefinition[] = [
     deterministic: true,
     maturity: 'tested-baseline',
   },
+  {
+    id: 'dinic-max-flow',
+    domain: 'operations_research',
+    name: 'Dinic Maximum Flow',
+    version: '1.0.0',
+    toolId: 'graph.max_flow',
+    problemKinds: ['max_flow'],
+    scientificBasis: 'Dinic blocking-flow algorithm with a max-flow/min-cut certificate.',
+    preconditions: ['directed capacitated edges', 'source and sink'],
+    failureConditions: ['negative capacities are rejected', 'a disconnected network yields zero flow, not a fabricated path'],
+    assumptions: ['single-commodity flow', 'capacities are finite'],
+    guarantee: 'A maximum flow with a min-cut whose capacity equals the flow value.',
+    complexity: 'O(V²E) worst case; inputs capped at 2,000 nodes and 5,000 edges.',
+    inputs: ['edges with from/to/capacity', 'source', 'sink'],
+    outputs: ['maxFlow', 'edge flows', 'min-cut partition and capacity', 'verification'],
+    verification: ['flow conservation', 'capacity bounds', 'source outflow equals max flow', 'min-cut equality'],
+    limitations: ['No lower bounds, gains, multi-commodity or dynamic flow.'],
+    costClass: 'low',
+    deterministic: true,
+    maturity: 'tested',
+  },
+  {
+    id: 'successive-shortest-path-min-cost-flow',
+    domain: 'operations_research',
+    name: 'Min-Cost Flow (Successive Shortest Paths)',
+    version: '1.0.0',
+    toolId: 'graph.min_cost_flow',
+    problemKinds: ['min_cost_flow'],
+    scientificBasis: 'Successive shortest augmenting paths on the residual network with negative-cycle optimality checks.',
+    preconditions: ['capacitated edges with linear costs', 'source', 'sink', 'exact demand'],
+    failureConditions: ['demand above max flow is infeasible', 'negative residual cycles invalidate optimality'],
+    assumptions: ['linear additive edge costs', 'single commodity'],
+    guarantee: 'Minimum-cost flow of exactly the requested demand when a feasible residual optimum exists.',
+    complexity: 'Depends on augmentations and shortest-path search; inputs capped at 2,000 nodes and 5,000 edges.',
+    inputs: ['edges with capacity and cost', 'source', 'sink', 'demand'],
+    outputs: ['delivered flow', 'total cost', 'edge flows', 'verification'],
+    verification: ['exact demand', 'conservation and capacity', 'cost recomputation', 'residual no-negative-cycle'],
+    limitations: ['No general min-cost circulation with lower bounds or gains.'],
+    costClass: 'medium',
+    deterministic: true,
+    maturity: 'tested',
+  },
+  {
+    id: 'bipartite-matching',
+    domain: 'operations_research',
+    name: 'Maximum Bipartite Matching',
+    version: '1.0.0',
+    toolId: 'graph.bipartite_matching',
+    problemKinds: ['bipartite_matching'],
+    scientificBasis: 'Kuhn augmenting-path matching with an independent augmenting-path maximality check.',
+    preconditions: ['left and right node sets', 'allowed edges'],
+    failureConditions: ['invalid edge references are ignored; unmatched nodes are reported'],
+    assumptions: ['unweighted one-to-one matching'],
+    guarantee: 'A maximum-cardinality matching with no augmenting path remaining.',
+    complexity: 'O(VE) for the augmenting-path implementation.',
+    inputs: ['left nodes', 'right nodes', 'edges'],
+    outputs: ['matching', 'size', 'unmatched nodes', 'verification'],
+    verification: ['real edges used once', 'size consistency', 'no augmenting path'],
+    limitations: ['No costs, capacities or many-to-one matching.'],
+    costClass: 'low',
+    deterministic: true,
+    maturity: 'tested',
+  },
+  {
+    id: 'tsp-held-karp',
+    domain: 'operations_research',
+    name: 'TSP (Held-Karp / 2-opt)',
+    version: '1.0.0',
+    toolId: 'routing.tsp',
+    problemKinds: ['tsp'],
+    scientificBasis: 'Held-Karp dynamic programming for exact small instances; nearest-neighbour + 2-opt for larger ones.',
+    preconditions: ['points or a square distance matrix', 'optional start'],
+    failureConditions: ['invalid distances are rejected', 'large instances are heuristic, not optimal'],
+    assumptions: ['symmetric distances for 2-opt', 'exact DP limited by exactLimit'],
+    guarantee: 'Exact optimal tour at or below exactLimit; an explicit approximate tour above it.',
+    complexity: 'O(2ⁿn²) exact; heuristic is polynomial per 2-opt pass.',
+    inputs: ['points or distance matrix', 'start', 'exactLimit'],
+    outputs: ['tour', 'cost', 'method', 'status', 'MST lower bound', 'verification'],
+    verification: ['permutation visits every node once', 'cost recomputed', 'brute-force check for n≤8', 'heuristic labelled approximate'],
+    limitations: ['No time windows, precedence or asymmetric large-instance guarantees.'],
+    costClass: 'medium',
+    deterministic: true,
+    maturity: 'tested',
+  },
+  {
+    id: 'cvrp-clarke-wright',
+    domain: 'operations_research',
+    name: 'Multi-Depot CVRP (Clarke–Wright)',
+    version: '1.0.0',
+    toolId: 'routing.vrp',
+    problemKinds: ['vrp'],
+    scientificBasis: 'Clarke–Wright savings with nearest-depot assignment and capacity checks.',
+    preconditions: ['depots', 'customers with demand', 'vehicles with capacity'],
+    failureConditions: ['demand above every capacity or too few vehicles is infeasible'],
+    assumptions: ['Euclidean distances', 'heuristic routing'],
+    guarantee: 'A capacity-feasible route set when one is found; no global optimality claim.',
+    complexity: 'Polynomial savings construction plus route merges.',
+    inputs: ['depots', 'customers with demand', 'vehicles with capacity'],
+    outputs: ['routes', 'loads', 'total distance', 'status', 'verification'],
+    verification: ['customer coverage', 'capacity', 'distance recomputation', 'approximation label'],
+    limitations: ['No time windows, pickups/deliveries or jointly optimized depot assignment.'],
+    costClass: 'medium',
+    deterministic: true,
+    maturity: 'tested',
+  },
+  {
+    id: 'pareto-frontier',
+    domain: 'decision_causal',
+    name: 'Pareto Multi-Objective Analysis',
+    version: '1.0.0',
+    toolId: 'decision.pareto',
+    problemKinds: ['pareto_multi_objective'],
+    scientificBasis: 'Pairwise Pareto dominance over an explicit candidate set with weighted ranking and weight perturbation.',
+    preconditions: ['at least two objectives', 'at least two candidates with complete values'],
+    failureConditions: ['missing values or duplicate names are rejected'],
+    assumptions: ['the candidate set is the decision space', 'weights are judgments'],
+    guarantee: 'The exact Pareto frontier for the supplied candidate set.',
+    complexity: 'O(candidates² × objectives).',
+    inputs: ['objectives with directions', 'candidate values', 'optional weights'],
+    outputs: ['frontier', 'dominated candidates', 'ranking', 'trade-offs', 'sensitivity', 'verification'],
+    verification: ['frontier completeness', 'non-dominance', 'ranking recomputation', 'value consistency'],
+    limitations: ['No continuous frontier generation; exact only for supplied candidates.'],
+    costClass: 'low',
+    deterministic: true,
+    maturity: 'tested',
+  },
+  {
+    id: 'bayes-conjugate',
+    domain: 'decision_causal',
+    name: 'Conjugate Bayesian Update',
+    version: '1.0.0',
+    toolId: 'stats.bayes_update',
+    problemKinds: ['bayesian_inference'],
+    scientificBasis: 'Beta–Binomial and Normal–Normal conjugate posterior updating with credible intervals.',
+    preconditions: ['valid prior', 'observations or successes/trials'],
+    failureConditions: ['invalid priors or data are rejected'],
+    assumptions: ['declared likelihood and prior are the intended model', 'exchangeable observations'],
+    guarantee: 'Exact conjugate posterior parameters and model-conditional credible intervals.',
+    complexity: 'O(1) for Beta–Binomial; O(n) for Normal–Normal.',
+    inputs: ['prior parameters', 'successes/trials or observations', 'credible level', 'optional alternative priors'],
+    outputs: ['posterior parameters', 'credible interval', 'posterior predictive', 'prior sensitivity', 'verification'],
+    verification: ['posterior formulas', 'interval contains mean', 'P(theta>0.5) recomputation', 'sensitivity disclosure'],
+    limitations: ['Conjugate models only; no MCMC, Bayesian networks or causal identification.'],
+    costClass: 'low',
+    deterministic: true,
+    maturity: 'tested',
+  },
+  {
+    id: 'discrete-event-queue',
+    domain: 'simulation_prediction',
+    name: 'Discrete-Event FCFS Queue',
+    version: '1.0.0',
+    toolId: 'sim.queue',
+    problemKinds: ['queue_simulation'],
+    scientificBasis: 'Seeded discrete-event simulation of a multi-server FCFS queue with exponential interarrival and service times.',
+    preconditions: ['customers', 'positive means', 'servers', 'seed'],
+    failureConditions: ['invalid means or server counts are rejected'],
+    assumptions: ['exponential distributions', 'FCFS', 'no balking or reneging'],
+    guarantee: 'A reproducible simulated wait/utilization/makespan record; not an observed measurement.',
+    complexity: 'O(customers × servers).',
+    inputs: ['customers', 'interarrivalMean', 'serviceMean', 'servers', 'seed'],
+    outputs: ['mean/p90/max wait', 'utilization', 'makespan', 'served count', 'verification'],
+    verification: ['all customers served', 'non-negative waits', 'utilization bounds', 'seed recorded'],
+    limitations: ['No priorities, warm-up removal or non-exponential service distributions.'],
+    costClass: 'low',
+    deterministic: true,
+    maturity: 'tested',
+  },
+  {
+    id: 'scenario-comparison',
+    domain: 'simulation_prediction',
+    name: 'Seeded Scenario Comparison',
+    version: '1.0.0',
+    toolId: 'sim.scenario_compare',
+    problemKinds: ['scenario_comparison'],
+    scientificBasis: 'Same-seed PERT simulation across explicit scenarios with baseline deltas and reproducibility checks.',
+    preconditions: ['at least two scenarios with PERT items', 'trials', 'seed'],
+    failureConditions: ['invalid scenarios are rejected'],
+    assumptions: ['scenarios are independent PERT models', 'the first scenario is the baseline'],
+    guarantee: 'Reproducible scenario distributions and deltas; not a causal forecast.',
+    complexity: 'O(scenarios × trials × items).',
+    inputs: ['scenarios', 'trials', 'seed'],
+    outputs: ['scenario distributions', 'baseline deltas', 'ranking', 'verification'],
+    verification: ['quantile ordering', 'delta recomputation', 'same-seed reproducibility', 'simulated labels'],
+    limitations: ['No cross-scenario correlation or single-run guarantee.'],
+    costClass: 'medium',
+    deterministic: true,
+    maturity: 'tested',
+  },
+
 ];
 
 const byId = new Map(CATALOG.map((entry) => [entry.id, entry]));
@@ -463,7 +685,7 @@ function structuredProblem(input: AlgorithmSelectionInput): {
   const requires = new Set(f.requires ?? []);
   if (f.negativeWeights === true) return unsupported('negative-weight shortest paths');
   const unsupportedRequirement = [...requires].find((requirement) =>
-    ['causal_analysis', 'formal_verification', 'reinforcement_learning', 'deep_learning', 'bayesian_inference', 'mcts', 'planning'].includes(requirement));
+    ['causal_analysis', 'formal_verification', 'reinforcement_learning', 'deep_learning', 'mcts', 'planning'].includes(requirement));
   if (unsupportedRequirement) {
     const labels: Record<string, string> = {
       causal_analysis: 'causal inference', formal_verification: 'formal verification/model checking',
@@ -480,6 +702,13 @@ function structuredProblem(input: AlgorithmSelectionInput): {
   const choose = (kind: ProblemKind, label: string) => ({
     kind, confidence: 0.9, rationale: [`Structured feature: ${label}.`], warnings: [],
   });
+  if (f.hasNetworkFlow === true || requires.has('network_flow')) return choose(f.hasMinCostFlow === true ? 'min_cost_flow' : 'max_flow', 'capacitated network flow');
+  if (f.hasBipartite === true) return choose('bipartite_matching', 'bipartite graph');
+  if (f.hasRouting === true || requires.has('routing')) return choose(f.hasVehicles === true ? 'vrp' : 'tsp', 'routing problem');
+  if (f.hasPareto === true || requires.has('multi_objective')) return choose('pareto_multi_objective', 'multiple competing objectives');
+  if (f.hasBayes === true || requires.has('bayesian_inference')) return choose('bayesian_inference', 'Bayesian uncertainty');
+  if (f.hasQueue === true || requires.has('queueing')) return choose('queue_simulation', 'queueing system');
+  if (f.hasScenarios === true || requires.has('scenario')) return choose('scenario_comparison', 'scenario comparison');
   if (f.hasGraph === true || requires.has('graph')) return choose('shortest_path', 'explicit weighted graph');
   if (f.problemType === 'scheduling') return choose('employee_scheduling', 'scheduling');
   if (f.problemType === 'optimization' || f.problemType === 'allocation') {
@@ -534,6 +763,13 @@ function detectProblem(input: AlgorithmSelectionInput): {
   const feature = (kind: ProblemKind, label: string) => ({
     kind, confidence: 0.9, rationale: [`Structured feature: ${label}.`], warnings: [],
   });
+  if (f.hasNetworkFlow === true) return feature(f.hasMinCostFlow === true ? 'min_cost_flow' : 'max_flow', 'capacitated network flow');
+  if (f.hasBipartite === true) return feature('bipartite_matching', 'bipartite graph');
+  if (f.hasRouting === true) return feature(f.hasVehicles === true ? 'vrp' : 'tsp', 'routing problem');
+  if (f.hasPareto === true) return feature('pareto_multi_objective', 'multiple competing objectives');
+  if (f.hasBayes === true) return feature('bayesian_inference', 'Bayesian uncertainty');
+  if (f.hasQueue === true) return feature('queue_simulation', 'queueing system');
+  if (f.hasScenarios === true) return feature('scenario_comparison', 'scenario comparison');
   if (f.hasGraph === true) return feature('shortest_path', 'explicit weighted graph');
   if (f.hasEmployees === true || f.hasShifts === true) return feature('employee_scheduling', 'employees/shifts present');
   if (f.hasCostMatrix === true || (f.matrixRows !== undefined && f.matrixCols !== undefined)) return feature('assignment', 'cost matrix dimensions present');
@@ -547,6 +783,15 @@ function detectProblem(input: AlgorithmSelectionInput): {
     ? { kind, confidence: 0.65, rationale: [`Objective text mentions ${label}.`], warnings: ['Classification is keyword-based; supply structured features or an explicit kind for higher confidence.'] }
     : null;
   const detected =
+    keyword('max_flow', 'maximum flow', /max(?:imum)?\s*flow|min[ -]?cut|شبكة\s*تدفق|أقصى\s*تدفق/u) ??
+    keyword('min_cost_flow', 'minimum cost flow', /min(?:imum)?\s*cost\s*flow|cost[ -]?flow|تدفق\s*بأقل\s*تكلفة/u) ??
+    keyword('bipartite_matching', 'bipartite matching', /bipartite|maximum\s*matching|مطابقة\s*ثنائية/u) ??
+    keyword('tsp', 'traveling salesperson', /travel(?:l)?ing\s+sales(?:person|man)|tsp\b|جولة\s*البائع/u) ??
+    keyword('vrp', 'vehicle routing', /vehicle\s+routing|vrp\b|capacitated\s+routing|توجيه\s*المركبات/u) ??
+    keyword('pareto_multi_objective', 'Pareto multi-objective', /pareto|multi[ -]?objective|trade[ -]?off\s*front|باريتو|أهداف\s*متعددة/u) ??
+    keyword('bayesian_inference', 'Bayesian inference', /bayes|posterior|prior\s*update|بايز|تحديث\s*بعدي/u) ??
+    keyword('queue_simulation', 'queue simulation', /queue|waiting\s*line|servers?\b|طابور|صف\s*انتظار/u) ??
+    keyword('scenario_comparison', 'scenario comparison', /scenario\s+compar|compare\s+scenarios|مقارنة\s*السيناريوهات/u) ??
     keyword('shortest_path', 'shortest path or graph routing', /shortest\s*path|dijkstra|a\*|graph\s+(?:route|path|network)|network\s+path|route\s+optim|أقصر\s+مسار|مسار\s+الشبكة/u) ??
     keyword('employee_scheduling', 'employees, shifts or scheduling', /employee|shift|staff|workforce|roster|schedule|وردية|موظف|جدول/u) ??
     keyword('assignment', 'assignment or matching', /cost matrix|assignment|matching|assign .* (task|job|worker)|توزيع|مطابقة/u) ??
@@ -590,6 +835,24 @@ function missingInformation(kind: DetectedProblemKind, features: ProblemFeatures
       return ['numeric time series with chronological order'];
     case 'multi_criteria_decision':
       return ['criteria with positive weights', 'alternatives with scores'];
+    case 'max_flow':
+      return ['capacitated edges', 'source', 'sink'];
+    case 'min_cost_flow':
+      return ['capacitated edges with costs', 'source', 'sink', 'demand'];
+    case 'bipartite_matching':
+      return ['left nodes', 'right nodes', 'allowed edges'];
+    case 'tsp':
+      return ['points or a square distance matrix'];
+    case 'vrp':
+      return ['depots', 'customers with demand', 'vehicles with capacity'];
+    case 'pareto_multi_objective':
+      return ['at least two objectives', 'candidate solutions with values'];
+    case 'bayesian_inference':
+      return ['prior parameters', 'observations or successes/trials'];
+    case 'queue_simulation':
+      return ['customers', 'interarrival mean', 'service mean', 'servers', 'seed'];
+    case 'scenario_comparison':
+      return ['at least two scenarios with PERT items'];
     case 'descriptive_statistics':
       return ['numeric series'];
     case 'extractive_summarization':
@@ -627,6 +890,15 @@ function primaryFor(kind: ProblemKind, detectedBy: string): AlgorithmChoice | nu
     monte_carlo_simulation: 'pert-monte-carlo',
     forecasting: 'linear-trend-forecast',
     multi_criteria_decision: 'weighted-decision-matrix',
+    max_flow: 'dinic-max-flow',
+    min_cost_flow: 'successive-shortest-path-min-cost-flow',
+    bipartite_matching: 'bipartite-matching',
+    tsp: 'tsp-held-karp',
+    vrp: 'cvrp-clarke-wright',
+    pareto_multi_objective: 'pareto-frontier',
+    bayesian_inference: 'bayes-conjugate',
+    queue_simulation: 'discrete-event-queue',
+    scenario_comparison: 'scenario-comparison',
     extractive_summarization: 'extractive-summarization',
     descriptive_statistics: 'descriptive-statistics',
   };

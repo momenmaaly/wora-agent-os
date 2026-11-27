@@ -478,6 +478,17 @@ export interface ScientificFormulationResult {
   limitations: string[];
 }
 
+export type AdvancedProblemKind =
+  | 'max_flow' | 'min_cost_flow' | 'bipartite_matching' | 'tsp' | 'vrp'
+  | 'pareto_multi_objective' | 'bayesian_inference' | 'queue_simulation' | 'scenario_comparison';
+
+export interface AdvancedSolverResult {
+  status: string;
+  verification: ScientificVerificationResult;
+  limitations?: string[];
+  [key: string]: unknown;
+}
+
 export interface DecisionResult {
   ranking: Array<{ name: string; score: number }>;
   winner: string;
@@ -583,8 +594,17 @@ export const osApi = {
     request<{ ok: boolean; output?: DecisionResult; error?: string }>('/decision/matrix', { method: 'POST', body: JSON.stringify(body) }),
   shortestPath: (body: ShortestPathRequest) =>
     request<ShortestPathResult>('/optimize/shortest-path', { method: 'POST', body: JSON.stringify(body) }),
-  formulateScientific: (body: { kind: 'linear_programming' | 'integer_programming' | 'shortest_path' | 'assignment' | 'employee_scheduling' | 'monte_carlo_simulation' | 'forecasting' | 'multi_criteria_decision'; model?: unknown; objective?: string }) =>
+  formulateScientific: (body: { kind: 'linear_programming' | 'integer_programming' | 'shortest_path' | 'assignment' | 'employee_scheduling' | 'monte_carlo_simulation' | 'forecasting' | 'multi_criteria_decision' | AdvancedProblemKind; model?: unknown; objective?: string }) =>
     request<ScientificFormulationResult>('/science/formulate', { method: 'POST', body: JSON.stringify(body) }),
+  maxFlow: (body: unknown) => request<AdvancedSolverResult>('/network/max-flow', { method: 'POST', body: JSON.stringify(body) }),
+  minCostFlow: (body: unknown) => request<AdvancedSolverResult>('/network/min-cost-flow', { method: 'POST', body: JSON.stringify(body) }),
+  bipartiteMatching: (body: unknown) => request<AdvancedSolverResult>('/network/bipartite-matching', { method: 'POST', body: JSON.stringify(body) }),
+  tsp: (body: unknown) => request<AdvancedSolverResult>('/routing/tsp', { method: 'POST', body: JSON.stringify(body) }),
+  vrp: (body: unknown) => request<AdvancedSolverResult>('/routing/vrp', { method: 'POST', body: JSON.stringify(body) }),
+  pareto: (body: unknown) => request<AdvancedSolverResult>('/decision/pareto', { method: 'POST', body: JSON.stringify(body) }),
+  bayes: (body: unknown) => request<AdvancedSolverResult>('/stats/bayes', { method: 'POST', body: JSON.stringify(body) }),
+  queue: (body: unknown) => request<AdvancedSolverResult>('/simulate/queue', { method: 'POST', body: JSON.stringify(body) }),
+  scenarios: (body: unknown) => request<AdvancedSolverResult>('/simulate/scenarios', { method: 'POST', body: JSON.stringify(body) }),
 
   organizations: () => request<Organization[]>('/organizations'),
   buildOrganization: (body: { objective: string; name?: string }) =>

@@ -121,9 +121,9 @@ const DEV_SCENARIOS: ReasoningScenario[] = [
     expect: { problemType: 'optimization', gapIncludes: 'nonlinear-optimization' },
   },
   {
-    id: 'dev-bayesian-gap',
+    id: 'dev-bayesian-ready',
     objective: 'Use Bayesian inference to update the posterior probability of failure.',
-    expect: { gapIncludes: 'bayesian-inference' },
+    expect: { selectedMethodIncludes: 'Bayesian', selectedMethodStatus: 'implemented', sufficient: true },
   },
   {
     id: 'dev-missing-data',

@@ -12,7 +12,7 @@
 import { listAlgorithms, selectAlgorithm, type AlgorithmSelection, type AlgorithmSelectionInput } from './algorithms.js';
 
 export const SCIENCE_SCHEMA_VERSION = '1.0';
-export const SCIENTIFIC_CATALOG_VERSION = '2026-11-27.1';
+export const SCIENTIFIC_CATALOG_VERSION = '2026-11-28.1';
 
 export type ImplementationStatus = 'implemented' | 'partial' | 'experimental' | 'documented' | 'not_implemented';
 
@@ -125,7 +125,8 @@ const DOMAINS: ScientificDomainSeed[] = [
       method('weighted-matrix', 'Weighted decision matrix', 'implemented', 'weighted-decision-matrix', 'decision.weighted_matrix', 'Additive scoring with weight perturbation.'),
       method('monte-carlo', 'Seeded Monte Carlo', 'implemented', 'pert-monte-carlo', 'sim.monte_carlo', 'Uncertainty propagation, not causal identification.'),
       method('sensitivity', 'Weight-perturbation sensitivity', 'partial', 'weighted-decision-matrix', 'decision.weighted_matrix', 'Limited to declared weights.'),
-      method('bayesian-inference', 'Bayesian inference', 'not_implemented', null, null, 'No Bayesian network or posterior sampler.'),
+      method('bayesian-inference', 'Conjugate Bayesian inference', 'implemented', 'bayes-conjugate', 'stats.bayes_update', 'Beta–Binomial and Normal–Normal posterior updates with credible intervals and prior sensitivity.'),
+      method('bayesian-network', 'Bayesian network / MCMC', 'not_implemented', null, null, 'No general Bayesian network or posterior sampler.'),
       method('causal-inference', 'Causal inference', 'not_implemented', null, null, 'No identification strategy or causal graph.'),
       method('pomdp', 'POMDP planning', 'not_implemented', null, null, 'Not implemented.'),
     ],
@@ -139,17 +140,22 @@ const DOMAINS: ScientificDomainSeed[] = [
   {
     id: 'operations_research',
     domain: 'Operations research and optimization',
-    problems: ['Resource allocation', 'Employee scheduling', 'Assignment and matching', 'Shortest path and graph routing', 'Constrained planning'],
+    problems: ['Resource allocation', 'Employee scheduling', 'Assignment and matching', 'Shortest path and graph routing', 'Network flow and matching', 'Routing and vehicle routing', 'Pareto multi-objective optimization', 'Constrained planning'],
     methods: [
       method('assignment', 'Hungarian assignment', 'implemented', 'hungarian-assignment', 'or.assignment', 'Exact optimal assignment for linear costs.'),
       method('mip', 'Mixed-integer programming', 'implemented', 'highs-lp-mip', 'or.solve_lp', 'General linear/integer models.'),
       method('employee-mip', 'Employee scheduling MIP', 'implemented', 'highs-employee-scheduling', 'or.employee_schedule', 'Demand, availability and workload constraints.'),
       method('dijkstra', 'Dijkstra shortest path', 'implemented', 'dijkstra-a-star', 'graph.shortest_path', 'Non-negative weighted graph search with independent path verification.'),
       method('a-star', 'A* shortest path', 'implemented', 'dijkstra-a-star', 'graph.shortest_path', 'Heuristic search verified against an independent Dijkstra baseline.'),
-      method('multi-objective', 'Multi-objective optimization', 'partial', null, null, 'Weighted decision matrix only; no Pareto solver.'),
+      method('max-flow', 'Dinic maximum flow', 'implemented', 'dinic-max-flow', 'graph.max_flow', 'Max flow with a min-cut certificate.'),
+      method('min-cost-flow', 'Min-cost flow', 'implemented', 'successive-shortest-path-min-cost-flow', 'graph.min_cost_flow', 'Exact-demand flow with residual optimality checks.'),
+      method('bipartite-matching', 'Maximum bipartite matching', 'implemented', 'bipartite-matching', 'graph.bipartite_matching', 'Maximum-cardinality matching with augmenting-path verification.'),
+      method('tsp', 'Traveling salesperson', 'implemented', 'tsp-held-karp', 'routing.tsp', 'Exact Held-Karp for small instances; labelled 2-opt heuristic above the limit.'),
+      method('vrp', 'Capacitated vehicle routing', 'implemented', 'cvrp-clarke-wright', 'routing.vrp', 'Multi-depot Clarke–Wright savings with capacity verification.'),
+      method('pareto', 'Pareto multi-objective analysis', 'implemented', 'pareto-frontier', 'decision.pareto', 'Exact dominance over the supplied candidate set with trade-offs and weight sensitivity.'),
+      method('multi-objective', 'Multi-objective optimization', 'implemented', 'pareto-frontier', 'decision.pareto', 'Pareto frontier plus weighted ranking; no continuous frontier generation.'),
       method('robust-optimization', 'Robust/stochastic optimization', 'not_implemented', null, null, 'Monte Carlo informs risk but does not solve a robust program.'),
       method('cp-sat', 'Constraint programming / CP-SAT', 'not_implemented', null, null, 'Not implemented.'),
-      method('min-cost-flow', 'Min-cost flow', 'not_implemented', null, null, 'Not implemented.'),
     ],
     requiredInputs: ['decision variables', 'objective', 'linear constraints', 'bounds/integrality'],
     outputs: ['optimal or infeasible status', 'variable assignment', 'objective value'],
@@ -201,8 +207,11 @@ const DOMAINS: ScientificDomainSeed[] = [
     methods: [
       method('pert', 'Seeded PERT Monte Carlo', 'implemented', 'pert-monte-carlo', 'sim.monte_carlo', 'Reproducible triangular sampling.'),
       method('digital-twins', 'Digital twin scenarios', 'implemented', null, null, 'Stored observations and what-if scenarios.'),
+      method('scenario-comparison', 'Seeded scenario comparison', 'implemented', 'scenario-comparison', 'sim.scenario_compare', 'Same-seed scenario distributions, baseline deltas and reproducibility verification.'),
+      method('queue', 'Discrete-event queue simulation', 'implemented', 'discrete-event-queue', 'sim.queue', 'Seeded FCFS multi-server queue with wait/utilization metrics.'),
       method('linear-forecast', 'Linear trend baseline', 'implemented', 'linear-trend-forecast', 'forecast.linear', 'Holdout backtest, no causal claim.'),
       method('system-dynamics', 'Calibrated system dynamics', 'not_implemented', null, null, 'No calibrated system-dynamics engine.'),
+      method('agent-based', 'Agent-based simulation', 'not_implemented', null, null, 'No agent-based simulation engine.'),
       method('causal-forecast', 'Causal forecasting', 'not_implemented', null, null, 'Not implemented.'),
     ],
     requiredInputs: ['estimates or series', 'trials/seed or steps', 'scenario assumptions'],
@@ -306,6 +315,15 @@ const KIND_DOMAIN: Record<string, ScientificDomainId> = {
   monte_carlo_simulation: 'simulation_prediction',
   forecasting: 'simulation_prediction',
   multi_criteria_decision: 'decision_causal',
+  max_flow: 'operations_research',
+  min_cost_flow: 'operations_research',
+  bipartite_matching: 'operations_research',
+  tsp: 'operations_research',
+  vrp: 'operations_research',
+  pareto_multi_objective: 'decision_causal',
+  bayesian_inference: 'decision_causal',
+  queue_simulation: 'simulation_prediction',
+  scenario_comparison: 'simulation_prediction',
   extractive_summarization: 'ai_cognitive',
   descriptive_statistics: 'mathematics',
 };

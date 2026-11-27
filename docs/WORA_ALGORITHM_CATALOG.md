@@ -1,6 +1,6 @@
 # WORA Algorithm Catalog and Selection Layer
 
-**Catalog version:** `2026-11-24.1`
+**Catalog version:** `2026-11-28.1`
 **Source of truth:** `api-server/src/os/algorithms.ts`
 **Rule:** only algorithms implemented and tested in this repository are advertised. Research candidates are not listed as production capabilities.
 
@@ -28,6 +28,15 @@ It does **not** claim that keyword matching is semantic understanding. It does n
 | Linear Trend Forecast | `forecast.linear` | forecasting | Transparent baseline with R², holdout MAE and residual bands | Linear trend only; not causal; seasonality and regime changes are not modeled |
 | Weighted Decision Matrix | `decision.weighted_matrix` | multi-criteria decision | Deterministic ranking with ±25% weight-robustness check | Additive scoring; weights are judgments, not facts |
 | Descriptive Statistics | `stats.describe` | descriptive statistics | Deterministic summary of the supplied series | Descriptive only; no hypothesis test or causal inference |
+| Dinic Maximum Flow | `graph.max_flow` | max flow | Maximum flow plus a min-cut certificate | Single commodity; no lower bounds or gains |
+| Min-Cost Flow | `graph.min_cost_flow` | min-cost flow | Exact-demand minimum-cost flow with residual optimality checks | Linear costs; no general circulation with lower bounds |
+| Bipartite Matching | `graph.bipartite_matching` | bipartite matching | Maximum-cardinality matching with augmenting-path maximality check | Unweighted one-to-one matching only |
+| TSP (Held-Karp / 2-opt) | `routing.tsp` | traveling salesperson | Exact optimum at or below `exactLimit`; explicit approximate tour above it | No time windows or large-instance optimality guarantee |
+| Multi-Depot CVRP (Clarke–Wright) | `routing.vrp` | vehicle routing | Capacity-feasible routes with coverage and distance verification | Heuristic; no time windows or pickups/deliveries |
+| Pareto Frontier | `decision.pareto` | multi-objective decision | Exact non-dominated frontier for the supplied candidates | No continuous frontier generation |
+| Conjugate Bayesian Update | `stats.bayes_update` | Bayesian inference | Beta–Binomial / Normal–Normal posterior with credible interval | Conjugate models only; no MCMC or Bayesian networks |
+| Discrete-Event Queue | `sim.queue` | queue simulation | Reproducible FCFS multi-server simulated wait/utilization | Exponential service/arrival assumptions |
+| Seeded Scenario Comparison | `sim.scenario_compare` | scenario comparison | Same-seed scenario distributions, baseline deltas and reproducibility | Not a causal forecast; independent scenarios |
 | Frequency-Based Extractive Summary | `text.extract_summary` | summarization | Reproducible extractive selection in source order | Extractive only; no synthesis or fact checking |
 
 All entries are `tested` or `tested-baseline`. The catalog integrity test fails if a `toolId` is not present in the real tool registry.
@@ -111,7 +120,7 @@ To add an algorithm:
 `ProblemFeatures` now accepts structured fields beyond the original keyword features:
 
 - `problemType`: prediction, optimization, planning, causal_analysis, simulation, formal_verification, decision, allocation, scheduling or classification;
-- `requires`: explicit scientific requirements such as assignment, scheduling, optimization, simulation, forecasting, statistics, decision, causal_analysis, formal_verification, reinforcement_learning, deep_learning, bayesian_inference or mcts;
+- `requires`: explicit scientific requirements such as assignment, scheduling, optimization, simulation, forecasting, statistics, decision, causal_analysis, formal_verification, reinforcement_learning, deep_learning, bayesian_inference, graph, network_flow, routing, multi_objective, queueing, scenario or mcts;
 - `uncertaintyLevel`, `constraintsCount`, `variableCount`, `dependencyCount`, `precision`, `timeLimitMs`, `riskLevel`, `deterministic`, `stochastic` and `availableTools`.
 
 Selection order is explicit `kind` → structured `problemType`/`requires` → legacy structured features → keyword fallback. Unsupported requirements and unavailable tools return `unsupported` with a gap; they are never mapped to an unrelated solver.
@@ -136,3 +145,31 @@ POST /api/os/algorithms/select   # same structured input schema
 The tool registry exposes the same behavior as `meta.select_scientific_method` (low risk, no permission).
 
 The older statement that no comparative benchmark exists is superseded by `WORA_SCIENTIFIC_EVALUATION.md`; the original 14-fixture benchmark remains the correctness suite.
+
+
+## 8. Advanced optimization and decision slice (2026-11-28)
+
+The catalog now includes flow, routing, Pareto, Bayesian and simulation methods. Structured features take precedence in this order: network flow → bipartite matching → routing (VRP when vehicles are present, otherwise TSP) → Pareto → Bayesian → queue → scenario → shortest path → legacy optimization/decision features.
+
+- `hasNetworkFlow` and `hasMinCostFlow` select `graph.max_flow` or `graph.min_cost_flow`.
+- `hasBipartite` selects `graph.bipartite_matching`.
+- `hasRouting` with `hasVehicles` selects `routing.vrp`; without vehicles it selects `routing.tsp`.
+- `hasPareto`, `hasBayes`, `hasQueue` and `hasScenarios` select their matching implemented tools.
+
+Approximate methods are labelled as such: TSP above the exact limit returns `status: approximate`, and VRP returns `status: feasible` with `exact: false`. The scientific domain map marks conjugate Bayesian inference, queue simulation and scenario comparison as implemented, while general Bayesian networks, MCMC, agent-based simulation and calibrated system dynamics remain explicit gaps.
+
+New API routes:
+
+```http
+POST /api/os/network/max-flow
+POST /api/os/network/min-cost-flow
+POST /api/os/network/bipartite-matching
+POST /api/os/routing/tsp
+POST /api/os/routing/vrp
+POST /api/os/decision/pareto
+POST /api/os/stats/bayes
+POST /api/os/simulate/queue
+POST /api/os/simulate/scenarios
+```
+
+All routes execute through the tool registry, so the same validation, timeout, audit and authorization rules apply.

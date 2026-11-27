@@ -12,11 +12,11 @@
 | Mission orchestration, plans, handoffs, review gates | `api-server/src/os/orchestrator.ts`, `planning.ts`, `multi-agent.test.ts` | implemented foundation |
 | Problem understanding and unified model | `api-server/src/os/problem.ts`, `problem-model.ts`, `problem-structure.ts` | implemented foundation |
 | Reasoning, hypotheses, evidence | `api-server/src/os/reasoning-engine.ts`, `reasoning-store.ts`, `reasoning-evaluation.ts` | implemented foundation; model assistance provider-dependent |
-| Algorithm and scientific method selection | `api-server/src/os/algorithms.ts`, `science.ts` | implemented catalogs and deterministic selection, including shortest path |
+| Algorithm and scientific method selection | `api-server/src/os/algorithms.ts`, `science.ts` | implemented catalogs and deterministic selection, including flow, routing, Pareto, Bayesian and simulation methods |
 | Decision comparison and replan assessment | `api-server/src/os/decision.ts`, `adaptive-replan.ts` | implemented foundation |
 | Capability composition and strategy synthesis | `api-server/src/os/capability-composition.ts`, `strategy-synthesis.ts` | implemented foundation |
-| OR solvers and assignment/scheduling | `api-server/src/os/ortools.ts`, `graph.ts`, `scientific-verification.ts`, `tools.ts` | LP/MIP, Dijkstra/A*, assignment, scheduling and independent verification |
-| Simulation and digital twins | `api-server/src/os/twins.ts`, `tools.ts` | seeded PERT Monte Carlo and what-if twins; no discrete-event engine |
+| OR solvers and assignment/scheduling | `api-server/src/os/ortools.ts`, `graph.ts`, `network-flow.ts`, `routing.ts`, `multi-objective.ts`, `bayesian.ts`, `scientific-verification.ts`, `tools.ts` | LP/MIP, Dijkstra/A*, assignment, scheduling, max/min-cost flow, matching, TSP, VRP, Pareto, conjugate Bayes and independent verification |
+| Simulation and digital twins | `api-server/src/os/twins.ts`, `simulation.ts`, `simulation-advanced.ts`, `tools.ts` | seeded PERT Monte Carlo, what-if twins, discrete-event queue and scenario comparison; no agent-based engine |
 | Memory, lessons and playbooks | `api-server/src/os/memory.ts`, `lessons.ts`, `playbooks.ts` | memory/lessons implemented; semantic graph incomplete |
 | Independent and outcome verification | `api-server/src/os/independent-verification.ts`, `outcome-verification.ts` | implemented foundation |
 | Governance, approvals, budgets, devices | `api-server/src/os/governance.ts` | implemented foundation; local runtime execution incomplete |

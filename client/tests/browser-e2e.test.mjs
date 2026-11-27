@@ -140,7 +140,14 @@ test('browser journeys: mission, plan, workers, pause/resume/cancel, approval, e
     await page.getByRole('button', { name: /تشغيل المجموعة/ }).click();
     await page.getByText(/14\/14 ناجح/).first().waitFor({ timeout: 60_000 });
 
-    // 6) Extensions: install, inspect and uninstall a real built-in skill through the UI.
+    // 6) Advanced optimization: formulate and execute a real max-flow model through the UI.
+    await page.getByRole('tab', { name: /التحسين المتقدم/ }).click();
+    await page.getByRole('button', { name: /صياغة وتنفيذ/ }).click();
+    await page.getByRole('heading', { name: /أقصى تدفق/ }).waitFor({ timeout: 20_000 });
+    await page.getByRole('heading', { name: 'تحقق مستقل' }).waitFor({ timeout: 20_000 });
+    await page.getByText(/max-flow|min-cut/).first().waitFor({ timeout: 20_000 });
+
+    // 7) Extensions: install, inspect and uninstall a real built-in skill through the UI.
     await page.goto(`${WEB}/#extensions`, { waitUntil: 'domcontentloaded' });
     await page.getByRole('heading', { name: /المهارات والإضافات/ }).waitFor({ timeout: 20_000 });
     await page.getByRole('tab', { name: /المهارات/ }).click();
@@ -166,7 +173,7 @@ test('browser journeys: mission, plan, workers, pause/resume/cancel, approval, e
     await installedDetails.getByText('غير مثبّتة بعد.').waitFor({ timeout: 20_000 });
     await page.keyboard.press('Escape');
 
-    // 7) Capability intelligence calls the real matcher and renders a selected capability or an honest gap.
+    // 8) Capability intelligence calls the real matcher and renders a selected capability or an honest gap.
     await page.getByRole('tab', { name: /ذكاء القدرات/ }).click();
     await page.getByLabel('صف المشكلة أو القدرة التي تحتاجها').fill('Analyze requirements and produce a verified data report');
     await page.getByRole('button', { name: 'تقييم القدرة', exact: true }).click();

@@ -424,3 +424,21 @@ See `WORA_PHASE7_REASONING.md`.
 - **Limits:** deterministic lexical structure rather than general understanding; 12 held-out forecast paraphrases are a small sample; conflicting records are blocked, not reconciled; linear trend is a baseline; no causal identification or external provider benchmark; SQLite single-writer; custom/non-seed data-analyst agents are not auto-granted the forecast tool.
 
 See `WORA_PHASE7_1_REASONING_RELIABILITY.md`.
+
+## 4z. Workstream 23 — advanced optimization, simulation and decision intelligence
+
+**Status:** implemented and verified vertical slice. This adds real solvers and simulators; it does not claim universal optimality or causal forecasting.
+
+- **New real methods:** Dinic maximum flow with min-cut certificate (`graph.max_flow`), successive-shortest-path min-cost flow (`graph.min_cost_flow`), maximum bipartite matching (`graph.bipartite_matching`), Held-Karp/2-opt TSP (`routing.tsp`), multi-depot Clarke–Wright VRP (`routing.vrp`), Pareto frontier with weight sensitivity (`decision.pareto`), conjugate Beta–Binomial/Normal–Normal Bayesian updates (`stats.bayes_update`), seeded FCFS discrete-event queue (`sim.queue`) and same-seed scenario comparison (`sim.scenario_compare`).
+- **Formulation:** `scientific-formulation.ts` now covers all nine kinds and refuses incomplete models. `buildPlan` detects the matching structured JSON and creates the existing two-step formulation → solver plan; no sample values are imputed.
+- **Selection:** `ProblemFeatures` adds network-flow, routing, vehicle, bipartite, Pareto, Bayesian, queue and scenario signals. Structured signals outrank keywords. TSP above its exact limit and VRP are labelled approximate/feasible, never optimal.
+- **Catalog:** `algorithms.ts` and `science.ts` advertise the new tools and mark conjugate Bayesian inference, queue simulation and scenario comparison as implemented. General Bayesian networks, MCMC, agent-based simulation and calibrated system dynamics remain explicit gaps.
+- **Tools and API:** all nine tools are registered with Zod validation, timeouts and audit. Routes: `/network/max-flow`, `/network/min-cost-flow`, `/network/bipartite-matching`, `/routing/tsp`, `/routing/vrp`, `/decision/pareto`, `/stats/bayes`, `/simulate/queue`, `/simulate/scenarios`. `/science/formulate` accepts the new kinds.
+- **Orchestration:** review rejects non-optimal, unverified or mislabelled results; deliverables report max flow/min-cut, routing status, Pareto frontier, posterior interval, queue metrics and scenario ranking from real output.
+- **UI:** Intelligence Hub adds **التحسين المتقدم** with method selection, editable JSON model, formulation preview, real execution, independent verification checklist and full result JSON. The existing Arabic-first RTL layout and states are reused.
+- **Database:** migration 19 grants the new tools only to untouched operations-research seed/catalog agents; customized allow-lists are preserved. No new tables were needed.
+- **Tests:** new `advanced-computational.test.ts` **27/27** covers exact flow, min-cut, matching, TSP brute-force cross-check, approximate labelling, VRP capacity, Pareto dominance, Bayesian posteriors, tampered-result rejection, reproducibility, real tools, six end-to-end missions and HTTP routes. Migration tests **10/10**, algorithm tests **9/9**, science/problem tests **21/21**.
+- **Verification:** API full suite **470 tests, 466 passed, 4 skipped, 0 failed**; client unit **70/70**; browser E2E **1/1** including the new advanced tab journey; API and client typecheck and production builds pass.
+- **Limits:** no nonlinear/global optimization; single-commodity flow without lower bounds; unweighted one-to-one matching; TSP exact only below the configured limit; VRP heuristic without time windows; Pareto exact only over supplied candidates; conjugate Bayesian models only; exponential FCFS queue; independent scenarios rather than causal forecasts; SQLite single-writer unchanged.
+
+See `implementation/WORA-V2-ADVANCED-OPTIMIZATION-SIMULATION.md`.

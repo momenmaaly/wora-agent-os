@@ -52,10 +52,10 @@ function domainOf(text: string): { domain: ProblemDomain; track: string | null; 
   if (/(inspect|diagnos|check|audit|scan)\b.{0,80}\b(computer|machine|device|laptop|pc|server|host|system)\b|حاسوب|فحص.*جهاز/i.test(text)) {
     return { domain: 'diagnostics', track: 'diagnostics', confidence: 0.8 };
   }
-  if (/optimi[sz]e|schedul|allocat|assignment|linear program|shift|employee|shortest\s*path|dijkstra|a\*|graph\s+(?:route|path|network)|أقصر\s+مسار|مسار\s+الشبكة|مخزون|جدولة|توزيع|تخصيص/i.test(text)) {
+  if (/optimi[sz]e|schedul|allocat|assignment|linear program|shift|employee|shortest\s*path|dijkstra|a\*|graph\s+(?:route|path|network)|max(?:imum)?\s*flow|min(?:imum)?\s*cost\s*flow|bipartite|travel(?:l)?ing\s+sales|vehicle\s+routing|pareto|multi[ -]?objective|أقصر\s+مسار|مسار\s+الشبكة|مخزون|جدولة|توزيع|تخصيص|تدفق|توجيه\s*المركبات/i.test(text)) {
     return { domain: 'operations_research', track: 'optimization', confidence: 0.8 };
   }
-  if (/forecast|time series|statistic|data pipeline|analytics|dataset|تنبؤ|بيانات/i.test(text)) {
+  if (/forecast|time series|statistic|data pipeline|analytics|dataset|bayes|posterior|queue|waiting\s*line|scenario\s+compar|تنبؤ|بيانات|بايز|طابور/i.test(text)) {
     return { domain: 'data_intelligence', track: 'data', confidence: 0.75 };
   }
   if (/organization|organisation|company|marketplace|startup|retailer|subscription service|go-to-market|منظمة|شركة|متجر/i.test(text)) {
@@ -79,12 +79,18 @@ function deriveFeatures(text: string): ProblemFeatures {
   if (/statistic|describe|distribution|outlier|إحصاء/i.test(text)) requires.push('statistics');
   if (/decision|criteria|alternative|vendor|weighted matrix|قرار|معايير/i.test(text)) requires.push('decision');
   if (/shortest\s*path|dijkstra|a\*|graph\s+(?:route|path|network)|network\s+path|أقصر\s+مسار|مسار\s+الشبكة/i.test(text)) requires.push('graph');
+  if (/max(?:imum)?\s*flow|min(?:imum)?\s*cost\s*flow|network\s*flow|bipartite|matching|تدفق/i.test(text)) requires.push('network_flow');
+  if (/travel(?:l)?ing\s+sales|tsp\b|vehicle\s+routing|vrp\b|capacitated\s+routing|route\s+optimi[sz]|routing\s+(?:problem|plan|network)|shortest\s+tour|delivery\s+routes?|توجيه\s*المركبات|جولة\s*البائع/i.test(text)) requires.push('routing');
+  if (/pareto|multi[ -]?objective|trade[ -]?off|أهداف\s*متعددة|باريتو/i.test(text)) requires.push('multi_objective');
+  if (/bayes|posterior|prior\s*update|بايز|تحديث\s*بعدي/i.test(text)) requires.push('bayesian_inference');
+  if (/queue|waiting\s*line|servers?\b|طابور|صف\s*انتظار/i.test(text)) requires.push('queueing');
+  if (/scenario\s+compar|compare\s+scenarios|مقارنة\s*السيناريوهات/i.test(text)) requires.push('scenario');
   if (/causal|counterfactual|confound|سببية/i.test(text)) requires.push('causal_analysis');
   if (/formal verif|model check|sat solver|smt|تحقق رسمي/i.test(text)) requires.push('formal_verification');
   const problemType = requires.includes('causal_analysis') ? 'causal_analysis'
     : requires.includes('formal_verification') ? 'formal_verification'
       : requires.includes('scheduling') ? 'scheduling'
-        : requires.includes('optimization') ? 'optimization'
+        : requires.includes('routing') || requires.includes('network_flow') || requires.includes('optimization') ? 'optimization'
           : requires.includes('simulation') ? 'simulation'
             : requires.includes('forecasting') ? 'prediction'
               : requires.includes('decision') ? 'decision'
@@ -100,6 +106,15 @@ function deriveFeatures(text: string): ProblemFeatures {
     variableCount: (text.match(/employee|shift|task|option|alternative|متغير|موظف|وردية/gi) ?? []).length,
     hasCostMatrix: /cost matrix|matrix|مصفوفة/i.test(text) && /cost|تكلفة/i.test(text),
     hasGraph: /shortest\s*path|dijkstra|a\*|graph\s+(?:route|path|network)|network\s+path|أقصر\s+مسار|مسار\s+الشبكة/i.test(text),
+    hasNetworkFlow: /max(?:imum)?\s*flow|min(?:imum)?\s*cost\s*flow|network\s*flow|تدفق/i.test(text),
+    hasMinCostFlow: /min(?:imum)?\s*cost\s*flow|cost[ -]?flow|تدفق\s*بأقل\s*تكلفة/i.test(text),
+    hasBipartite: /bipartite|maximum\s*matching|مطابقة\s*ثنائية/i.test(text),
+    hasRouting: /travel(?:l)?ing\s+sales|tsp\b|vehicle\s+routing|vrp\b|capacitated\s+routing|route\s+optimi[sz]|routing\s+(?:problem|plan|network)|shortest\s+tour|delivery\s+routes?|توجيه\s*المركبات|جولة\s*البائع/i.test(text),
+    hasVehicles: /vehicle|fleet|truck|مركبة|أسطول/i.test(text),
+    hasPareto: /pareto|multi[ -]?objective|trade[ -]?off|باريتو|أهداف\s*متعددة/i.test(text),
+    hasBayes: /bayes|posterior|prior\s*update|بايز|تحديث\s*بعدي/i.test(text),
+    hasQueue: /queue|waiting\s*line|servers?\b|طابور|صف\s*انتظار/i.test(text),
+    hasScenarios: /scenario\s+compar|compare\s+scenarios|مقارنة\s*السيناريوهات/i.test(text),
     graphEdges: (text.match(/\b(?:from|to|edge|node)\b/giu) ?? []).length,
     negativeWeights: /negative\s+(?:weight|edge)|أوزان\s+سالبة/i.test(text),
     hasEmployees: /employee|staff|workforce|موظف/i.test(text),

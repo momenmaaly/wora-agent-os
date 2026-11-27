@@ -567,6 +567,25 @@ export const MIGRATIONS: Migration[] = [
       }
     },
   },
+  {
+    version: 19,
+    name: 'advanced-optimization-routing-simulation-capabilities',
+    up(db) {
+      // Grant the advanced flow, routing, Pareto, Bayesian and simulation tools
+      // only to untouched OR seed/catalog agents. Customized allow-lists stay
+      // exactly as the administrator left them.
+      const rows = db.prepare("SELECT id, tools FROM os_agents WHERE specialization = 'operations_research' AND source IN ('seed', 'catalog')").all() as Array<{ id: string; tools: string }>;
+      const update = db.prepare('UPDATE os_agents SET tools = ?, updated_at = ? WHERE id = ?');
+      const required = ['or.solve_lp', 'or.assignment', 'or.employee_schedule', 'sim.monte_carlo'];
+      const additions = ['graph.max_flow', 'graph.min_cost_flow', 'graph.bipartite_matching', 'routing.tsp', 'routing.vrp', 'decision.pareto', 'stats.bayes_update', 'sim.queue', 'sim.scenario_compare'];
+      for (const row of rows) {
+        const tools = parseAgentArray(row.tools);
+        if (!tools || !required.every((tool) => tools.includes(tool))) continue;
+        const next = [...new Set([...tools, ...additions])];
+        if (next.length !== tools.length) update.run(JSON.stringify(next), nowIso(), row.id);
+      }
+    },
+  },
 ];
 
 const HISTORICAL_MIGRATION_NAMES: Record<number, string[]> = {

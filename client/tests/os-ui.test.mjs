@@ -39,9 +39,13 @@ test('lesson lifecycle and benchmark UI call the real APIs', () => {
     assert.ok(ui.includes(call), `${call} is wired`);
   }
   assert.match(ui, /لا ترقية تلقائية|بلا ترقية تلقائية/);
-  for (const call of ['osApi.formulateScientific', 'osApi.shortestPath']) {
+  for (const call of ['osApi.formulateScientific', 'osApi.shortestPath', 'osApi.maxFlow', 'osApi.minCostFlow', 'osApi.bipartiteMatching', 'osApi.tsp', 'osApi.vrp', 'osApi.pareto', 'osApi.bayes', 'osApi.queue', 'osApi.scenarios']) {
     assert.ok(ui.includes(call), `${call} is wired`);
   }
+  assert.match(ui, /advancedKind/);
+  assert.match(ui, /advancedFormulation/);
+  assert.match(ui, /ADVANCED_LABELS/);
+  assert.match(ui, /التحسين المتقدم/);
   assert.match(ui, /graphFormulation/);
   assert.match(ui, /verification\.checks/);
   assert.match(ui, /Dijkstra/);
@@ -58,7 +62,7 @@ test('execution limits UI persists through the admin API', () => {
 
 test('typed client exposes plan, lease, lesson and benchmark contracts', () => {
   const api = read('os/api.ts');
-  for (const token of ['interface PlanVersion', 'interface TaskLease', 'interface VerificationRecord', 'interface Lesson', 'interface BenchmarkRun', 'interface UnifiedProblem', 'interface CompositionRecord', 'missionPlans', 'replanMission', 'executionLimits', 'runBenchmarks', 'interface ReasoningModel', 'interface ProblemStructure', 'missionReasoning', 'addReasoningEvidence', 'reasonProblem', 'interface ShortestPathResult', 'interface ScientificFormulationResult', 'shortestPath', 'formulateScientific']) {
+  for (const token of ['interface PlanVersion', 'interface TaskLease', 'interface VerificationRecord', 'interface Lesson', 'interface BenchmarkRun', 'interface UnifiedProblem', 'interface CompositionRecord', 'missionPlans', 'replanMission', 'executionLimits', 'runBenchmarks', 'interface ReasoningModel', 'interface ProblemStructure', 'missionReasoning', 'addReasoningEvidence', 'reasonProblem', 'interface ShortestPathResult', 'interface ScientificFormulationResult', 'interface AdvancedSolverResult', 'type AdvancedProblemKind', 'shortestPath', 'formulateScientific', 'maxFlow', 'minCostFlow', 'bipartiteMatching', 'tsp', 'vrp', 'pareto', 'bayes', 'queue', 'scenarios']) {
     assert.ok(api.includes(token), `${token} is typed`);
   }
 });

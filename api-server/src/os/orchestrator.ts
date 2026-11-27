@@ -170,6 +170,15 @@ const SCIENTIFIC_TOOL: Record<FormulationKind, string> = {
   monte_carlo_simulation: 'sim.monte_carlo',
   forecasting: 'forecast.linear',
   multi_criteria_decision: 'decision.weighted_matrix',
+  max_flow: 'graph.max_flow',
+  min_cost_flow: 'graph.min_cost_flow',
+  bipartite_matching: 'graph.bipartite_matching',
+  tsp: 'routing.tsp',
+  vrp: 'routing.vrp',
+  pareto_multi_objective: 'decision.pareto',
+  bayesian_inference: 'stats.bayes_update',
+  queue_simulation: 'sim.queue',
+  scenario_comparison: 'sim.scenario_compare',
 };
 
 function scientificAcceptance(kind: FormulationKind): string[] {
@@ -180,6 +189,15 @@ function scientificAcceptance(kind: FormulationKind): string[] {
     case 'multi_criteria_decision': return ['Weights and scores are complete', 'Weighted scores are recomputed', 'Robustness under ±25% weight perturbation is reported'];
     case 'assignment': return ['No row or column is assigned twice', 'Total cost is recomputed', 'Indices are inside the cost matrix'];
     case 'employee_scheduling': return ['Demand is covered', 'Availability and workload caps are respected', 'Labor cost is recomputed'];
+    case 'max_flow': return ['Flow is conserved at intermediate nodes', 'Every edge flow is within capacity', 'Source outflow equals max flow', 'Min-cut capacity equals max flow'];
+    case 'min_cost_flow': return ['Exactly the requested demand is delivered', 'Flow is conserved and within capacity', 'Total cost is recomputed', 'No negative residual cycle remains'];
+    case 'bipartite_matching': return ['Every pair is a real edge and used once', 'Matching size is consistent', 'No augmenting path remains'];
+    case 'tsp': return ['Every node is visited exactly once', 'Tour starts at the requested node', 'Cost is recomputed', 'Heuristic results are labelled approximate'];
+    case 'vrp': return ['Every customer is served exactly once', 'Every route respects vehicle capacity', 'Total distance is recomputed', 'Heuristic results are labelled feasible/approximate'];
+    case 'pareto_multi_objective': return ['Every non-frontier candidate is dominated', 'No frontier point is dominated', 'Weighted ranking is recomputed', 'Trade-offs and sensitivity are reported'];
+    case 'bayesian_inference': return ['Posterior parameters are recomputed', 'Credible interval contains the posterior mean', 'Prior sensitivity is assessed or marked absent', 'No false precision is claimed'];
+    case 'queue_simulation': return ['Every generated customer is served', 'Waits are non-negative', 'Utilization is within [0,1]', 'The seed is recorded'];
+    case 'scenario_comparison': return ['Every scenario is present and labelled simulated', 'Quantiles are ordered', 'Baseline deltas are recomputed', 'Same-seed reruns reproduce the result'];
     default: return ['Solver reports Optimal', 'Objective and every constraint are independently recomputed', 'Bounds and integrality are checked', 'Non-optimal statuses are surfaced, not hidden'];
   }
 }
@@ -194,7 +212,7 @@ function scientificPlan(text: string, kind: FormulationKind, model: unknown): Pl
       objective: text,
       specialization: 'operations_research',
       tool: 'meta.formulate_scientific_problem',
-      toolInput: { kind, model, objective: text },
+      toolInput: { kind, model, objective: text.slice(0, 4_000) },
       dependsOn: [],
       acceptance: [
         'Decision variables, input data, objective and constraints are explicit',
@@ -341,6 +359,48 @@ export function buildPlan(objective: string, track?: string, workspaceId = 'wora
   // Structured scientific payloads are executed through the real formulation
   // and solver tools. Missing values are reported, never replaced by samples.
   const structured = extractStructuredJson(text);
+  if (structured && Array.isArray(structured['edges']) && typeof structured['source'] === 'string' && typeof structured['sink'] === 'string') {
+    const hasCost = structured['edges'].some((edge) => edge && typeof edge === 'object' && 'cost' in edge) || structured['demand'] !== undefined;
+    const kind: FormulationKind = hasCost ? 'min_cost_flow' : 'max_flow';
+    const planned = scientificPlan(text, kind, structured);
+    if (planned) return planned;
+    return [scientificGapTask(text, hasCost ? ['capacitated edges with costs', 'source', 'sink', 'demand'] : ['capacitated edges', 'source', 'sink'], kind.replaceAll('_', ' '))];
+  }
+  if (structured && Array.isArray(structured['left']) && Array.isArray(structured['right']) && Array.isArray(structured['edges'])) {
+    const planned = scientificPlan(text, 'bipartite_matching', structured);
+    if (planned) return planned;
+    return [scientificGapTask(text, ['left nodes', 'right nodes', 'allowed edges'], 'bipartite matching')];
+  }
+  if (structured && Array.isArray(structured['depots']) && Array.isArray(structured['customers']) && Array.isArray(structured['vehicles'])) {
+    const planned = scientificPlan(text, 'vrp', structured);
+    if (planned) return planned;
+    return [scientificGapTask(text, ['depots', 'customers with demand', 'vehicles with capacity'], 'vehicle routing')];
+  }
+  if (structured && (Array.isArray(structured['points']) || Array.isArray(structured['distanceMatrix'])) && !structured['depots']) {
+    const planned = scientificPlan(text, 'tsp', structured);
+    if (planned) return planned;
+    return [scientificGapTask(text, ['points or a square distance matrix'], 'traveling salesperson')];
+  }
+  if (structured && Array.isArray(structured['objectives']) && Array.isArray(structured['candidates'])) {
+    const planned = scientificPlan(text, 'pareto_multi_objective', structured);
+    if (planned) return planned;
+    return [scientificGapTask(text, ['objectives', 'candidates with complete values'], 'multi-objective analysis')];
+  }
+  if (structured && (structured['type'] === 'beta_binomial' || structured['type'] === 'normal_normal')) {
+    const planned = scientificPlan(text, 'bayesian_inference', structured);
+    if (planned) return planned;
+    return [scientificGapTask(text, ['prior parameters', 'observations or successes/trials'], 'Bayesian inference')];
+  }
+  if (structured && Number.isInteger(structured['customers']) && Number.isInteger(structured['servers'])) {
+    const planned = scientificPlan(text, 'queue_simulation', structured);
+    if (planned) return planned;
+    return [scientificGapTask(text, ['customers', 'interarrival mean', 'service mean', 'servers', 'seed'], 'queue simulation')];
+  }
+  if (structured && Array.isArray(structured['scenarios'])) {
+    const planned = scientificPlan(text, 'scenario_comparison', structured);
+    if (planned) return planned;
+    return [scientificGapTask(text, ['at least two complete scenarios'], 'scenario comparison')];
+  }
   const graphIntent = /shortest\s*path|dijkstra|a\*|graph\s+(?:route|path|network)|network\s+path|route\s+optim|أقصر\s+مسار|مسار\s+الشبكة/i.test(text);
   if (graphIntent) {
     const graphModel = structured && Array.isArray(structured['edges']) ? structured : null;
@@ -752,6 +812,45 @@ function reviewRun(task: TaskRow, toolOk: boolean, output: unknown, error: strin
     case 'graph.shortest_path':
       if (toolOk && out['status'] !== 'optimal') issues.push(`Shortest-path status: ${String(out['status'] ?? 'unknown')}`);
       if (toolOk && (out['verification'] as { passed?: boolean } | undefined)?.passed !== true) issues.push('Independent shortest-path verification did not pass');
+      break;
+    case 'graph.max_flow':
+      if (toolOk && out['status'] !== 'optimal') issues.push(`Max-flow status: ${String(out['status'] ?? 'unknown')}`);
+      if (toolOk && (out['verification'] as { passed?: boolean } | undefined)?.passed !== true) issues.push('Independent max-flow verification did not pass');
+      break;
+    case 'graph.min_cost_flow':
+      if (toolOk && out['status'] !== 'optimal') issues.push(`Min-cost-flow status: ${String(out['status'] ?? 'unknown')}`);
+      if (toolOk && (out['verification'] as { passed?: boolean } | undefined)?.passed !== true) issues.push('Independent min-cost-flow verification did not pass');
+      break;
+    case 'graph.bipartite_matching':
+      if (toolOk && out['status'] !== 'optimal') issues.push(`Bipartite matching status: ${String(out['status'] ?? 'unknown')}`);
+      if (toolOk && (out['verification'] as { passed?: boolean } | undefined)?.passed !== true) issues.push('Independent matching verification did not pass');
+      break;
+    case 'routing.tsp':
+      if (toolOk && !['optimal', 'approximate'].includes(String(out['status']))) issues.push(`TSP status: ${String(out['status'] ?? 'unknown')}`);
+      if (toolOk && (out['verification'] as { passed?: boolean } | undefined)?.passed !== true) issues.push('Independent TSP verification did not pass');
+      if (toolOk && out['exact'] !== true && out['status'] !== 'approximate') issues.push('A heuristic TSP result must be labelled approximate');
+      break;
+    case 'routing.vrp':
+      if (toolOk && out['status'] !== 'feasible') issues.push(`VRP status: ${String(out['status'] ?? 'unknown')}`);
+      if (toolOk && (out['verification'] as { passed?: boolean } | undefined)?.passed !== true) issues.push('Independent VRP verification did not pass');
+      break;
+    case 'decision.pareto':
+      if (toolOk && out['status'] !== 'optimal') issues.push(`Pareto status: ${String(out['status'] ?? 'unknown')}`);
+      if (toolOk && (out['verification'] as { passed?: boolean } | undefined)?.passed !== true) issues.push('Independent Pareto verification did not pass');
+      if (toolOk && !Array.isArray(out['frontier'])) issues.push('Pareto analysis returned no frontier');
+      break;
+    case 'stats.bayes_update':
+      if (toolOk && out['status'] !== 'optimal') issues.push(`Bayesian update status: ${String(out['status'] ?? 'unknown')}`);
+      if (toolOk && (out['verification'] as { passed?: boolean } | undefined)?.passed !== true) issues.push('Independent Bayesian verification did not pass');
+      if (toolOk && !out['credibleInterval']) issues.push('Bayesian update returned no credible interval');
+      break;
+    case 'sim.queue':
+      if (toolOk && out['simulated'] !== true) issues.push('Queue result is not labelled simulated');
+      if (toolOk && (out['verification'] as { passed?: boolean } | undefined)?.passed !== true) issues.push('Independent queue verification did not pass');
+      break;
+    case 'sim.scenario_compare':
+      if (toolOk && out['simulated'] !== true) issues.push('Scenario result is not labelled simulated');
+      if (toolOk && (out['verification'] as { passed?: boolean } | undefined)?.passed !== true) issues.push('Independent scenario verification did not pass');
       break;
     case 'sim.monte_carlo':
       if (toolOk && out['simulated'] !== true) issues.push('Simulation result is not labelled simulated');
@@ -1549,6 +1648,24 @@ function summarizeDeliverables(tool: string | null, output: unknown): string[] {
       return [`LP/MIP ${String(out['status'] ?? 'unknown')}, objective ${String(out['objectiveValue'] ?? 'n/a')}; independent verification ${((out['verification'] as { passed?: boolean } | undefined)?.passed ? 'PASSED' : 'FAILED')}.`];
     case 'graph.shortest_path':
       return [`Shortest path ${String(out['status'] ?? 'unknown')}, cost ${String(out['totalCost'] ?? 'n/a')} via ${String((out['path'] as string[] | undefined)?.join(' → ') ?? 'n/a')}; independent verification ${((out['verification'] as { passed?: boolean } | undefined)?.passed ? 'PASSED' : 'FAILED')}.`];
+    case 'graph.max_flow':
+      return [`Max flow ${String(out['maxFlow'] ?? 'n/a')}; min-cut ${String((out['minCut'] as { capacity?: number } | undefined)?.capacity ?? 'n/a')}; verification ${((out['verification'] as { passed?: boolean } | undefined)?.passed ? 'PASSED' : 'FAILED')}.`];
+    case 'graph.min_cost_flow':
+      return [`Min-cost flow ${String(out['flow'] ?? 'n/a')} at cost ${String(out['totalCost'] ?? 'n/a')}; verification ${((out['verification'] as { passed?: boolean } | undefined)?.passed ? 'PASSED' : 'FAILED')}.`];
+    case 'graph.bipartite_matching':
+      return [`Bipartite matching size ${String(out['size'] ?? 'n/a')}; verification ${((out['verification'] as { passed?: boolean } | undefined)?.passed ? 'PASSED' : 'FAILED')}.`];
+    case 'routing.tsp':
+      return [`TSP ${String(out['status'] ?? 'unknown')} (${String(out['method'] ?? 'n/a')}), cost ${String(out['cost'] ?? 'n/a')}; tour ${String((out['tour'] as string[] | undefined)?.join(' → ') ?? 'n/a')}.`];
+    case 'routing.vrp':
+      return [`VRP ${String(out['status'] ?? 'unknown')}, ${Array.isArray(out['routes']) ? out['routes'].length : 0} route(s), distance ${String(out['totalDistance'] ?? 'n/a')}; verification ${((out['verification'] as { passed?: boolean } | undefined)?.passed ? 'PASSED' : 'FAILED')}.`];
+    case 'decision.pareto':
+      return [`Pareto frontier ${Array.isArray(out['frontier']) ? out['frontier'].length : 0} point(s); weighted winner ${String((out['ranking'] as Array<{ name?: string }> | undefined)?.[0]?.name ?? 'n/a')}; robust=${String((out['sensitivity'] as { robust?: boolean } | undefined)?.robust)}.`];
+    case 'stats.bayes_update':
+      return [`Bayesian ${String(out['modelType'] ?? 'update')} posterior mean ${String((out['posterior'] as { mean?: number } | undefined)?.mean ?? 'n/a')}; credible interval ${JSON.stringify(out['credibleInterval'] ?? null)}.`];
+    case 'sim.queue':
+      return [`Simulated queue: mean wait ${String(out['meanWait'] ?? 'n/a')}, p90 ${String(out['p90Wait'] ?? 'n/a')}, utilization ${String(out['utilization'] ?? 'n/a')}, seed ${String(out['seed'] ?? 'n/a')}.`];
+    case 'sim.scenario_compare':
+      return [`Scenario comparison: ${Array.isArray(out['scenarios']) ? out['scenarios'].length : 0} scenario(s), median winner ${String((out['ranking'] as Array<{ name?: string }> | undefined)?.[0]?.name ?? 'n/a')}.`];
     case 'meta.formulate_scientific_problem':
       return [`Scientific formulation ${String(out['kind'] ?? 'unknown')} (${String(out['solver'] ?? 'no solver')}), executable=${String(out['executable'])}.`];
     case 'sim.monte_carlo':

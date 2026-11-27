@@ -24,7 +24,7 @@ import { understandProblem, getProblemProfile } from './problem.js';
 import { modelProblem } from './problem-model.js';
 import { buildClarificationPlan } from './clarification.js';
 import { extractUrls, planResearch } from './research.js';
-import { formulateScientificProblem } from './scientific-formulation.js';
+import { FORMULATION_KINDS, formulateScientificProblem } from './scientific-formulation.js';
 import { composeMissionPlan, getComposition } from './capability-composition.js';
 import { getMissionOutcome } from './outcome-verification.js';
 import { analyzeProblemReasoning, buildDeterministicReasoning, filterReasoningForActor } from './reasoning-engine.js';
@@ -346,11 +346,67 @@ export function createOsRouter(options: { production?: boolean } = {}): Router {
   router.post('/science/formulate', asyncWrap((req, res) => {
     if (!rateLimit(workspace(res), 60, req.path)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
     const body = z.object({
-      kind: z.enum(['linear_programming', 'integer_programming', 'shortest_path', 'assignment', 'employee_scheduling', 'monte_carlo_simulation', 'forecasting', 'multi_criteria_decision']),
+      kind: z.enum(FORMULATION_KINDS),
       model: z.unknown().optional(),
       objective: z.string().trim().max(4_000).optional(),
     }).strict().parse(req.body ?? {});
     res.json(formulateScientificProblem(body));
+  }));
+
+  router.post('/network/max-flow', asyncWrap(async (req, res) => {
+    if (!rateLimit(workspace(res), 30, req.path)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    const result = await runTool('graph.max_flow', req.body ?? {}, { workspaceId: workspace(res), actor: actor(res), permissions: new Set<string>() });
+    res.status(result.ok ? 200 : 422).json(result.ok ? result.output : { error: result.error });
+  }));
+
+  router.post('/network/min-cost-flow', asyncWrap(async (req, res) => {
+    if (!rateLimit(workspace(res), 30, req.path)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    const result = await runTool('graph.min_cost_flow', req.body ?? {}, { workspaceId: workspace(res), actor: actor(res), permissions: new Set<string>() });
+    res.status(result.ok ? 200 : 422).json(result.ok ? result.output : { error: result.error });
+  }));
+
+  router.post('/network/bipartite-matching', asyncWrap(async (req, res) => {
+    if (!rateLimit(workspace(res), 30, req.path)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    const result = await runTool('graph.bipartite_matching', req.body ?? {}, { workspaceId: workspace(res), actor: actor(res), permissions: new Set<string>() });
+    res.status(result.ok ? 200 : 422).json(result.ok ? result.output : { error: result.error });
+  }));
+
+  router.post('/routing/tsp', asyncWrap(async (req, res) => {
+    if (!rateLimit(workspace(res), 30, req.path)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    const result = await runTool('routing.tsp', req.body ?? {}, { workspaceId: workspace(res), actor: actor(res), permissions: new Set<string>() });
+    res.status(result.ok ? 200 : 422).json(result.ok ? result.output : { error: result.error });
+  }));
+
+  router.post('/routing/vrp', asyncWrap(async (req, res) => {
+    if (!rateLimit(workspace(res), 30, req.path)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    const result = await runTool('routing.vrp', req.body ?? {}, { workspaceId: workspace(res), actor: actor(res), permissions: new Set<string>() });
+    res.status(result.ok ? 200 : 422).json(result.ok ? result.output : { error: result.error });
+  }));
+
+  router.post('/decision/pareto', asyncWrap(async (req, res) => {
+    if (!rateLimit(workspace(res), 60, req.path)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    const result = await runTool('decision.pareto', req.body ?? {}, { workspaceId: workspace(res), actor: actor(res), permissions: new Set<string>() });
+    res.status(result.ok ? 200 : 422).json(result.ok ? result.output : { error: result.error });
+  }));
+
+  router.post('/stats/bayes', asyncWrap(async (req, res) => {
+    if (!rateLimit(workspace(res), 60, req.path)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    const body = req.body ?? {};
+    const input = body && typeof body === 'object' && !Array.isArray(body) && 'model' in body ? body : { model: body };
+    const result = await runTool('stats.bayes_update', input, { workspaceId: workspace(res), actor: actor(res), permissions: new Set<string>() });
+    res.status(result.ok ? 200 : 422).json(result.ok ? result.output : { error: result.error });
+  }));
+
+  router.post('/simulate/queue', asyncWrap(async (req, res) => {
+    if (!rateLimit(workspace(res), 30, req.path)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    const result = await runTool('sim.queue', req.body ?? {}, { workspaceId: workspace(res), actor: actor(res), permissions: new Set<string>() });
+    res.status(result.ok ? 200 : 422).json(result.ok ? result.output : { error: result.error });
+  }));
+
+  router.post('/simulate/scenarios', asyncWrap(async (req, res) => {
+    if (!rateLimit(workspace(res), 30, req.path)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    const result = await runTool('sim.scenario_compare', req.body ?? {}, { workspaceId: workspace(res), actor: actor(res), permissions: new Set<string>() });
+    res.status(result.ok ? 200 : 422).json(result.ok ? result.output : { error: result.error });
   }));
 
   router.post('/decisions/compare', asyncWrap((req, res) => {
