@@ -99,9 +99,79 @@ function toolOutcome(tool: string | null, output: unknown, input: unknown): { st
     }
     case 'or.assignment': {
       const assignments = Array.isArray(out['assignments']) ? out['assignments'].length : 0;
-      const passed = assignments > 0 && finite(out['totalCost']) && Number(out['totalCost']) >= 0;
-      return { status: passed ? 'passed' : 'failed', description: 'The assignment covers rows and has a finite non-negative cost', evidence: `assignments=${assignments}; cost=${String(out['totalCost'])}` };
+      const verified = isRecord(out['verification']) && out['verification']['passed'] === true;
+      const passed = verified && assignments > 0 && finite(out['totalCost']) && Number(out['totalCost']) >= 0;
+      return { status: passed ? 'passed' : 'failed', description: 'The assignment covers rows, has a finite non-negative cost and passed independent verification', evidence: `verified=${verified}; assignments=${assignments}; cost=${String(out['totalCost'])}` };
     }
+    case 'or.solve_lp': {
+      const status = typeof out['status'] === 'string' ? out['status'] : '';
+      const verified = isRecord(out['verification']) && out['verification']['passed'] === true;
+      const optimalOrFeasible = status === 'Optimal' || status === 'Feasible';
+      const passed = verified && optimalOrFeasible && finite(out['objectiveValue']);
+      return { status: passed ? 'passed' : 'failed', description: 'LP/MIP output is optimal or feasible and independently verified', evidence: `status=${status}; verified=${verified}; objective=${String(out['objectiveValue'])}` };
+    }
+    case 'graph.shortest_path': {
+      const verified = isRecord(out['verification']) && out['verification']['passed'] === true;
+      const passed = verified && out['status'] === 'optimal' && Array.isArray(out['path']) && finite(out['totalCost']);
+      return { status: passed ? 'passed' : 'failed', description: 'Shortest-path output is optimal, has a path and passed independent verification', evidence: `status=${String(out['status'])}; verified=${verified}; cost=${String(out['totalCost'])}` };
+    }
+    case 'graph.max_flow': {
+      const verified = isRecord(out['verification']) && out['verification']['passed'] === true;
+      const cut = isRecord(out['minCut']) ? out['minCut'] : null;
+      const passed = verified && out['status'] === 'optimal' && finite(out['maxFlow']) && cut !== null
+        && Math.abs(Number(out['maxFlow']) - Number(cut['capacity'])) <= 1e-6;
+      return { status: passed ? 'passed' : 'failed', description: 'Max-flow is optimal, equals its min-cut certificate and passed independent verification', evidence: `status=${String(out['status'])}; maxFlow=${String(out['maxFlow'])}; minCut=${String(cut?.['capacity'])}; verified=${verified}` };
+    }
+    case 'graph.min_cost_flow': {
+      const verified = isRecord(out['verification']) && out['verification']['passed'] === true;
+      const passed = verified && out['status'] === 'optimal' && finite(out['flow']) && finite(out['totalCost'])
+        && Number(out['flow']) === Number(out['demand']);
+      return { status: passed ? 'passed' : 'failed', description: 'Min-cost flow delivers the exact demand and passed independent verification', evidence: `status=${String(out['status'])}; flow=${String(out['flow'])}; demand=${String(out['demand'])}; cost=${String(out['totalCost'])}; verified=${verified}` };
+    }
+    case 'graph.bipartite_matching': {
+      const verified = isRecord(out['verification']) && out['verification']['passed'] === true;
+      const matching = Array.isArray(out['matching']) ? out['matching'].length : 0;
+      const passed = verified && out['status'] === 'optimal' && finite(out['size']) && matching === Number(out['size']);
+      return { status: passed ? 'passed' : 'failed', description: 'Bipartite matching size is consistent and passed independent verification', evidence: `status=${String(out['status'])}; size=${String(out['size'])}; pairs=${matching}; verified=${verified}` };
+    }
+    case 'routing.tsp': {
+      const verified = isRecord(out['verification']) && out['verification']['passed'] === true;
+      const tour = Array.isArray(out['tour']) ? out['tour'].length : 0;
+      const passed = verified && (out['status'] === 'optimal' || out['status'] === 'approximate') && tour > 0 && finite(out['cost']);
+      return { status: passed ? 'passed' : 'failed', description: 'TSP output is optimal or explicitly approximate and independently verified', evidence: `status=${String(out['status'])}; exact=${String(out['exact'])}; nodes=${tour}; cost=${String(out['cost'])}; verified=${verified}` };
+    }
+    case 'routing.vrp': {
+      const verified = isRecord(out['verification']) && out['verification']['passed'] === true;
+      const routes = Array.isArray(out['routes']) ? out['routes'].length : 0;
+      const passed = verified && out['status'] === 'feasible' && routes > 0 && finite(out['totalDistance']);
+      return { status: passed ? 'passed' : 'failed', description: 'VRP output is feasible, covers customers and passed independent verification', evidence: `status=${String(out['status'])}; routes=${routes}; distance=${String(out['totalDistance'])}; verified=${verified}` };
+    }
+    case 'decision.pareto': {
+      const verified = isRecord(out['verification']) && out['verification']['passed'] === true;
+      const frontier = Array.isArray(out['frontier']) ? out['frontier'].length : 0;
+      const passed = verified && out['status'] === 'optimal' && frontier > 0;
+      return { status: passed ? 'passed' : 'failed', description: 'Pareto frontier is non-empty and passed independent dominance verification', evidence: `status=${String(out['status'])}; frontier=${frontier}; verified=${verified}` };
+    }
+    case 'stats.bayes_update': {
+      const verified = isRecord(out['verification']) && out['verification']['passed'] === true;
+      const interval = isRecord(out['credibleInterval']) ? out['credibleInterval'] : null;
+      const passed = verified && out['status'] === 'optimal' && interval !== null
+        && finite(interval['lower']) && finite(interval['upper']) && Number(interval['lower']) <= Number(interval['upper']);
+      return { status: passed ? 'passed' : 'failed', description: 'Bayesian posterior has a valid credible interval and passed independent verification', evidence: `status=${String(out['status'])}; interval=${interval ? `${String(interval['lower'])}..${String(interval['upper'])}` : 'missing'}; verified=${verified}` };
+    }
+    case 'sim.queue': {
+      const verified = isRecord(out['verification']) && out['verification']['passed'] === true;
+      const passed = verified && out['simulated'] === true && Number(out['served']) === Number(out['customers']);
+      return { status: passed ? 'passed' : 'failed', description: 'Queue simulation served every customer and passed independent verification', evidence: `served=${String(out['served'])}/${String(out['customers'])}; seed=${String(out['seed'])}; verified=${verified}` };
+    }
+    case 'sim.scenario_compare': {
+      const verified = isRecord(out['verification']) && out['verification']['passed'] === true;
+      const scenarios = Array.isArray(out['scenarios']) ? out['scenarios'].length : 0;
+      const passed = verified && out['simulated'] === true && scenarios >= 2 && Array.isArray(out['ranking']);
+      return { status: passed ? 'passed' : 'failed', description: 'Scenario comparison is reproducible and passed independent verification', evidence: `scenarios=${scenarios}; seed=${String(out['seed'])}; verified=${verified}` };
+    }
+    case 'meta.formulate_scientific_problem':
+      return { status: out['executable'] === true ? 'passed' : 'failed', description: 'Scientific formulation is executable', evidence: `executable=${String(out['executable'])}` };
     case 'stats.describe': {
       const series = Array.isArray(inp['series']) ? inp['series'].length : null;
       const count = finite(out['count']) ? Number(out['count']) : null;

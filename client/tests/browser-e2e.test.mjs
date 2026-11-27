@@ -179,6 +179,26 @@ test('browser journeys: mission, plan, workers, pause/resume/cancel, approval, e
     await page.getByRole('button', { name: 'تقييم القدرة', exact: true }).click();
     await page.getByRole('heading', { name: /القدرة المختارة|فجوة القدرات/ }).waitFor({ timeout: 20_000 });
 
+    // 9) Experience modes: Simple asks for the objective only; Guided/Advanced expose real preflight controls.
+    await page.goto(`${WEB}/#brief`, { waitUntil: 'domcontentloaded' });
+    await page.getByRole('heading', { name: /الموجز/ }).waitFor({ timeout: 20_000 });
+    await page.getByRole('button', { name: 'بسيط', exact: true }).click();
+    await page.getByText('اكتب الهدف فقط. WORA يختار الطريقة والفريق والأدوات.').waitFor({ timeout: 10_000 });
+    assert.equal(await page.getByRole('button', { name: 'معاينة النهج', exact: true }).count(), 0, 'Simple mode must not require an approach preview');
+    assert.equal(await page.getByText('تركيب متعدد الوكلاء', { exact: true }).count(), 0, 'Simple mode must not require composition choices');
+    await page.getByRole('button', { name: 'موجّه', exact: true }).click();
+    await page.getByRole('button', { name: 'معاينة النهج', exact: true }).waitFor({ timeout: 10_000 });
+    await page.getByRole('button', { name: 'متقدم', exact: true }).click();
+    await page.getByText('اعرض المنهج العلمي والبدائل والمتطلبات والسياق التنفيذي.').waitFor({ timeout: 10_000 });
+    await page.locator('.language-toggle').click();
+    await page.getByRole('button', { name: 'Simple', exact: true }).waitFor({ timeout: 10_000 });
+    assert.equal(await page.evaluate(() => document.documentElement.dir), 'ltr');
+    await page.locator('.language-toggle').click();
+    await page.getByRole('button', { name: 'بسيط', exact: true }).waitFor({ timeout: 10_000 });
+    assert.equal(await page.evaluate(() => document.documentElement.dir), 'rtl');
+    await page.setViewportSize({ width: 390, height: 844 });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), true, 'the composer must not overflow a mobile viewport');
+
     assert.deepEqual(pageErrors.filter((entry) => !/favicon|socket|WebSocket/i.test(entry)), []);
   } finally {
     if (browser) await browser.close();

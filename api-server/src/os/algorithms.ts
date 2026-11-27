@@ -702,8 +702,8 @@ function structuredProblem(input: AlgorithmSelectionInput): {
   const choose = (kind: ProblemKind, label: string) => ({
     kind, confidence: 0.9, rationale: [`Structured feature: ${label}.`], warnings: [],
   });
-  if (f.hasNetworkFlow === true || requires.has('network_flow')) return choose(f.hasMinCostFlow === true ? 'min_cost_flow' : 'max_flow', 'capacitated network flow');
   if (f.hasBipartite === true) return choose('bipartite_matching', 'bipartite graph');
+  if (f.hasNetworkFlow === true || requires.has('network_flow')) return choose(f.hasMinCostFlow === true ? 'min_cost_flow' : 'max_flow', 'capacitated network flow');
   if (f.hasRouting === true || requires.has('routing')) return choose(f.hasVehicles === true ? 'vrp' : 'tsp', 'routing problem');
   if (f.hasPareto === true || requires.has('multi_objective')) return choose('pareto_multi_objective', 'multiple competing objectives');
   if (f.hasBayes === true || requires.has('bayesian_inference')) return choose('bayesian_inference', 'Bayesian uncertainty');
@@ -763,8 +763,8 @@ function detectProblem(input: AlgorithmSelectionInput): {
   const feature = (kind: ProblemKind, label: string) => ({
     kind, confidence: 0.9, rationale: [`Structured feature: ${label}.`], warnings: [],
   });
-  if (f.hasNetworkFlow === true) return feature(f.hasMinCostFlow === true ? 'min_cost_flow' : 'max_flow', 'capacitated network flow');
   if (f.hasBipartite === true) return feature('bipartite_matching', 'bipartite graph');
+  if (f.hasNetworkFlow === true) return feature(f.hasMinCostFlow === true ? 'min_cost_flow' : 'max_flow', 'capacitated network flow');
   if (f.hasRouting === true) return feature(f.hasVehicles === true ? 'vrp' : 'tsp', 'routing problem');
   if (f.hasPareto === true) return feature('pareto_multi_objective', 'multiple competing objectives');
   if (f.hasBayes === true) return feature('bayesian_inference', 'Bayesian uncertainty');
@@ -787,13 +787,13 @@ function detectProblem(input: AlgorithmSelectionInput): {
     keyword('min_cost_flow', 'minimum cost flow', /min(?:imum)?\s*cost\s*flow|cost[ -]?flow|تدفق\s*بأقل\s*تكلفة/u) ??
     keyword('bipartite_matching', 'bipartite matching', /bipartite|maximum\s*matching|مطابقة\s*ثنائية/u) ??
     keyword('tsp', 'traveling salesperson', /travel(?:l)?ing\s+sales(?:person|man)|tsp\b|جولة\s*البائع/u) ??
-    keyword('vrp', 'vehicle routing', /vehicle\s+routing|vrp\b|capacitated\s+routing|توجيه\s*المركبات/u) ??
+    keyword('vrp', 'vehicle routing', /vehicle\s+rout(?:e|ing)s?|vrp\b|capacitated\s+routing|توجيه\s*المركبات/u) ??
     keyword('pareto_multi_objective', 'Pareto multi-objective', /pareto|multi[ -]?objective|trade[ -]?off\s*front|باريتو|أهداف\s*متعددة/u) ??
     keyword('bayesian_inference', 'Bayesian inference', /bayes|posterior|prior\s*update|بايز|تحديث\s*بعدي/u) ??
     keyword('queue_simulation', 'queue simulation', /queue|waiting\s*line|multi[ -]?server|server\s+(?:queue|capacity|utilization)|طابور|صف\s*انتظار/iu) ??
-    keyword('scenario_comparison', 'scenario comparison', /scenario\s+compar|compare\s+scenarios|مقارنة\s*السيناريوهات/u) ??
+    keyword('scenario_comparison', 'scenario comparison', /scenarios?\b|مقارنة\s*السيناريوهات/u) ??
     keyword('shortest_path', 'shortest path or graph routing', /shortest\s*path|dijkstra|a\*|graph\s+(?:route|path|network)|network\s+path|route\s+optim|أقصر\s+مسار|مسار\s+الشبكة/u) ??
-    keyword('employee_scheduling', 'employees, shifts or scheduling', /employee|shift|staff|workforce|roster|schedule|وردية|موظف|جدول/u) ??
+    keyword('employee_scheduling', 'employees, shifts or scheduling', /\b(?:employees?|shifts?|staff|workforce|rosters?|schedules?)\b|وردية|موظف|جدول/iu) ??
     keyword('assignment', 'assignment or matching', /cost matrix|assignment|matching|assign .* (task|job|worker)|توزيع|مطابقة/u) ??
     keyword('monte_carlo_simulation', 'simulation, risk or uncertainty', /monte carlo|simulat|scenario|risk|uncertainty|محاكاة/u) ??
     keyword('forecasting', 'forecasting or time series', /forecast|trend|time series|demand|تنبؤ/u) ??
