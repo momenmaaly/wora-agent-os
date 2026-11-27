@@ -83,7 +83,7 @@ function deriveFeatures(text: string): ProblemFeatures {
   if (/travel(?:l)?ing\s+sales|tsp\b|vehicle\s+routing|vrp\b|capacitated\s+routing|route\s+optimi[sz]|routing\s+(?:problem|plan|network)|shortest\s+tour|delivery\s+routes?|توجيه\s*المركبات|جولة\s*البائع/i.test(text)) requires.push('routing');
   if (/pareto|multi[ -]?objective|trade[ -]?off|أهداف\s*متعددة|باريتو/i.test(text)) requires.push('multi_objective');
   if (/bayes|posterior|prior\s*update|بايز|تحديث\s*بعدي/i.test(text)) requires.push('bayesian_inference');
-  if (/queue|waiting\s*line|servers?\b|طابور|صف\s*انتظار/i.test(text)) requires.push('queueing');
+  if (/queue|waiting\s*line|multi[ -]?server|server\s+(?:queue|capacity|utilization)|طابور|صف\s*انتظار/i.test(text)) requires.push('queueing');
   if (/scenario\s+compar|compare\s+scenarios|مقارنة\s*السيناريوهات/i.test(text)) requires.push('scenario');
   if (/causal|counterfactual|confound|سببية/i.test(text)) requires.push('causal_analysis');
   if (/formal verif|model check|sat solver|smt|تحقق رسمي/i.test(text)) requires.push('formal_verification');
@@ -113,7 +113,7 @@ function deriveFeatures(text: string): ProblemFeatures {
     hasVehicles: /vehicle|fleet|truck|مركبة|أسطول/i.test(text),
     hasPareto: /pareto|multi[ -]?objective|trade[ -]?off|باريتو|أهداف\s*متعددة/i.test(text),
     hasBayes: /bayes|posterior|prior\s*update|بايز|تحديث\s*بعدي/i.test(text),
-    hasQueue: /queue|waiting\s*line|servers?\b|طابور|صف\s*انتظار/i.test(text),
+    hasQueue: /queue|waiting\s*line|multi[ -]?server|server\s+(?:queue|capacity|utilization)|طابور|صف\s*انتظار/i.test(text),
     hasScenarios: /scenario\s+compar|compare\s+scenarios|مقارنة\s*السيناريوهات/i.test(text),
     graphEdges: (text.match(/\b(?:from|to|edge|node)\b/giu) ?? []).length,
     negativeWeights: /negative\s+(?:weight|edge)|أوزان\s+سالبة/i.test(text),

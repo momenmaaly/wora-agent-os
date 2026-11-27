@@ -790,7 +790,7 @@ function detectProblem(input: AlgorithmSelectionInput): {
     keyword('vrp', 'vehicle routing', /vehicle\s+routing|vrp\b|capacitated\s+routing|توجيه\s*المركبات/u) ??
     keyword('pareto_multi_objective', 'Pareto multi-objective', /pareto|multi[ -]?objective|trade[ -]?off\s*front|باريتو|أهداف\s*متعددة/u) ??
     keyword('bayesian_inference', 'Bayesian inference', /bayes|posterior|prior\s*update|بايز|تحديث\s*بعدي/u) ??
-    keyword('queue_simulation', 'queue simulation', /queue|waiting\s*line|servers?\b|طابور|صف\s*انتظار/u) ??
+    keyword('queue_simulation', 'queue simulation', /queue|waiting\s*line|multi[ -]?server|server\s+(?:queue|capacity|utilization)|طابور|صف\s*انتظار/iu) ??
     keyword('scenario_comparison', 'scenario comparison', /scenario\s+compar|compare\s+scenarios|مقارنة\s*السيناريوهات/u) ??
     keyword('shortest_path', 'shortest path or graph routing', /shortest\s*path|dijkstra|a\*|graph\s+(?:route|path|network)|network\s+path|route\s+optim|أقصر\s+مسار|مسار\s+الشبكة/u) ??
     keyword('employee_scheduling', 'employees, shifts or scheduling', /employee|shift|staff|workforce|roster|schedule|وردية|موظف|جدول/u) ??
