@@ -135,8 +135,8 @@ export async function runScenario(workspaceId: string, id: string, input: {
     return { ...driver, optimistic: apply(driver.optimistic), likely: apply(driver.likely), pessimistic: apply(driver.pessimistic) };
   });
   const [baseRun, scenarioRun] = await Promise.all([
-    runTool('sim.monte_carlo', baselineInput, { workspaceId, actor: input.actor ?? 'user', permissions: new Set(['*']) }),
-    runTool('sim.monte_carlo', { trials, seed, items: adjustedDrivers }, { workspaceId, actor: input.actor ?? 'user', permissions: new Set(['*']) }),
+    runTool('sim.monte_carlo', baselineInput, { workspaceId, actor: input.actor ?? 'user', permissions: new Set<string>() }),
+    runTool('sim.monte_carlo', { trials, seed, items: adjustedDrivers }, { workspaceId, actor: input.actor ?? 'user', permissions: new Set<string>() }),
   ]);
   if (!baseRun.ok || !scenarioRun.ok) throw new Error('Simulation failed');
   const base = baseRun.output as Record<string, number>;

@@ -15,11 +15,16 @@ FROM node:22-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 
+# Docker CLI talks only to the dedicated runtime daemon; the host socket is
+# never mounted into this container. git is required by marketplace sync.
+RUN apk add --no-cache docker-cli git util-linux ca-certificates
+
 COPY --from=builder --chown=node:node /workspace/api-server/dist ./dist
 COPY --from=builder --chown=node:node /workspace/api-server/node_modules ./node_modules
 COPY --from=builder --chown=node:node /workspace/api-server/package.json ./
+COPY --chown=node:node api-server/docker/browser-runtime.Dockerfile ./browser-runtime.Dockerfile
 # WORA OS core persists missions/agents/memory here (mounted volume in compose).
-RUN mkdir -p /app/data && chown node:node /app/data
+RUN mkdir -p /app/data /app/data/runtime && chown node:node /app/data /app/data/runtime
 
 USER node
 EXPOSE 4000

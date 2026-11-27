@@ -11,6 +11,7 @@
 // The published types describe an ES module namespace for this CommonJS
 // package; at runtime the default import is the loader function itself.
 import loadHighsImport from 'highs';
+import { verifyAssignmentSolution, verifyEmployeeSchedule, verifyLpSolution, type ScientificVerification } from './scientific-verification.js';
 
 export interface HighsLike {
   solve(problem: string, options?: { output_flag?: boolean }): {
@@ -60,6 +61,7 @@ export interface LpResult {
   objectiveValue: number | null;
   variables: Record<string, number>;
   lp: string;
+  verification: ScientificVerification;
 }
 
 export async function solveLp(model: LpModel): Promise<LpResult> {
@@ -124,12 +126,15 @@ export async function solveLp(model: LpModel): Promise<LpResult> {
       variables[original] = col.Primal;
     }
   }
-  return {
+  const result: LpResult = {
     status: raw.Status,
     objectiveValue: raw.ObjectiveValue ?? null,
     variables,
     lp,
+    verification: { schemaVersion: '1.0', passed: false, checks: [], failures: [], tolerance: 1e-6 },
   };
+  result.verification = verifyLpSolution(model, result);
+  return result;
 }
 
 /* ─── Employee → shift scheduling (min-cost MIP) ─────────── */
@@ -150,6 +155,7 @@ export interface ScheduleResult {
   perShift: Array<{ shiftId: string; shiftName: string; demand: number; assigned: number; meetsDemand: boolean; employees: string[] }>;
   unassignedEmployees: string[];
   validation: string[];
+  verification: ScientificVerification;
   lp: string;
 }
 
@@ -247,6 +253,10 @@ export async function solveEmployeeSchedule(input: ScheduleInput): Promise<Sched
     perShift,
     unassignedEmployees: employees.filter((e) => !assignedIds.has(e.id)).map((e) => e.id),
     validation,
+    verification: verifyEmployeeSchedule(input, {
+      status: lp.status, feasible: lp.status === 'Optimal', totalCost: lp.status === 'Optimal' ? lp.objectiveValue : null,
+      assignments, perShift, unassignedEmployees: [], validation, verification: lp.verification, lp: lp.lp,
+    }),
     lp: lp.lp,
   };
 }
@@ -257,6 +267,7 @@ export interface AssignmentResult {
   totalCost: number;
   dummyAssignments: number;
   size: number;
+  verification: ScientificVerification;
 }
 
 export function solveAssignment(cost: number[][], rowLabels?: string[], colLabels?: string[]): AssignmentResult {
@@ -321,5 +332,7 @@ export function solveAssignment(cost: number[][], rowLabels?: string[], colLabel
       dummyAssignments += 1;
     }
   }
-  return { assignments, totalCost, dummyAssignments, size: n };
+  const result = { assignments, totalCost, dummyAssignments, size: n, verification: { schemaVersion: '1.0', passed: false, checks: [], failures: [], tolerance: 1e-9 } } as AssignmentResult;
+  result.verification = verifyAssignmentSolution(cost, result);
+  return result;
 }

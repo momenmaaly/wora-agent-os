@@ -1,5 +1,5 @@
 /* WORA — Command Center (home), organizations, workspaces.
-   Tokens only; no gradients, no glows. White surfaces + near-black ink + lime. */
+   Tokens only; no gradients, no glows. White surfaces + near-black ink + burgundy. */
 
 .cc-page { display: flex; flex-direction: column; gap: 20px; max-width: 1180px; margin: 0 auto; padding: clamp(16px, 2.6vw, 32px) clamp(14px, 2vw, 24px) 40px; }
 
@@ -54,10 +54,9 @@
 .cc-mission-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--ink); }
 .cc-status { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 650; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--line); background: var(--raised); color: var(--subtle); white-space: nowrap; }
 .cc-status-running, .cc-status-planning { color: var(--accent-quiet); border-color: var(--accent-line); background: var(--accent-wash); }
-.cc-status-awaiting_approval { color: #8a6d1a; border-color: #e8dcb0; background: #faf6e3; }
-.cc-status-completed { color: #3f6212; border-color: #d3e8a8; background: #eef7dc; }
+.cc-status-awaiting_approval { color: var(--warning); border-color: var(--warning-border); background: var(--warning-bg); }
 .cc-status-failed, .cc-status-blocked { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 35%, transparent); background: color-mix(in srgb, var(--danger) 7%, var(--panel)); }
-.cc-attention { flex: 0 0 auto; font-size: 11px; font-weight: 700; color: #8a6d1a; }
+.cc-attention { flex: 0 0 auto; font-size: 11px; font-weight: 700; color: var(--warning); }
 .cc-date { flex: 0 0 auto; color: var(--subtle); font-size: 11px; font-variant-numeric: tabular-nums; }
 
 .cc-agents { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px; }

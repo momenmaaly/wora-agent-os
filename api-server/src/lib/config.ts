@@ -50,3 +50,29 @@ export function productionConfigProblems(env: NodeJS.ProcessEnv): string[] {
   if (!origins.length || !origins.every(isBrowserOrigin)) problems.push('ALLOWED_ORIGINS');
   return problems;
 }
+
+/** Production runtime settings that must be explicit and isolated. */
+export function productionRuntimeConfigProblems(env: NodeJS.ProcessEnv): string[] {
+  if (!isProductionEnv(env)) return [];
+  const problems: string[] = [];
+  const cloud = sanitizeEnv(env['WORA_CLOUD_PROVIDER'])?.toLowerCase();
+  if (cloud !== 'docker') problems.push('WORA_CLOUD_PROVIDER=docker');
+  if (sanitizeEnv(env['WORA_CLOUD_ALLOW_PROCESS_PROVIDER']) === '1') problems.push('WORA_CLOUD_ALLOW_PROCESS_PROVIDER');
+  const browser = sanitizeEnv(env['WORA_BROWSER_PROVIDER'])?.toLowerCase();
+  if (browser !== 'docker') problems.push('WORA_BROWSER_PROVIDER=docker');
+  const dockerHost = sanitizeEnv(env['DOCKER_HOST']) ?? '';
+  if (!dockerHost) problems.push('DOCKER_HOST');
+  else if (/^unix:\/\/\/var\/run\/docker\.sock$/u.test(dockerHost) && sanitizeEnv(env['WORA_ALLOW_HOST_DOCKER_SOCKET']) !== '1') {
+    problems.push('DOCKER_HOST must point at the dedicated runtime host (set WORA_ALLOW_HOST_DOCKER_SOCKET=1 only for a controlled host install)');
+  } else if (dockerHost.startsWith('tcp://')) {
+    if (sanitizeEnv(env['DOCKER_TLS_VERIFY']) !== '1') problems.push('DOCKER_TLS_VERIFY=1');
+    if (!sanitizeEnv(env['DOCKER_CERT_PATH'])) problems.push('DOCKER_CERT_PATH');
+  }
+  const runtimeRoot = sanitizeEnv(env['WORA_RUNTIME_ROOT']);
+  if (!runtimeRoot || !runtimeRoot.startsWith('/')) problems.push('WORA_RUNTIME_ROOT (absolute path required)');
+  if (sanitizeEnv(env['WORA_OS_DB']) === ':memory:') problems.push('WORA_OS_DB (file-backed database required)');
+  if (!sanitizeEnv(env['WORA_SECRET_KEYS']) && !sanitizeEnv(env['WORA_SECRET_KEY']) && !sanitizeEnv(env['WORA_SECRET_KEY_FILE'])) {
+    problems.push('WORA_SECRET_KEYS, WORA_SECRET_KEY or WORA_SECRET_KEY_FILE');
+  }
+  return problems;
+}

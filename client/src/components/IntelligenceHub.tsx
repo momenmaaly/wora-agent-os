@@ -1,16 +1,60 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  BarChart3, Boxes, BrainCircuit, CheckCircle2, CircleAlert, FlaskConical, LoaderCircle, Play, Plus, Scale, ShieldAlert, Trash2, Wrench,
+  BarChart3, Boxes, BrainCircuit, CheckCircle2, CircleAlert, FlaskConical, GraduationCap, LoaderCircle, Network, Play, Plus, Route, Scale, ShieldAlert, Trash2, Wrench,
 } from 'lucide-react';
 import {
   OsApiError, osApi,
-  type DecisionResult, type MonteCarloResult, type ScheduleRequest, type ScheduleResult, type ToolInfo,
-  type TwinRecord, type TwinScenarioResult, type TwinDriverInput,
+  type BenchmarkRun, type DecisionResult, type Lesson, type LessonEvent, type MonteCarloResult, type ScheduleRequest, type ScheduleResult, type ToolInfo,
+  type TwinRecord, type TwinScenarioResult, type TwinDriverInput, type ShortestPathResult, type ScientificFormulationResult, type AdvancedProblemKind, type AdvancedSolverResult,
 } from '../os/api.js';
 
-type Tab = 'schedule' | 'montecarlo' | 'decision' | 'tools' | 'playbooks' | 'twins';
+type Tab = 'schedule' | 'graph' | 'advanced' | 'montecarlo' | 'decision' | 'tools' | 'playbooks' | 'twins' | 'lessons' | 'benchmarks';
 
 type EditableEmployee = ScheduleRequest['employees'][number] & { name: string };
+
+const ADVANCED_DEFAULTS: Record<AdvancedProblemKind, string> = {
+  max_flow: JSON.stringify({ source: 's', sink: 't', edges: [
+    { from: 's', to: 'a', capacity: 3 }, { from: 's', to: 'b', capacity: 2 },
+    { from: 'a', to: 'b', capacity: 1 }, { from: 'a', to: 't', capacity: 2 }, { from: 'b', to: 't', capacity: 3 },
+  ] }, null, 2),
+  min_cost_flow: JSON.stringify({ source: 's', sink: 't', demand: 3, edges: [
+    { from: 's', to: 'a', capacity: 2, cost: 1 }, { from: 's', to: 'b', capacity: 2, cost: 2 },
+    { from: 'a', to: 't', capacity: 2, cost: 1 }, { from: 'b', to: 't', capacity: 2, cost: 1 },
+  ] }, null, 2),
+  bipartite_matching: JSON.stringify({ left: ['a', 'b', 'c'], right: ['x', 'y', 'z'], edges: [
+    { left: 'a', right: 'x' }, { left: 'a', right: 'y' }, { left: 'b', right: 'y' }, { left: 'c', right: 'z' },
+  ] }, null, 2),
+  tsp: JSON.stringify({ points: [
+    { id: 'A', x: 0, y: 0 }, { id: 'B', x: 0, y: 1 }, { id: 'C', x: 1, y: 0 }, { id: 'D', x: 1, y: 1 },
+  ] }, null, 2),
+  vrp: JSON.stringify({ depots: [{ id: 'd', x: 0, y: 0 }], customers: [
+    { id: 'a', x: 0, y: 1, demand: 1 }, { id: 'b', x: 1, y: 0, demand: 1 }, { id: 'c', x: 1, y: 1, demand: 1 },
+  ], vehicles: [{ id: 'v1', capacity: 2 }, { id: 'v2', capacity: 2 }] }, null, 2),
+  pareto_multi_objective: JSON.stringify({ objectives: [
+    { id: 'cost', label: 'Cost', direction: 'minimize' }, { id: 'quality', label: 'Quality', direction: 'maximize' },
+  ], candidates: [
+    { name: 'A', values: { cost: 10, quality: 9 } }, { name: 'B', values: { cost: 8, quality: 7 } }, { name: 'C', values: { cost: 12, quality: 5 } },
+  ] }, null, 2),
+  bayesian_inference: JSON.stringify({ type: 'beta_binomial', prior: { alpha: 2, beta: 2 }, successes: 7, trials: 10,
+    alternativePriors: [{ label: 'uniform', alpha: 1, beta: 1 }, { label: 'strong', alpha: 10, beta: 10 }] }, null, 2),
+  queue_simulation: JSON.stringify({ customers: 500, interarrivalMean: 1, serviceMean: 1.2, servers: 2, seed: 77 }, null, 2),
+  scenario_comparison: JSON.stringify({ trials: 2000, seed: 11, scenarios: [
+    { name: 'base', items: [{ name: 'build', optimistic: 5, likely: 7, pessimistic: 10 }] },
+    { name: 'slow', items: [{ name: 'build', optimistic: 8, likely: 12, pessimistic: 16 }] },
+  ] }, null, 2),
+};
+
+const ADVANCED_LABELS: Record<AdvancedProblemKind, string> = {
+  max_flow: 'أقصى تدفق',
+  min_cost_flow: 'تدفق بأقل تكلفة',
+  bipartite_matching: 'مطابقة ثنائية',
+  tsp: 'جولة البائع',
+  vrp: 'توجيه المركبات',
+  pareto_multi_objective: 'أهداف متعددة / باريتو',
+  bayesian_inference: 'استدلال بايزي',
+  queue_simulation: 'محاكاة طابور',
+  scenario_comparison: 'مقارنة سيناريوهات',
+};
 
 const SHIFT_DEFAULTS = [
   { id: 'morning', name: 'Morning (06–14)', demand: 5 },
@@ -120,6 +164,87 @@ export function IntelligenceHub() {
     }
   };
 
+  /* ─── Shortest path / scientific formulation ─── */
+  const [graphEdges, setGraphEdges] = useState('[\n  { "from": "A", "to": "B", "weight": 4 },\n  { "from": "A", "to": "C", "weight": 1 },\n  { "from": "C", "to": "B", "weight": 2 },\n  { "from": "B", "to": "D", "weight": 1 },\n  { "from": "C", "to": "D", "weight": 8 }\n]');
+  const [graphStart, setGraphStart] = useState('A');
+  const [graphGoal, setGraphGoal] = useState('D');
+  const [graphAlgorithm, setGraphAlgorithm] = useState<'auto' | 'dijkstra' | 'a_star'>('dijkstra');
+  const [graphHeuristic, setGraphHeuristic] = useState('{}');
+  const [graphResult, setGraphResult] = useState<ShortestPathResult | null>(null);
+  const [graphFormulation, setGraphFormulation] = useState<ScientificFormulationResult | null>(null);
+  const [graphBusy, setGraphBusy] = useState(false);
+
+  const runGraph = async () => {
+    setGraphBusy(true);
+    setError(null);
+    setGraphResult(null);
+    setGraphFormulation(null);
+    try {
+      const edges = JSON.parse(graphEdges) as Array<{ from: string; to: string; weight: number }>;
+      const heuristic = JSON.parse(graphHeuristic || '{}') as Record<string, number>;
+      const body = {
+        edges, start: graphStart.trim(), goal: graphGoal.trim(), algorithm: graphAlgorithm,
+        ...(Object.keys(heuristic).length ? { heuristic } : {}),
+      };
+      const formulation = await osApi.formulateScientific({ kind: 'shortest_path', model: body });
+      setGraphFormulation(formulation);
+      if (!formulation.executable) {
+        setError(`البيانات غير مكتملة: ${formulation.missingInputs.join('؛ ')}`);
+        return;
+      }
+      setGraphResult(await osApi.shortestPath(body));
+    } catch (err) {
+      setError(err instanceof OsApiError ? err.message : 'تعذر تشغيل تحليل المسار.');
+    } finally {
+      setGraphBusy(false);
+    }
+  };
+
+  /* ─── Advanced optimization lab ─── */
+  const [advancedKind, setAdvancedKind] = useState<AdvancedProblemKind>('max_flow');
+  const [advancedModel, setAdvancedModel] = useState(ADVANCED_DEFAULTS.max_flow);
+  const [advancedFormulation, setAdvancedFormulation] = useState<ScientificFormulationResult | null>(null);
+  const [advancedResult, setAdvancedResult] = useState<AdvancedSolverResult | null>(null);
+  const [advancedBusy, setAdvancedBusy] = useState(false);
+
+  const chooseAdvancedKind = (kind: AdvancedProblemKind) => {
+    setAdvancedKind(kind);
+    setAdvancedModel(ADVANCED_DEFAULTS[kind]);
+    setAdvancedFormulation(null);
+    setAdvancedResult(null);
+    setError(null);
+  };
+
+  const runAdvanced = async () => {
+    setAdvancedBusy(true);
+    setError(null);
+    setAdvancedFormulation(null);
+    setAdvancedResult(null);
+    try {
+      const model = JSON.parse(advancedModel) as unknown;
+      const formulation = await osApi.formulateScientific({ kind: advancedKind, model });
+      setAdvancedFormulation(formulation);
+      if (!formulation.executable) {
+        setError(`البيانات غير مكتملة: ${formulation.missingInputs.join('؛ ')}`);
+        return;
+      }
+      const result = advancedKind === 'max_flow' ? await osApi.maxFlow(model)
+        : advancedKind === 'min_cost_flow' ? await osApi.minCostFlow(model)
+          : advancedKind === 'bipartite_matching' ? await osApi.bipartiteMatching(model)
+            : advancedKind === 'tsp' ? await osApi.tsp(model)
+              : advancedKind === 'vrp' ? await osApi.vrp(model)
+                : advancedKind === 'pareto_multi_objective' ? await osApi.pareto(model)
+                  : advancedKind === 'bayesian_inference' ? await osApi.bayes(model)
+                    : advancedKind === 'queue_simulation' ? await osApi.queue(model)
+                      : await osApi.scenarios(model);
+      setAdvancedResult(result);
+    } catch (err) {
+      setError(err instanceof OsApiError ? err.message : 'تعذر تشغيل المحلل المتقدم.');
+    } finally {
+      setAdvancedBusy(false);
+    }
+  };
+
   /* ─── Digital twins ─── */
   const [twins, setTwins] = useState<TwinRecord[] | null>(null);
   const [selectedTwinId, setSelectedTwinId] = useState<string | null>(null);
@@ -202,6 +327,58 @@ export function IntelligenceHub() {
     }
   };
 
+  /* ─── Lessons ─── */
+  const [lessons, setLessons] = useState<Lesson[] | null>(null);
+  const [lessonStatus, setLessonStatus] = useState<Lesson['status'] | 'all'>('all');
+  const [lessonBusy, setLessonBusy] = useState(false);
+  const [lessonHistory, setLessonHistory] = useState<Record<string, LessonEvent[]>>({});
+  const loadLessons = useCallback(async (status: Lesson['status'] | 'all') => {
+    setLessonBusy(true);
+    try { setLessons(await osApi.lessons(status)); }
+    catch (err) { setError(err instanceof OsApiError ? err.message : 'تعذر تحميل الدروس.'); }
+    finally { setLessonBusy(false); }
+  }, []);
+  useEffect(() => { if (tab === 'lessons' && lessons === null) void loadLessons(lessonStatus); }, [tab, lessons, lessonStatus, loadLessons]);
+  async function lessonAction(id: string, action: 'evaluate' | 'promote' | 'reject' | 'revoke' | 'success' | 'failure') {
+    if (lessonBusy) return;
+    setLessonBusy(true);
+    try {
+      if (action === 'evaluate') await osApi.evaluateLesson(id);
+      else if (action === 'promote') await osApi.promoteLesson(id);
+      else if (action === 'reject') { const reason = window.prompt('سبب الرفض؟') ?? ''; if (!reason.trim()) return; await osApi.rejectLesson(id, reason.trim()); }
+      else if (action === 'revoke') { const reason = window.prompt('سبب سحب الدرس من الذاكرة؟') ?? ''; if (!reason.trim()) return; await osApi.revokeLesson(id, reason.trim()); }
+      else await osApi.recordLessonOutcome(id, action === 'success');
+      await loadLessons(lessonStatus);
+      setLessonHistory({});
+    } catch (err) { setError(err instanceof OsApiError ? err.message : 'تعذر تنفيذ إجراء الدرس.'); }
+    finally { setLessonBusy(false); }
+  }
+  async function toggleLessonHistory(id: string) {
+    if (lessonHistory[id]) { setLessonHistory((cur) => { const next = { ...cur }; delete next[id]; return next; }); return; }
+    try { setLessonHistory((cur) => ({ ...cur, [id]: [] })); const events = await osApi.lessonHistory(id); setLessonHistory((cur) => ({ ...cur, [id]: events })); }
+    catch (err) { setError(err instanceof OsApiError ? err.message : 'تعذر تحميل سجل الدرس.'); }
+  }
+
+  /* ─── Benchmarks ─── */
+  const [benchmarks, setBenchmarks] = useState<BenchmarkRun[] | null>(null);
+  const [benchmarkBusy, setBenchmarkBusy] = useState(false);
+  const [benchmarkDomains, setBenchmarkDomains] = useState<Array<{ domain: string; implemented: string[]; partial: string[]; missing: string[] }> | null>(null);
+  const loadBenchmarks = useCallback(async () => {
+    setBenchmarkBusy(true);
+    try {
+      const [runs, domains] = await Promise.all([osApi.benchmarks(), osApi.benchmarkDomains()]);
+      setBenchmarks(runs); setBenchmarkDomains(domains);
+    } catch (err) { setError(err instanceof OsApiError ? err.message : 'تعذر تحميل المقاييس.'); }
+    finally { setBenchmarkBusy(false); }
+  }, []);
+  useEffect(() => { if (tab === 'benchmarks' && benchmarks === null) void loadBenchmarks(); }, [tab, benchmarks, loadBenchmarks]);
+  async function runBenchmarks() {
+    setBenchmarkBusy(true);
+    try { const run = await osApi.runBenchmarks(); setBenchmarks((current) => [run, ...(current ?? [])]); }
+    catch (err) { setError(err instanceof OsApiError ? err.message : 'تعذر تشغيل المقاييس.'); }
+    finally { setBenchmarkBusy(false); }
+  }
+
   /* ─── Tool registry ─── */
   const [tools, setTools] = useState<ToolInfo[] | null>(null);
   useEffect(() => {
@@ -216,11 +393,15 @@ export function IntelligenceHub() {
 
   const tabs: Array<{ id: Tab; label: string; icon: typeof BrainCircuit }> = [
     { id: 'schedule', label: 'الجدولة التشغيلية', icon: BarChart3 },
+    { id: 'graph', label: 'المسار الأمثل', icon: Route },
+    { id: 'advanced', label: 'التحسين المتقدم', icon: Network },
     { id: 'montecarlo', label: 'مونتي كارلو', icon: FlaskConical },
     { id: 'decision', label: 'مصفوفة القرار', icon: Scale },
     { id: 'tools', label: 'سجل الأدوات', icon: Wrench },
     { id: 'playbooks', label: 'Playbooks', icon: CheckCircle2 },
     { id: 'twins', label: 'التوائم الرقمية', icon: Boxes },
+    { id: 'lessons', label: 'الدروس', icon: GraduationCap },
+    { id: 'benchmarks', label: 'المقاييس', icon: BarChart3 },
   ];
 
   return (
@@ -228,7 +409,7 @@ export function IntelligenceHub() {
       <header className="os-page-head">
         <div>
           <h1><BrainCircuit size={20} aria-hidden="true" /> الذكاء التشغيلي</h1>
-          <p className="subtle">حلّالون حقيقيون يعملون محليًا: HiGHS (LP/MIP)، خوارزمية Hungarian، محاكاة PERT مُبذورة، مصفوفات قرار مع اختبار متانة.</p>
+          <p className="subtle">حلّالون حقيقيون يعملون محليًا: HiGHS (LP/MIP)، Dijkstra وA* مع تحقق مستقل، خوارزمية Hungarian، محاكاة PERT مُبذورة، مصفوفات قرار مع اختبار متانة.</p>
         </div>
         <div className="os-tabs" role="tablist">
           {tabs.map((t) => <button key={t.id} type="button" role="tab" aria-selected={tab === t.id} className={`os-tab${tab === t.id ? ' is-active' : ''}`} onClick={() => setTab(t.id)}><t.icon size={14} aria-hidden="true" /> {t.label}</button>)}
@@ -300,6 +481,132 @@ export function IntelligenceHub() {
               <h4>تحقق مستقل للقيود (لا يثق بالحلّال)</h4>
               <ul className="os-validation">{scheduleResult.validation.map((line) => <li key={line}><CheckCircle2 size={12} aria-hidden="true" />{line}</li>)}</ul>
               <details><summary className="os-lp-summary">نموذج LP المولّد (HiGHS)</summary><pre className="os-pre">{scheduleResult.lp}</pre></details>
+            </div>
+          )}
+        </div>
+      )}
+
+      {tab === 'graph' && (
+        <div className="os-graph">
+          <div className="os-schedule-head">
+            <div>
+              <h2>أقصر مسار مع صياغة صريحة وتحقق مستقل</h2>
+              <p className="subtle">أدخل رسمًا موزونًا صريحًا. يبني WORA الصياغة أولًا، ثم يشغّل Dijkstra أو A*. لا يُقبل وزن سالب، ونتيجة A* تُقارن بخط أساس Dijkstra مستقل قبل ادعاء الأمثلية.</p>
+            </div>
+            <button type="button" className="button primary" disabled={graphBusy} onClick={() => void runGraph()}>{graphBusy ? <LoaderCircle size={16} className="os-spin" aria-hidden="true" /> : <Play size={16} aria-hidden="true" />} صياغة وحل</button>
+          </div>
+          <div className="os-decision-grid">
+            <div className="os-table-wrap panel panel-pad">
+              <h3>الرسم الموزون (JSON)</h3>
+              <textarea className="os-graph-editor" dir="ltr" rows={10} value={graphEdges} onChange={(e) => setGraphEdges(e.target.value)} aria-label="حواف الرسم الموزون" spellCheck={false} />
+              <div className="os-mc-foot">
+                <label className="os-inline-field">البداية<input dir="auto" value={graphStart} onChange={(e) => setGraphStart(e.target.value)} aria-label="عقدة البداية" /></label>
+                <label className="os-inline-field">النهاية<input dir="auto" value={graphGoal} onChange={(e) => setGraphGoal(e.target.value)} aria-label="عقدة النهاية" /></label>
+                <label className="os-inline-field">الخوارزمية
+                  <select value={graphAlgorithm} onChange={(e) => setGraphAlgorithm(e.target.value as 'auto' | 'dijkstra' | 'a_star')} aria-label="الخوارزمية">
+                    <option value="dijkstra">Dijkstra</option>
+                    <option value="a_star">A*</option>
+                    <option value="auto">تلقائي</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+            <div className="os-table-wrap panel panel-pad">
+              <h3>الدليل الإرشادي (اختياري)</h3>
+              <textarea className="os-graph-editor" dir="ltr" rows={10} value={graphHeuristic} onChange={(e) => setGraphHeuristic(e.target.value)} aria-label="دالة الدليل الإرشادي" spellCheck={false} />
+              <p className="subtle os-disclaimer">A* يُتحقق دائمًا مقابل Dijkstra مستقل. دليل غير مقبول لا يُحوّل النتيجة إلى «أمثل».</p>
+            </div>
+          </div>
+          {graphFormulation && (
+            <div className="os-result panel panel-pad">
+              <div className="os-result-head">
+                {graphFormulation.executable ? <CheckCircle2 size={18} className="os-ok" aria-hidden="true" /> : <CircleAlert size={18} className="os-bad" aria-hidden="true" />}
+                <h3>الصياغة: {graphFormulation.problemClass} — {graphFormulation.executable ? 'قابلة للتنفيذ' : 'ناقصة'}</h3>
+              </div>
+              <p><strong>الهدف:</strong> {graphFormulation.objective}</p>
+              <p><strong>الحلّال:</strong> {graphFormulation.solver}</p>
+              <p><strong>المتغيرات:</strong> {graphFormulation.decisionVariables.join('، ')}</p>
+              <p><strong>القيود:</strong> {graphFormulation.constraints.join('؛ ')}</p>
+              <p className="subtle"><strong>البصمة:</strong> <span dir="ltr">{graphFormulation.digest.slice(0, 24)}…</span></p>
+              {graphFormulation.missingInputs.length > 0 && <ul className="os-validation">{graphFormulation.missingInputs.map((item) => <li key={item}><CircleAlert size={12} aria-hidden="true" />{item}</li>)}</ul>}
+            </div>
+          )}
+          {graphResult && (
+            <div className="os-result panel panel-pad">
+              <div className="os-result-head">
+                {graphResult.verification.passed ? <CheckCircle2 size={18} className="os-ok" aria-hidden="true" /> : <CircleAlert size={18} className="os-bad" aria-hidden="true" />}
+                <h3>{graphResult.status === 'optimal' ? `مسار أمثل — التكلفة ${graphResult.totalCost}` : graphResult.status === 'no_path' ? 'لا يوجد مسار' : 'النتيجة لم تُتحقق'}</h3>
+              </div>
+              <p><strong>المسار:</strong> <span dir="ltr">{graphResult.path.join(' → ') || '—'}</span></p>
+              <p><strong>الخوارزمية:</strong> {graphResult.algorithm}{graphResult.heuristicUsed ? ' (مع دليل إرشادي)' : ''} · <strong>العقد الموسّعة:</strong> {graphResult.expanded} · <strong>خط أساس Dijkstra:</strong> {String(graphResult.baselineCost ?? '—')}</p>
+              <h4>تحقق مستقل</h4>
+              <ul className="os-validation">{graphResult.verification.checks.map((check) => <li key={check.id}><span className={check.status === 'passed' ? 'os-ok' : 'os-bad'}>{check.status === 'passed' ? '✓' : '✕'}</span> {check.description} — <span dir="ltr">{check.evidence}</span></li>)}</ul>
+              {graphResult.verification.failures.length > 0 && <ul className="os-validation">{graphResult.verification.failures.map((failure) => <li key={failure}><ShieldAlert size={12} aria-hidden="true" />{failure}</li>)}</ul>}
+              <p className="subtle os-disclaimer">{graphResult.limitations.join(' ')}</p>
+            </div>
+          )}
+        </div>
+      )}
+
+      {tab === 'advanced' && (
+        <div className="os-graph">
+          <div className="os-schedule-head">
+            <div>
+              <h2>مختبر التحسين المتقدم: تدفق، توجيه، باريتو، بايز ومحاكاة</h2>
+              <p className="subtle">كل تشغيل يبني صياغة صريحة أولًا، ثم ينفّذ خوارزمية حقيقية ويعيد تحققًا مستقلًا. النتائج الاستدلالية والتقريبية تُوسم صراحة ولا تُقدَّم كأمثلية عالمية.</p>
+            </div>
+            <button type="button" className="button primary" disabled={advancedBusy} onClick={() => void runAdvanced()}>
+              {advancedBusy ? <LoaderCircle size={16} className="os-spin" aria-hidden="true" /> : <Play size={16} aria-hidden="true" />} صياغة وتنفيذ
+            </button>
+          </div>
+          <div className="os-decision-grid">
+            <div className="os-table-wrap panel panel-pad">
+              <h3>نوع المسألة</h3>
+              <label className="os-inline-field">الطريقة
+                <select value={advancedKind} onChange={(e) => chooseAdvancedKind(e.target.value as AdvancedProblemKind)} aria-label="نوع المسألة المتقدمة">
+                  {Object.entries(ADVANCED_LABELS).map(([kind, label]) => <option key={kind} value={kind}>{label}</option>)}
+                </select>
+              </label>
+              <h3>النموذج (JSON)</h3>
+              <textarea className="os-graph-editor" dir="ltr" rows={16} value={advancedModel} onChange={(e) => setAdvancedModel(e.target.value)} aria-label="نموذج المسألة المتقدمة" spellCheck={false} />
+            </div>
+            <div className="os-table-wrap panel panel-pad">
+              <h3>ما الذي يتحقق منه WORA</h3>
+              <ul className="os-validation">
+                <li><CheckCircle2 size={12} aria-hidden="true" /> التدفق: الحفظ والسعة وأقصى تدفق = أدنى قطع.</li>
+                <li><CheckCircle2 size={12} aria-hidden="true" /> التوجيه: زيارة كل عقدة/عميل مرة واحدة، السعة، وإعادة حساب المسافة.</li>
+                <li><CheckCircle2 size={12} aria-hidden="true" /> باريتو: عدم سيطرة أي حل على نقاط الجبهة، وترتيب الأوزان.</li>
+                <li><CheckCircle2 size={12} aria-hidden="true" /> بايز: معادلات Posterior وفاصل الثقة وتغيّر الأولوية.</li>
+                <li><CheckCircle2 size={12} aria-hidden="true" /> المحاكاة: البذرة، الترتيب الكمي، وإعادة التشغيل المطابقة.</li>
+              </ul>
+              <p className="subtle os-disclaimer">TSP دقيق حتى حد صغير فقط؛ فوقه نتيجة تقريبية صريحة. VRP وClarke–Wright تقريبية. الفواصل البايزية مشروطة بالنموذج وليست ضمانًا واقعيًا.</p>
+            </div>
+          </div>
+          {advancedFormulation && (
+            <div className="os-result panel panel-pad">
+              <div className="os-result-head">
+                {advancedFormulation.executable ? <CheckCircle2 size={18} className="os-ok" aria-hidden="true" /> : <CircleAlert size={18} className="os-bad" aria-hidden="true" />}
+                <h3>الصياغة: {advancedFormulation.problemClass} — {advancedFormulation.executable ? 'قابلة للتنفيذ' : 'ناقصة'}</h3>
+              </div>
+              <p><strong>الهدف:</strong> {advancedFormulation.objective}</p>
+              <p><strong>الحلّال:</strong> {advancedFormulation.solver}</p>
+              <p><strong>المتغيرات:</strong> {advancedFormulation.decisionVariables.join('، ')}</p>
+              <p><strong>القيود:</strong> {advancedFormulation.constraints.join('؛ ')}</p>
+              <p className="subtle"><strong>البصمة:</strong> <span dir="ltr">{advancedFormulation.digest.slice(0, 24)}…</span></p>
+              {advancedFormulation.missingInputs.length > 0 && <ul className="os-validation">{advancedFormulation.missingInputs.map((item) => <li key={item}><CircleAlert size={12} aria-hidden="true" />{item}</li>)}</ul>}
+            </div>
+          )}
+          {advancedResult && (
+            <div className="os-result panel panel-pad">
+              <div className="os-result-head">
+                {advancedResult.verification.passed ? <CheckCircle2 size={18} className="os-ok" aria-hidden="true" /> : <CircleAlert size={18} className="os-bad" aria-hidden="true" />}
+                <h3>{ADVANCED_LABELS[advancedKind]} — الحالة: {advancedResult.status}</h3>
+              </div>
+              <h4>تحقق مستقل</h4>
+              <ul className="os-validation">{advancedResult.verification.checks.map((check) => <li key={check.id}><span className={check.status === 'passed' ? 'os-ok' : 'os-bad'}>{check.status === 'passed' ? '✓' : '✕'}</span> {check.description} — <span dir="ltr">{check.evidence}</span></li>)}</ul>
+              {advancedResult.verification.failures.length > 0 && <ul className="os-validation">{advancedResult.verification.failures.map((failure) => <li key={failure}><ShieldAlert size={12} aria-hidden="true" />{failure}</li>)}</ul>}
+              <details><summary className="os-lp-summary">النتيجة الكاملة (JSON)</summary><pre className="os-pre" dir="ltr">{JSON.stringify(advancedResult, null, 2)}</pre></details>
+              {advancedResult.limitations && <p className="subtle os-disclaimer">{advancedResult.limitations.join(' ')}</p>}
             </div>
           )}
         </div>
@@ -550,6 +857,78 @@ export function IntelligenceHub() {
             ))}
           </div>
           {playbooks?.length === 0 && <div className="os-empty"><CheckCircle2 size={24} aria-hidden="true" /><p>لا توجد playbooks بعد — أكمل مهمة جدولة/تحسين من مركز التنفيذ، وستظهر هنا بعد أن يعيد WORA التحقق منها.</p></div>}
+        </div>
+      )}
+
+      {tab === 'lessons' && (
+        <div className="os-lessons">
+          <div className="os-schedule-head">
+            <div>
+              <h2>دروس من تجارب متحقق منها — بلا ترقية تلقائية</h2>
+              <p className="subtle">الدرس يبدأ مرشحًا، ثم يُقيَّم مقابل سجل تحقق مستقل، ثم يرقّيه مشرف صراحةً إلى ذاكرة دلالية. السحب يحذف الذاكرة ويحفظ السجل. الفاعلية تُحسب من نتائج حقيقية فقط.</p>
+            </div>
+            <div className="os-schedule-actions">
+              <select value={lessonStatus} onChange={(event) => { const next = event.target.value as Lesson['status'] | 'all'; setLessonStatus(next); void loadLessons(next); }} aria-label="تصفية الدروس">
+                {['all', 'candidate', 'tested', 'promoted', 'rejected', 'revoked'].map((status) => <option key={status} value={status}>{status}</option>)}
+              </select>
+              <button type="button" className="button ghost small" onClick={() => void loadLessons(lessonStatus)} disabled={lessonBusy}>تحديث</button>
+            </div>
+          </div>
+          {lessons === null && <p className="os-loading"><LoaderCircle size={16} className="os-spin" aria-hidden="true" /> جارٍ التحميل…</p>}
+          {lessons?.length === 0 && <div className="os-empty"><GraduationCap size={24} aria-hidden="true" /><p>لا توجد دروس بهذه الحالة. تُجمع الدروس المرشحة بعد مهام مكتملة بتحقق مستقل.</p></div>}
+          <div className="os-tool-grid">
+            {lessons?.map((lesson) => (
+              <article key={lesson.id} className="panel panel-pad">
+                <div className="os-memory-item-head"><span className="os-spec-chip">{lesson.status}</span><small className="subtle">v{lesson.version} · ثقة {Math.round(lesson.confidence * 100)}%</small></div>
+                <h3 dir="auto">{lesson.title}</h3>
+                <p dir="auto" className="subtle">{lesson.content.slice(0, 320)}</p>
+                <p className="subtle">الفاعلية: {lesson.outcomeCount ? `${Math.round(lesson.effectiveness * 100)}% من ${lesson.outcomeCount} نتيجة` : 'لا نتائج بعد'} · المصدر: {lesson.provenance}</p>
+                <div className="os-approval-actions">
+                  {lesson.status === 'candidate' && <button type="button" className="button small" disabled={lessonBusy} onClick={() => void lessonAction(lesson.id, 'evaluate')}>تقييم</button>}
+                  {lesson.status === 'tested' && <button type="button" className="button primary small" disabled={lessonBusy} onClick={() => void lessonAction(lesson.id, 'promote')}>ترقية</button>}
+                  {(lesson.status === 'candidate' || lesson.status === 'tested') && <button type="button" className="button ghost small danger" disabled={lessonBusy} onClick={() => void lessonAction(lesson.id, 'reject')}>رفض</button>}
+                  {lesson.status === 'promoted' && <button type="button" className="button ghost small danger" disabled={lessonBusy} onClick={() => void lessonAction(lesson.id, 'revoke')}>سحب</button>}
+                  {lesson.status === 'promoted' && <button type="button" className="button ghost small" disabled={lessonBusy} onClick={() => void lessonAction(lesson.id, 'success')}>نتيجة ناجحة</button>}
+                  {lesson.status === 'promoted' && <button type="button" className="button ghost small danger" disabled={lessonBusy} onClick={() => void lessonAction(lesson.id, 'failure')}>نتيجة فاشلة</button>}
+                  <button type="button" className="button ghost small" onClick={() => void toggleLessonHistory(lesson.id)}>السجل</button>
+                </div>
+                {lessonHistory[lesson.id] && <ul className="os-memory-versions">{lessonHistory[lesson.id]!.map((event) => <li key={event.id}><code>{event.action}</code> · {event.actor} · {new Date(event.createdAt).toLocaleString('ar')}</li>)}</ul>}
+              </article>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {tab === 'benchmarks' && (
+        <div className="os-benchmarks">
+          <div className="os-schedule-head">
+            <div>
+              <h2>مقاييس علمية قابلة للتكرار</h2>
+              <p className="subtle">مقارنات على بيانات ثابتة وأدوات حقيقية. النتائج تقيس الصحة والزمن؛ لا تدّعي تحسينًا غير مقاس. القيود مذكورة مع كل بند.</p>
+            </div>
+            <button type="button" className="button primary" onClick={() => void runBenchmarks()} disabled={benchmarkBusy}>
+              {benchmarkBusy ? <LoaderCircle size={15} className="os-spin" aria-hidden="true" /> : <Play size={15} aria-hidden="true" />} تشغيل المجموعة
+            </button>
+          </div>
+          {benchmarks?.[0] && <p className="subtle">آخر تشغيل: {benchmarks[0].summary.passed}/{benchmarks[0].summary.total} ناجح · {benchmarks[0].summary.totalMs} ms · إصدار {benchmarks[0].suiteVersion}</p>}
+          {benchmarks?.length === 0 && <p className="subtle">لا توجد عمليات بعد — شغّل المجموعة.</p>}
+          {benchmarks?.[0]?.results.map((result) => (
+            <details key={result.id} className="os-handoffs">
+              <summary>{result.correctness ? '✓' : '✗'} {result.name} · {result.timeMs} ms · {result.toolCalls} نداء</summary>
+              <p className="subtle">المرجع: {result.reference}</p>
+              <p className="subtle">البدائل: {result.alternatives.join(' · ')}</p>
+              <ul className="os-acceptance">{result.limitations.map((limitation) => <li key={limitation}>{limitation}</li>)}</ul>
+              <pre className="os-pre">{JSON.stringify(result.evidence, null, 2).slice(0, 3000)}</pre>
+            </details>
+          ))}
+          {benchmarkDomains && (
+            <details className="os-handoffs">
+              <summary>خريطة القدرات العلمية ({benchmarkDomains.length} مجالًا)</summary>
+              <ul className="os-acceptance">
+                {benchmarkDomains.map((domain) => <li key={domain.domain}><strong>{domain.domain}</strong>: منفذ {domain.implemented.length} · جزئي {domain.partial.length} · مفقود {domain.missing.length}</li>)}
+              </ul>
+            </details>
+          )}
         </div>
       )}
 

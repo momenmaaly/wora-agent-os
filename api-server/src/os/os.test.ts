@@ -4,7 +4,7 @@
  */
 import { test, before } from 'node:test';
 import assert from 'node:assert/strict';
-import { rmSync, mkdirSync } from 'node:fs';
+import { closeSync, readFileSync, rmSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
@@ -15,6 +15,7 @@ mkdirSync(TEST_WORKSPACE, { recursive: true });
 
 const { solveAssignment, solveLp, solveEmployeeSchedule } = await import('./ortools.js');
 const { runTool, listTools } = await import('./tools.js');
+const { openWorkspaceFile, resolveInWorkspace, workspacePath } = await import('./workspace.js');
 const { createAgent, listAgents, pickAgent, deleteAgent } = await import('./registry.js');
 const { addMemory, searchMemories, listMemories, deleteMemory } = await import('./memory.js');
 const { createMission, executeMission, getMissionDetail, getOsState, sampleEmployeeInput } = await import('./orchestrator.js');
@@ -93,10 +94,69 @@ test('unknown tool returns structured error', async () => {
   assert.match(result.error ?? '', /Unknown tool/);
 });
 
+test('workspace: traversal and symlink escapes are rejected', () => {
+  const ws = 'wora-path-test';
+  const root = workspacePath(ws);
+  const outside = path.join(os.tmpdir(), `wora-outside-${process.pid}`);
+  mkdirSync(outside, { recursive: true });
+  writeFileSync(path.join(outside, 'secret.txt'), 'outside secret');
+  try {
+    symlinkSync(outside, path.join(root, 'escape-dir'), 'dir');
+    symlinkSync(path.join(outside, 'secret.txt'), path.join(root, 'escape-file'), 'file');
+    symlinkSync(path.join(outside, 'missing.txt'), path.join(root, 'broken-link'), 'file');
+    assert.throws(() => resolveInWorkspace(ws, '../wora-outside'), /escapes the sandboxed workspace/);
+    assert.throws(() => resolveInWorkspace(ws, 'escape-dir/secret.txt'), /escapes the sandboxed workspace/);
+    assert.throws(() => resolveInWorkspace(ws, 'escape-file'), /escapes the sandboxed workspace/);
+    assert.throws(() => resolveInWorkspace(ws, 'broken-link'), /escapes the sandboxed workspace/);
+    const newFile = resolveInWorkspace(ws, 'new/subdir/file.txt');
+    assert.equal(path.relative(root, newFile), path.join('new', 'subdir', 'file.txt'));
+  } finally {
+    rmSync(outside, { recursive: true, force: true });
+    rmSync(path.join(root, 'escape-dir'), { force: true });
+    rmSync(path.join(root, 'escape-file'), { force: true });
+    rmSync(path.join(root, 'broken-link'), { force: true });
+  }
+});
+
+test('workspace: descriptor-verified opens reject final symlinks and support safe writes', () => {
+  const ws = 'wora-open-test';
+  const root = workspacePath(ws);
+  const outside = path.join(os.tmpdir(), `wora-open-outside-${process.pid}`);
+  mkdirSync(root, { recursive: true });
+  mkdirSync(outside, { recursive: true });
+  try {
+    const write = openWorkspaceFile(ws, 'safe.txt', 'write');
+    writeFileSync(write.fd, 'safe-content', 'utf8');
+    closeSync(write.fd);
+    const read = openWorkspaceFile(ws, 'safe.txt', 'read');
+    try { assert.equal(readFileSync(read.fd, 'utf8'), 'safe-content'); } finally { closeSync(read.fd); }
+
+    writeFileSync(path.join(outside, 'secret.txt'), 'outside');
+    symlinkSync(path.join(outside, 'secret.txt'), path.join(root, 'final-link'), 'file');
+    assert.throws(() => openWorkspaceFile(ws, 'final-link', 'read'), /ELOOP|symbolic link|escapes/);
+    assert.throws(() => openWorkspaceFile(ws, 'final-link', 'write'), /ELOOP|symbolic link|escapes/);
+  } finally {
+    rmSync(outside, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('permission gate blocks tools without the grant', async () => {
   const result = await runTool('system.diagnostics', {}, { workspaceId: WS, actor: 'test', permissions: new Set() });
   assert.equal(result.ok, false);
   assert.match(result.error ?? '', /host:read/);
+});
+
+test('execution boundary enforces the agent tool allowlist even with wildcard permissions', async () => {
+  const denied = await runTool('system.diagnostics', {}, {
+    workspaceId: WS, actor: 'test', permissions: new Set(['*']), toolAllowlist: new Set(['text.extract_summary']),
+  });
+  assert.equal(denied.ok, false);
+  assert.match(denied.error ?? '', /not enabled for this agent/);
+  const allowed = await runTool('system.diagnostics', {}, {
+    workspaceId: WS, actor: 'test', permissions: new Set(['host:read']), toolAllowlist: new Set(['system.diagnostics']),
+  });
+  assert.equal(allowed.ok, true);
 });
 
 test('system.diagnostics returns real host signals', async () => {
@@ -181,7 +241,7 @@ test('mission: build a working web application — high-risk QA step waits for h
   assert.equal(done.status, 'completed');
   assert.equal(done.tasks.find((t) => t.tool === 'host.exec')!.status, 'completed');
   assert.ok(done.tasks.every((t) => t.status === 'completed'));
-  // Autopilot policy opts out of the gate entirely for future missions — documented behavior.
+  // Autopilot remains a preference, but it cannot bypass class C approvals.
   setAutonomyPolicy(WS, 'autopilot', 'test');
   setAutonomyPolicy(WS, 'balanced', 'test');
 });
@@ -239,15 +299,25 @@ test('mission: a denied high-risk step fails loudly and never executes', { timeo
   assert.match(qa.detail, /test denial/);
 });
 
+test('governance: a requester cannot approve their own high-risk request', async () => {
+  const { createApproval, decideApproval } = await import('./governance.js');
+  const approval = createApproval({
+    workspaceId: WS, actionSummary: 'self approval test', risk: 'high', toolDescription: 'Test action', toolInput: { target: 'self-test' }, requestedBy: 'self-requester',
+  });
+  assert.throws(() => decideApproval(WS, approval.id, 'approved', 'self', 'self-requester'), /cannot approve/);
+  const decided = decideApproval(WS, approval.id, 'approved', 'independent', 'independent-reviewer');
+  assert.equal(decided.status, 'approved');
+});
+
 /* ─── Governance: autonomy policy + revocable devices ─── */
-test('governance: autonomy policy round-trips and high-risk gate follows it', async () => {
+test('governance: autonomy policy round-trips and autopilot cannot bypass high-risk', async () => {
   const { getAutonomyPolicy, setAutonomyPolicy, requiresHumanApproval } = await import('./governance.js');
   assert.equal(getAutonomyPolicy(WS), 'balanced');
   assert.equal(requiresHumanApproval(WS, 'high'), true);
   assert.equal(requiresHumanApproval(WS, 'medium'), false);
   setAutonomyPolicy(WS, 'autopilot', 'test');
   assert.equal(getAutonomyPolicy(WS), 'autopilot');
-  assert.equal(requiresHumanApproval(WS, 'high'), false);
+  assert.equal(requiresHumanApproval(WS, 'high'), true);
   setAutonomyPolicy(WS, 'balanced', 'test');
   assert.equal(getAutonomyPolicy(WS), 'balanced');
 });
@@ -385,11 +455,11 @@ test('memory: owner-visibility records are hidden from other actors; workspace r
   assert.ok(deleteMemory(ws, secret.id, 'alice'));
 });
 
-test('memory: writes snapshot create/delete versions; TTL hides expired records', async () => {
+test('memory: writes create snapshots; TTL hides expired records', async () => {
   const { listMemoryVersions } = await import('./memory.js');
   const ws = 'wora-test-memver';
   const record = addMemory({ workspaceId: ws, scope: 'project', scopeId: 'p1', content: 'v1 content', actor: 'qa' });
-  const versions = listMemoryVersions(ws, record.id, 'qa');
+  const versions = listMemoryVersions(ws, record.id, 'qa') ?? [];
   assert.ok(versions.some((v) => v.action === 'create'));
   const expiring = addMemory({ workspaceId: ws, scope: 'episodic', content: 'temporary note', ttlDays: 1, actor: 'qa' });
   const db = (await import('./db.js')).getOsDb();

@@ -4,7 +4,7 @@ Wora is an Arabic-first workspace for operating an AI team. It opens directly in
 
 ## WORA OS core (execution platform)
 
-Beyond the workspace UI, this branch includes the **WORA OS core** — a real execution platform: a persistent agent registry (18 seeded specializations + custom agents), a mission orchestrator with review gates and mandatory handoff contracts, 16 permissioned tools (HiGHS LP/MIP, Hungarian assignment, Monte Carlo, host diagnostics, sandboxed code generation with green `node --test` evidence, security scanning), scoped memory with audit, virtual organization building, and four new worlds in the UI: **مركز التنفيذ** (`#execution`), **الوكلاء والمنظمات** (`#agents`), **الذكاء التشغيلي** (`#intelligence`) and **النظام** (`#system`). The persistent **Executive Command** bar launches real missions.
+Beyond the workspace UI, this branch includes the **WORA OS core** — a real execution platform: a persistent agent registry (18 seeded specializations + custom agents), a mission orchestrator with review gates and mandatory handoff contracts, permissioned tools (HiGHS LP/MIP, Hungarian assignment, seeded Monte Carlo, max/min-cost flow, bipartite matching, TSP, VRP, Pareto analysis, conjugate Bayesian inference, queue and scenario simulation, host diagnostics, sandboxed code generation with green `node --test` evidence, security scanning), scoped memory with audit, virtual organization building, and four new worlds in the UI: **مركز التنفيذ** (`#execution`), **الوكلاء والمنظمات** (`#agents`), **الذكاء التشغيلي** (`#intelligence`) and **النظام** (`#system`). The persistent **Executive Command** bar launches real missions.
 
 Verified end-to-end on this branch: computer-diagnostics mission, agent creation mission, web-app build mission (generate → scan → independent QA, all green), organization build from one objective, and the 20 employees × 5 shifts cost-minimizing schedule (total cost 480). See **docs/OS_CORE.md** for the full engineering record, architecture decisions, security model and honest list of what is not implemented.
 
@@ -18,6 +18,69 @@ curl http://localhost:4000/api/os/usage       # AI token/cost ledger (admin-key 
 ```
 
 State is persisted under `WORA_OS_DB` (default `api-server/data/wora-os.db`, SQLite via `node:sqlite`); generated apps, reports and mission artifacts live under `WORA_WORKSPACE` (default `api-server/data/workspace`). Both are git- and docker-ignored.
+
+SQLite is a single-writer store. Run exactly **one** API replica against the `os-data` volume. The API takes an atomic, fenced heartbeat lease before application schema/migration writes; a second process fails fast, and a process that loses renewal closes the database and refuses further writes. Scaling the API horizontally requires moving the OS store to PostgreSQL first. Workspace file access canonicalizes paths and rejects symlink escapes; the file-read tool and scaffold writes additionally use descriptor-verified opens; `web.fetch_read`, plugin HTTP tools and HTTP MCP all use the hardened outbound policy (private/metadata blocking, pinned DNS, revalidated redirects, streaming decompressed byte caps). Local marketplaces are limited to `WORA_EXTENSIONS_LOCAL_ROOTS`; `file://` sources enforce the same roots and Git refs are validated before every fetch. Stdio MCP is **disabled by default**; `WORA_MCP_STDIO_MODE=official` permits only the bundled trusted reference server, never community code. High-risk agent capabilities and plugin approvals require an admin, and a requester cannot approve their own high-risk request.
+
+## Cloud computer & browser runtime
+
+The OS can start real, persistent execution sessions and operate a real Chromium browser through the same Tool Registry, permissions and audit path as every other tool.
+
+- **Cloud computer** tools: `cloud.computer_start`, `cloud.exec`, `cloud.write_file`, `cloud.read_file`, `cloud.list_files`, `cloud.computer_stop`. Docker is the production provider: `--network none` by default, read-only root, dropped capabilities, `no-new-privileges`, CPU/memory/PID limits, and only the session workspace mounted. The process provider is an explicit, non-isolated development fallback; it is never selected in production unless `WORA_CLOUD_ALLOW_PROCESS_PROVIDER=1`, and that override is for controlled development deployments only.
+- **Browser automation** tools: `browser.open`, `browser.inspect`, `browser.screenshot`, `browser.click`, `browser.type`, `browser.select`, `browser.scroll`, `browser.wait`, `browser.research`, `browser.close`. In production Chromium runs inside a dedicated Docker container: read-only image, only the session workspace mounted, dropped capabilities, CPU/memory/PID limits, an internal network with no direct egress, and a connection-time validating proxy. The proxy resolves each destination itself, rejects loopback/private/link-local/cloud-metadata targets, ignores proxy bypass, forces the upstream `Host` header to the validated URL host, refuses plain `ws://` upgrades, and revalidates every redirect, subresource and CONNECT tunnel (including `wss`). In production the proxy listens on a per-session Unix socket inside the shared runtime volume; only the browser container mounts it, and the container bridges it to Chromium over loopback. There is no open TCP proxy port. Chromium's own sandbox is required by default; the container fails closed when the host cannot provide it.
+- **Financial actions**: `browser.click`, `browser.type` and `browser.select` are reclassified as high-risk class C at execution time when their target is financial. They require a payload-bound, single-use approval; direct `/api/os/runtime/sessions/:id/browser` calls need an approval created through `/api/os/runtime/browser-approvals`. A denial, replay, payload change or session mismatch is rejected and audited.
+- **Artifacts**: real PNG screenshots and Markdown research documents are stored with workspace/session ownership and served through `/api/os/runtime/artifacts/:id`.
+- **UI**: the runtime panel is available on `#brief`, `#run`, `#library` and `#system` with live provider status, session start/stop, and downloadable screenshot/document artifacts. Arabic and English labels are both wired.
+- **Security**: sessions are workspace-scoped; non-admin users can only control sessions they created. Agent tool execution cannot enable network access for a cloud computer; only an explicit admin API request can. Session TTLs are enforced when runtime status is read, browser containers and proxy listeners are cleaned at boot and stop, and all actions emit redacted runtime events plus audit records. Application secrets are never passed to a browser child or container.
+
+Configuration:
+
+| Variable | Purpose |
+| --- | --- |
+| `WORA_CLOUD_PROVIDER` | `docker` in production; `auto`/`process` remain development options. Production boot rejects `process`. |
+| `WORA_CLOUD_IMAGE` | Docker runtime image (default `node:22-alpine`). Pulling is opt-in through `WORA_CLOUD_DOCKER_PULL=1`. |
+| `WORA_CLOUD_ALLOW_PROCESS_PROVIDER` | Explicitly enables the non-isolated process provider outside development. |
+| `WORA_CLOUD_MAX_SESSIONS` | Per-workspace active cloud + browser session cap (default 8). |
+| `WORA_RUNTIME_ROOT` | Absolute root for session workspaces and screenshots; shared with the dedicated runtime daemon. |
+| `WORA_BROWSER_PROVIDER` | `docker` in production; `process` is development-only and rejected in production. |
+| `WORA_BROWSER_IMAGE` | Isolated browser image (default `wora-browser-runtime:1.0.0`). Build it with `docker build -f docker/browser-runtime.Dockerfile -t wora-browser-runtime:1.0.0 .` from `api-server` after `npm run build`. |
+| `WORA_BROWSER_SANDBOX` | `chromium` (default and required in production) or `container` (container-only boundary, explicitly disabled in production unless `WORA_BROWSER_ALLOW_CONTAINER_SANDBOX=1`). |
+| `WORA_BROWSER_EXECUTABLE_PATH` | Chromium/Chrome path for the development process provider. When set, it must exist; there is no silent fallback. |
+| `DOCKER_HOST` | Production must point at the dedicated `runtime-docker` TLS endpoint, not the host socket. |
+| `DOCKER_TLS_VERIFY` / `DOCKER_CERT_PATH` | Required with a TCP Docker endpoint. |
+| `WORA_API_IMAGE` | Image tag shared by the API, keyring init, runtime bootstrap and worker services. |
+| `WORA_OS_WORKSPACE_ID` | Workspace polled by the durable `os-worker` service. |
+
+Verified with `api-server/src/runtime/browser-proxy.test.ts` (real proxy listener, private/metadata rejection, DNS-rebinding revalidation, redirect revalidation, Host-header pinning, client-subnet restriction, plain-WebSocket refusal, CONNECT policy), `api-server/src/runtime/runtime.test.ts` (real development Chromium, financial class C approval and replay rejection, mission lifecycle, expiry and API authorization), `api-server/src/runtime/runtime-docker.test.ts` (real Docker computer and real Docker browser, internal network, proxy-only page access, screenshot and cleanup) and `client/tests/runtime-workspace.test.mjs` (real UI start → screenshot → refresh → download preview → stop against the preview API).
+
+### Chromium isolation status
+
+This is deliberately separated from container isolation; they are not equivalent.
+
+- **Verified on the current host:** the required Chromium sandbox probe fails, and the runtime fails closed: it reports the browser unavailable and refuses to start a browser session in the default `chromium` mode.
+- **Verified on the current host with real containers:** Docker cloud-computer isolation, Docker browser container isolation, the internal network with no direct egress, proxy-only page access, screenshots, cleanup, proxy SSRF/DNS-rebinding/redirect/Host-header/client-subnet tests, and financial class C approval/replay/session-binding tests.
+- **Not verified on the current host:** successful browsing while Chromium's own user-namespace/setuid sandbox is active. That mode cannot be claimed as working here.
+- **Container-only mode** (`WORA_BROWSER_SANDBOX=container` plus `WORA_BROWSER_ALLOW_CONTAINER_SANDBOX=1`) is a weaker boundary. It is explicitly test-only in this environment and must not be presented as equivalent to Chromium's own sandbox.
+
+Secure production requirements:
+
+- A Linux host with unprivileged user namespaces available to Docker containers.
+- A Docker seccomp/AppArmor profile that permits the namespace and setuid operations Chromium's sandbox needs.
+- A dedicated Docker runtime daemon (`runtime-docker` in `docker-compose.prod.yml`) with the `wora-browser-runtime:1.0.0` image built by the one-shot `runtime-bootstrap` service. The API receives only the TLS Docker endpoint, never the host socket.
+- A host where the image's Chromium sandbox helper passes the probe. If the probe fails, production remains unavailable rather than silently downgrading.
+
+Browser containers need proxy-mediated outbound web access but never direct network access. A host that cannot provide Chromium's sandbox should use an approved container-only deployment only with an explicit risk decision, not as an automatic fallback.
+
+## Release V1 runtime wiring
+
+The production compose file separates the public API from the execution boundary:
+
+- `api` — public HTTP/Socket.IO API, no host Docker socket.
+- `runtime-docker` — dedicated privileged DinD daemon on `wora-runtime-net`; the API connects over mutual TLS.
+- `runtime-bootstrap` — builds the pinned browser image inside that daemon.
+- `keyring-init` — creates the 0600 secret keyring once.
+- `os-worker` — durable mission worker sharing the file-backed SQLite store and runtime volume.
+
+The API fails fast at boot if `WORA_CLOUD_PROVIDER`/`WORA_BROWSER_PROVIDER` are not `docker`, the Docker endpoint is missing or insecure, the runtime root is not writable, Git is missing, the keyring is not managed, or the Docker/Chromium probes fail. `/ready` reports runtime and browser status. See `docs/releases/WORA-V1-DEPLOYMENT.md` for the exact external requirements and backup procedure.
 
 ## Run the workspace
 
@@ -132,7 +195,7 @@ For live generation on the **production API**:
 
 1. Set `STUDIO_PROVIDER` to `google`, `openai`, `anthropic`, or `groq` and supply its matching API key on the server. Optionally set `STUDIO_MODEL` to a supported model listed by `/api/brains`; otherwise the first supported model for that provider is used.
 2. Open a signed workspace session as described below. The same session authorizes Studio, room access and the skill registry. Never put a session, signing secret or provider key in a `VITE_*` variable.
-3. Use the same-origin `/api` proxy, or set `VITE_API_URL` to your API's HTTPS origin and allow the app origin in `ALLOWED_ORIGINS`.
+3. Use the same-origin `/api` proxy, or set `VITE_API_URL` to your API's HTTPS origin and allow the app origin in `ALLOWED_ORIGINS`. `/api/os` and `/api/os/extensions` follow `VITE_API_URL`; set `VITE_OS_API` only when those routes live on a different origin. `npm run build` fails if the Docker/compose/env files drift from this contract.
 
 `GET /api/studio/status` reports live availability for the current signed session. `POST /api/studio/drafts` accepts only the brief with a bearer session, enforces a 4-per-minute quota per user and a shared 60-per-hour deployment quota in Redis, and times out provider calls. Redis quota failures refuse the call rather than sending unmetered requests. Both routes use `Cache-Control: no-store`. Provider output is validated before being returned, and the UI offers local templates if direct generation fails. Only the live mode forwards the brief to the configured provider; generated packs are saved in the browser, not by the Studio API. The local Pro switch is a preview UI switch, not authentication or a production billing entitlement.
 
@@ -149,7 +212,7 @@ The production API must be a long-lived service that supports WebSockets, not a 
 ### Vercel frontend with Railway or another API host
 
 1. Deploy `api-server/Dockerfile` with the repository root as build context. Attach persistent Redis (`noeviction`) and MongoDB. Set `MONGO_URI`, `REDIS_URL`, and `AUTH_SECRET`. Set `ALLOWED_ORIGINS` to the frontend's **exact origin** (scheme and host, no trailing slash). Initialize a new catalog with `node dist/seed.mjs`.
-2. Enable HTTPS and `/socket.io` on the API host. On `client/` in Vercel, set the **public** API origin in `VITE_API_URL` and redeploy. `VITE_SOCKET_URL` is only needed when the socket origin differs. For one HTTPS origin with a reverse proxy, leave both empty.
+2. Enable HTTPS and `/socket.io` on the API host. On `client/` in Vercel, set the **public** API origin in `VITE_API_URL` and redeploy. The OS and extensions clients now use that same origin; set `VITE_OS_API` only if `/api/os` is served elsewhere. `VITE_SOCKET_URL` is only needed when the socket origin differs. For one HTTPS origin with a reverse proxy, leave all three empty. Do not run more than one API replica while the OS database is SQLite.
 3. Supply provider keys server-side for the models you plan to use. For the default roster, the first general-chat reply goes to Aria (Google/Gemini); you can select a different agent or use a room-level model swap. Unconfigured agents can record assignments but cannot generate live replies. Live Studio and model-assisted Director recommendations also require `STUDIO_PROVIDER` and its key. Do not use a preview provider key or integration demo as evidence of a live connection.
 
 ### Open a private workspace

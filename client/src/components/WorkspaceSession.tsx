@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { clearWorkspaceSession, connectWorkspace, isSessionError, readSessionToken } from '../lib/session.js';
+import { clearWorkspaceSession, connectWorkspace, isSessionError, readSessionToken, revokeWorkspaceSession } from '../lib/session.js';
 import { useWoraStore } from '../store/useWoraStore.js';
 import { ConnectionBadge } from './OfficePeople.js';
 
@@ -54,7 +54,7 @@ export function WorkspaceSession() {
     </form>}
     {hasSession && <div className="workspace-session-actions">
       {!connected && !isSessionError(connectionError) && <button className="button" type="button" disabled={pending} onClick={() => window.location.reload()}>إعادة الاتصال</button>}
-      <button className="button" type="button" disabled={pending} onClick={() => { clearWorkspaceSession(); window.location.reload(); }}>إنهاء الجلسة في المتصفح</button>
+      <button className="button" type="button" disabled={pending} onClick={() => { void revokeWorkspaceSession().finally(() => { clearWorkspaceSession(); window.location.reload(); }); }}>إنهاء الجلسة في المتصفح</button>
     </div>}
     <p className="field-note">المشاريع ومسودات الاستوديو محفوظة في هذا المتصفح ولا تُزامَن مع الخادم عند الاتصال.</p>
   </section>;

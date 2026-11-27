@@ -6,7 +6,7 @@
     "node": ">=22.0.0"
   },
   "scripts": {
-    "build": "esbuild src/index.ts --bundle --platform=node --target=node22 --format=esm --packages=external --outfile=dist/index.mjs && esbuild src/scripts/seed.ts --bundle --platform=node --target=node22 --format=esm --packages=external --outfile=dist/seed.mjs && esbuild src/scripts/issue-session.ts --bundle --platform=node --target=node22 --format=esm --packages=external --outfile=dist/issue-session.mjs",
+    "build": "esbuild src/index.ts --bundle --platform=node --target=node22 --format=esm --packages=external --outfile=dist/index.mjs && esbuild src/scripts/seed.ts --bundle --platform=node --target=node22 --format=esm --packages=external --outfile=dist/seed.mjs && esbuild src/scripts/issue-session.ts --bundle --platform=node --target=node22 --format=esm --packages=external --outfile=dist/issue-session.mjs && esbuild src/scripts/os-worker.ts --bundle --platform=node --target=node22 --format=esm --packages=external --outfile=dist/os-worker.mjs && esbuild src/runtime/browser-runner.ts --bundle --platform=node --target=node22 --format=esm --packages=external --outfile=dist/browser-runner.mjs && esbuild src/scripts/init-keyring.ts --bundle --platform=node --target=node22 --format=esm --packages=external --outfile=dist/init-keyring.mjs",
     "typecheck": "tsc --noEmit",
     "start": "node dist/index.mjs",
     "seed:prod": "node dist/seed.mjs",
@@ -14,7 +14,8 @@
     "dev": "NODE_ENV=development tsx watch src/index.ts",
     "dev:preview": "tsx src/scripts/preview-server.ts",
     "seed": "tsx src/scripts/seed.ts",
-    "test": "tsx --test src/lib/*.test.ts src/studio/*.test.ts src/director/*.test.ts src/skills/*.test.ts src/os/*.test.ts"
+    "test": "tsx --test src/lib/*.test.ts src/security/*.test.ts src/studio/*.test.ts src/director/*.test.ts src/skills/*.test.ts src/os/*.test.ts src/extensions/*.test.ts src/runtime/*.test.ts",
+    "worker:os": "tsx src/scripts/os-worker.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.9.0",
@@ -29,6 +30,7 @@
     "mongoose": "^8.15.0",
     "openai": "^7.57.0",
     "pino": "^9.6.0",
+    "playwright-core": "^1.65.1",
     "redis": "^5.12.3",
     "socket.io": "^4.8.1",
     "zod": "^4.6.7"
