@@ -10,7 +10,9 @@ import { useMissionFeed } from '../os/useMissionFeed.js';
 import type { PageId } from '../pages.js';
 import { extensionsApi, type CapabilitySnapshot } from '../extensions/api.js';
 import { Button, EmptyState, RiskBadge, StateMessage, StatusBadge } from '../components/ui.js';
+import { ExperienceModeControl } from '../components/ExperienceModeControl.js';
 import { RuntimePanel } from '../components/RuntimePanel.js';
+import { useExperienceMode } from '../experience/mode.js';
 import { attentionItems, derivePhases, fill, formatDate, missionActivity, missionProgress, nextAction } from './model.js';
 
 type RunTab = 'plan' | 'activity' | 'evidence' | 'artifact' | 'context';
@@ -109,6 +111,7 @@ function Inspector({ detail, task, onOpenArtifact }: { detail: MissionDetail; ta
 export function RunZone({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   const { t, lang } = useI18n();
   const feed = useMissionFeed();
+  const [mode] = useExperienceMode();
   const [tab, setTab] = useState<RunTab>('plan');
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -140,6 +143,13 @@ export function RunZone({ onNavigate }: { onNavigate: (page: PageId) => void }) 
   const activity = useMemo(() => detail ? missionActivity(detail, t) : [], [detail, t]);
   const strategy = detail?.composition?.selectedStrategy ?? detail?.planVersions?.[0]?.strategy ?? null;
   const pendingApproval = detail?.approvals.find((approval) => approval.status === 'pending') ?? null;
+  const visibleTabs: RunTab[] = mode === 'advanced'
+    ? ['plan', 'activity', 'evidence', 'artifact', 'context']
+    : ['plan', 'activity', 'evidence', 'artifact'];
+
+  useEffect(() => {
+    if (mode !== 'advanced' && tab === 'context') setTab('plan');
+  }, [mode, tab]);
 
   useEffect(() => {
     if (!detail) { setArtifact(null); return; }
@@ -226,6 +236,7 @@ export function RunZone({ onNavigate }: { onNavigate: (page: PageId) => void }) 
         </select>
       </label>
       <button type="button" className="icon-button" onClick={() => void feed.refresh()} aria-label={t('op.run.refreshAria')} title={t('op.run.refresh')}><RefreshCw size={16} aria-hidden="true" /></button>
+      <ExperienceModeControl compact />
     </div>
 
     {feed.loading && !feed.missions && <StateMessage variant="loading" title={t('op.loading')} />}
@@ -281,7 +292,7 @@ export function RunZone({ onNavigate }: { onNavigate: (page: PageId) => void }) 
       {notice && <div className="op-notice" role="status"><ShieldCheck size={15} aria-hidden="true" />{notice}</div>}
 
       <div className="op-tabs" role="tablist" aria-label={t('op.run.title')}>
-        {(['plan', 'activity', 'evidence', 'artifact', 'context'] as const).map((entry) => <button key={entry} type="button" role="tab" aria-selected={tab === entry} className={`op-tab${tab === entry ? ' is-active' : ''}`} onClick={() => setTab(entry)}>
+        {visibleTabs.map((entry) => <button key={entry} type="button" role="tab" aria-selected={tab === entry} className={`op-tab${tab === entry ? ' is-active' : ''}`} onClick={() => setTab(entry)}>
           {entry === 'plan' && <GitBranch size={15} aria-hidden="true" />}
           {entry === 'activity' && <Activity size={15} aria-hidden="true" />}
           {entry === 'evidence' && <ShieldCheck size={15} aria-hidden="true" />}
@@ -298,13 +309,13 @@ export function RunZone({ onNavigate }: { onNavigate: (page: PageId) => void }) 
             <div className="op-panel-head"><div><h2>{t('op.run.plan')}</h2><p>{tasks.length} · {t('op.run.tasks')}</p></div></div>
             {tasks.length === 0 && <p className="op-muted">{t('op.run.noTasks')}</p>}
             {tasks.length > 0 && <ol className="op-task-list">{tasks.map((task) => <TaskRow key={task.id} task={task} selected={selectedTask?.id === task.id} onSelect={() => setSelectedTaskId(task.id)} />)}</ol>}
-            <div className="op-replan">
+            {mode !== 'simple' && <div className="op-replan">
               <h3>{t('op.run.replan')}</h3><p>{t('op.run.replanHint')}</p>
               <div className="op-inline-form">
                 <input value={replanReason} onChange={(event) => setReplanReason(event.target.value)} placeholder={t('op.run.replanReason')} aria-label={t('op.run.replanReason')} maxLength={500} />
                 <Button size="small" icon={GitBranch} loading={busy === 'replan'} disabled={replanReason.trim().length < 3} onClick={() => void replan()}>{t('op.run.replanSubmit')}</Button>
               </div>
-            </div>
+            </div>}
           </>}
 
           {tab === 'activity' && <>

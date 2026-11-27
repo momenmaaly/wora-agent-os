@@ -1,23 +1,31 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { ArrowRight, Bot, CircleDashed, GitBranch, Play, RefreshCw, ShieldCheck, Sparkles } from 'lucide-react';
 import { useI18n } from '../i18n/I18nContext.js';
-import { OsApiError, osApi, type OsState, type RuntimeStatus } from '../os/api.js';
+import { OsApiError, osApi, type ApproachPreview, type OsState, type RuntimeStatus } from '../os/api.js';
 import { missionStatusLabel, missionTone } from '../os/labels.js';
 import { useMissionFeed } from '../os/useMissionFeed.js';
 import type { PageId } from '../pages.js';
 import { extensionsApi, type ExtensionSummary } from '../extensions/api.js';
 import { Button, StateMessage, StatusBadge } from '../components/ui.js';
+import { ExperienceModeControl } from '../components/ExperienceModeControl.js';
 import { RuntimePanel } from '../components/RuntimePanel.js';
+import { useExperienceMode } from '../experience/mode.js';
+import { ApproachPreviewPanel } from './ApproachPreview.js';
 import { formatDate } from './model.js';
 
 export function BriefZone({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   const { t, lang } = useI18n();
   const feed = useMissionFeed();
+  const [mode] = useExperienceMode();
   const [draft, setDraft] = useState('');
   const [composite, setComposite] = useState(false);
   const [launching, setLaunching] = useState(false);
   const [launchError, setLaunchError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [preview, setPreview] = useState<ApproachPreview | null>(null);
+  const [previewing, setPreviewing] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const previewRequest = useRef(0);
   const [state, setState] = useState<OsState | null>(null);
   const [runtime, setRuntime] = useState<RuntimeStatus | null>(null);
   const [extensions, setExtensions] = useState<ExtensionSummary | null>(null);
@@ -49,6 +57,33 @@ export function BriefZone({ onNavigate }: { onNavigate: (page: PageId) => void }
   const examples = [t('op.brief.example1'), t('op.brief.example2'), t('op.brief.example3')];
   const loadError = feed.error instanceof OsApiError ? feed.error.message : t('op.brief.loadError');
   const canSubmit = Boolean(draft.trim()) && !launching;
+  const canPreview = mode !== 'simple' && draft.trim().length >= 3 && !previewing;
+
+  useEffect(() => {
+    previewRequest.current += 1;
+    setPreview(null);
+    setPreviewError(null);
+    setPreviewing(false);
+  }, [draft]);
+
+  async function inspectApproach() {
+    const objective = draft.trim();
+    if (objective.length < 3 || previewing) return;
+    const requestId = ++previewRequest.current;
+    setPreviewing(true);
+    setPreviewError(null);
+    try {
+      const result = await osApi.previewApproach(objective);
+      if (requestId === previewRequest.current) setPreview(result);
+    } catch (err) {
+      if (requestId === previewRequest.current) {
+        setPreview(null);
+        setPreviewError(err instanceof OsApiError ? err.message : t('op.experience.previewError'));
+      }
+    } finally {
+      if (requestId === previewRequest.current) setPreviewing(false);
+    }
+  }
 
   const readiness = useMemo(() => [
     { label: t('op.brief.agents'), value: state?.agents ?? '—', icon: Bot },
@@ -68,7 +103,7 @@ export function BriefZone({ onNavigate }: { onNavigate: (page: PageId) => void }
     setLaunchError(null);
     setNotice(null);
     try {
-      const mission = await feed.launch(objective, composite ? 'composite' : undefined);
+      const mission = await feed.launch(objective, mode === 'advanced' && composite ? 'composite' : undefined);
       try { sessionStorage.setItem('wora:selectedMission', mission.id); } catch { /* private mode */ }
       setDraft('');
       setNotice(t('op.brief.launchSuccess'));
@@ -101,10 +136,14 @@ export function BriefZone({ onNavigate }: { onNavigate: (page: PageId) => void }
     <div className="op-brief-grid">
       <section className="op-composer" aria-labelledby="op-brief-composer">
         <div className="op-composer-head">
-          <span className="op-kicker"><Sparkles size={14} aria-hidden="true" /> WORA Intelligence</span>
-          <h2 id="op-brief-composer">{t('op.brief.composerTitle')}</h2>
-          <p>{t('op.brief.composerHint')}</p>
+          <div>
+            <span className="op-kicker"><Sparkles size={14} aria-hidden="true" /> WORA Intelligence</span>
+            <h2 id="op-brief-composer">{t('op.brief.composerTitle')}</h2>
+            <p>{t('op.brief.composerHint')}</p>
+          </div>
+          <ExperienceModeControl />
         </div>
+        <p className="op-mode-hint">{t(`op.experience.${mode}Hint`)}</p>
         <form onSubmit={(event) => void launch(event)}>
           <textarea
             dir="auto" rows={5} maxLength={4000} value={draft}
@@ -116,20 +155,27 @@ export function BriefZone({ onNavigate }: { onNavigate: (page: PageId) => void }
           <div className="op-composer-bar">
             <div className="op-composer-context">
               <span className="op-context-chip"><ShieldCheck size={13} aria-hidden="true" />{t('op.brief.context')}: {t('op.brief.contextValue')}</span>
-              <label className="op-check" title={t('op.brief.compositionHint')}>
+              {mode === 'advanced' && <label className="op-check" title={t('op.brief.compositionHint')}>
                 <input type="checkbox" checked={composite} onChange={(event) => setComposite(event.target.checked)} />
                 <span>{t('op.brief.composition')}<small>{t('op.brief.compositionHint')}</small></span>
-              </label>
+              </label>}
             </div>
-            <Button type="submit" variant="primary" loading={launching} icon={Play} disabled={!canSubmit}>
-              {launching ? t('op.brief.submitting') : t('op.brief.submit')}
-            </Button>
+            <div className="op-composer-actions">
+              {mode !== 'simple' && <Button type="button" variant="secondary" loading={previewing} disabled={!canPreview} onClick={() => void inspectApproach()}>
+                {previewing ? t('op.experience.previewing') : t('op.experience.preview')}
+              </Button>}
+              <Button type="submit" variant="primary" loading={launching} icon={Play} disabled={!canSubmit}>
+                {launching ? t('op.brief.submitting') : t('op.brief.submit')}
+              </Button>
+            </div>
           </div>
         </form>
         <div className="op-examples">
           <small>{t('op.brief.examples')}</small>
           {examples.map((example) => <button key={example} type="button" className="op-example" dir="auto" onClick={() => setDraft(example)}>{example}</button>)}
         </div>
+        {previewError && <p className="op-alert" role="alert">{previewError}</p>}
+        {preview && mode !== 'simple' && <ApproachPreviewPanel preview={preview} advanced={mode === 'advanced'} />}
         {launchError && <p className="op-alert" role="alert">{launchError}</p>}
         {notice && <p className="op-notice" role="status">{notice}</p>}
       </section>

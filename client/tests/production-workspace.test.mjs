@@ -100,6 +100,7 @@ test('production workspace: mission, evidence, memory, capability assignment, pl
     await page.getByText('فحوصات مستقلة', { exact: true }).first().waitFor({ timeout: 25_000 });
     await page.getByRole('tab', { name: 'المخرج', exact: true }).click();
     await page.getByText('WORA Mission Deliverable').first().waitFor({ timeout: 20_000 });
+    await page.getByRole('group', { name: 'مستوى التجربة' }).getByRole('button', { name: 'متقدم', exact: true }).click();
     await page.getByRole('tab', { name: 'السياق', exact: true }).click();
     await page.getByText('الفهم والتفكير', { exact: true }).first().waitFor();
 

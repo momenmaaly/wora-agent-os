@@ -256,7 +256,32 @@ export interface ProblemProfile {
   successCriteria: string[]; missingInformation: string[]; ambiguity: string[];
   features: Record<string, boolean | number | undefined>;
   algorithmSelection: { status: string; problemKind: string; confidence: number; rationale: string[]; primary: { name: string; toolId: string | null; guarantee: string; limitations: string[] } | null; alternatives: Array<{ name: string; toolId: string | null }>; missingInformation: string[]; warnings: string[] };
+  scientific?: ScientificSelection;
   fallback: { strategy: string; reason: string }; source: string;
+}
+
+export interface ScientificSelection {
+  schemaVersion: string; catalogVersion: string; domain: string | null; domainName: string | null;
+  status: string; confidence: number; rationale: string[]; assumptions: string[]; missingInformation: string[];
+  method: { algorithmId: string; name: string; toolId: string | null; status: string; guarantee: string; requiredInputs: string[]; outputs: string[]; limitations: string[]; verification: string[] } | null;
+  rejectedAlternatives: Array<{ name: string; reason: string; status: string }>;
+  gap: { requiredCapability: string; reason: string; suggestedNextStep: string } | null;
+}
+
+export interface ApproachTask {
+  title: string; objective: string; specialization: string; tool: string | null;
+  dependsOn: number[]; acceptance: string[]; detail: string;
+}
+
+export interface ApproachPreview {
+  problem: ProblemProfile;
+  plan: ApproachTask[];
+  requirements: Array<{ id: string; capability: string; label: string; taskTitle: string; requiredTools: string[]; requiredPermissions: string[]; risk: string }>;
+  team: {
+    strategy: string; explanation: string;
+    team: Array<{ agentId: string; name: string; specialization: string; capabilities: string[]; confidence: number }>;
+    gaps: Array<{ taskIndex: number; taskTitle: string; capability: string; reason: string }>;
+  };
 }
 
 export interface FormalTask {
@@ -392,6 +417,8 @@ export const osApi = {
   addReasoningEvidence: (id: string, evidence: Array<{ statement: string; kind?: 'user-fact' | 'assumption'; source?: string }>) => request<{ model: ReasoningModel; change: Record<string, unknown> }>(`/missions/${encodeURIComponent(id)}/reasoning/evidence`, { method: 'POST', body: JSON.stringify({ evidence }) }),
   reasonProblem: (body: { objective: string; track?: string; useModel?: boolean; evidence?: Array<{ statement: string; kind?: 'user-fact' | 'assumption' }> }) => request<ReasoningModel>('/problems/reason', { method: 'POST', body: JSON.stringify(body) }),
   understandProblem: (objective: string, track?: string) => request<ProblemProfile>('/problems/understand', { method: 'POST', body: JSON.stringify({ objective, ...(track ? { track } : {}) }) }),
+  previewApproach: (objective: string, track?: string) =>
+    request<ApproachPreview>('/capabilities/analyze', { method: 'POST', body: JSON.stringify({ objective, ...(track ? { track } : {}) }) }),
   launchMission: (objective: string, track?: string) =>
     request<MissionDetail>('/missions', { method: 'POST', body: JSON.stringify({ objective, ...(track ? { track } : {}) }) }),
   artifact: (id: string) => request<{ id: string; name: string; kind: string; content: string }>(`/artifacts/${encodeURIComponent(id)}`),
