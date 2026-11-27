@@ -73,12 +73,22 @@ No new backend registry, database table or parallel intelligence engine is intro
 ## 4. Verification for this slice
 
 - Client typecheck and production build pass (`tsc --noEmit`, API/deployment contract, Vite build).
-- Client suite on Node 24: 69 tests, 69 pass.
-- API suite on Node 24: 415 tests, 411 pass, 4 skipped (Docker/Mongo integrations when the environment is absent).
+- Client suite on Node 24: 70 tests, 70 pass (including the research preflight journey).
+- API suite on Node 24: 424 tests, 420 pass, 4 skipped (Docker/Mongo integrations when the environment is absent).
 - New Playwright journeys `client/tests/experience-modes.test.mjs` exercise the real preview API, the no-mission guarantee, Advanced scientific disclosure, Simple/Advanced Run context visibility, and clarification answers reaching the real forecast plan.
 - Existing production workspace and mobile RTL/LTR journeys still pass.
 
-## 5. Deferred work
+## 5. Research and advanced reasoning slice
+
+The research layer is connected to the same mission lifecycle and reasoning model described in `WORA-V2-RESEARCH-REASONING-ENGINE.md`.
+
+- `api-server/src/os/research.ts` plans research questions/sources, records real tool findings with URL, status, digest and retrieval time, and synthesizes answered/unanswered questions and conflicts.
+- `createMission` attaches the plan to the persisted reasoning model; `executeMission` feeds only real `web.fetch_read` / `browser.research` outputs back through `updateReasoningWithEvidence`.
+- Preflight (`/capabilities/analyze`, `/problems/clarify`) and mission creation use the same planner; `/problems/research` exposes it directly.
+- No source means `unanswered` plus a `research_sources` clarification; no search, fetch or fabricated source occurs during planning.
+- Research memory is not copied into the plan, preserving memory deletion semantics.
+
+## 6. Deferred work
 
 - OR model construction from natural-language formulations with inspectable constraints.
 - Semantic/knowledge graph and provenance-aware retrieval.

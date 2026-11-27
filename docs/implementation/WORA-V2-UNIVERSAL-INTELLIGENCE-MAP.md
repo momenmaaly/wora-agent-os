@@ -21,6 +21,7 @@ This map is repository-grounded. It records what already exists, how a mission a
 | Capability | Existing implementation | Integration point | Tests | Missing |
 | --- | --- | --- | --- | --- |
 | Mission understanding and planning | `problem.ts`, `problem-model.ts`, `problem-structure.ts`, `orchestrator.ts` (`buildPlan`) | `createMission` | `problem.test.ts`, `planning.test.ts`, `mission-e2e.test.ts` | No general semantic planner; deterministic rules only |
+| Research and advanced reasoning | `research.ts`, `reasoning-engine.ts`, `tools.ts` (`web.fetch_read`), `reasoning-store.ts` | `createMission`, `executeMission`, preflight | `research.test.ts`, `experience-modes.test.mjs` | No general web-search provider; stance/freshness are heuristic |
 | Agent Brain / orchestration | `orchestrator.ts`, `worker.ts`, `task-queue.ts`, `recovery.ts` | `executeMission` | `worker.test.ts`, `recovery.test.ts`, `process-recovery.test.ts`, `task-queue.test.ts` | No autonomous goal redefinition |
 | Agent selection / capability resolution | `registry.ts`, `selection.ts`, `extensions/capabilities.ts` | `resolveTaskAgent`, `resolveAndSnapshot` | `selection.test.ts`, `selection-benchmark.test.ts`, extension tests | No learned routing model |
 | Skills / Plugins / MCP / tools | `extensions/*`, `tools.ts` | tool registry and capability profile | `extensions.test.ts`, `phase5/6/7` tests | Remote package publishing is `501` |

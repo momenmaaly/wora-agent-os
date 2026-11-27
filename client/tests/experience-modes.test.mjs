@@ -171,3 +171,52 @@ test('experience modes: clarification answer reaches the real mission plan', { t
     rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+test('experience modes: research plan is disclosed before launch and never invents a source', { timeout: 180_000 }, async (t) => {
+  if (!existsSync(CHROMIUM)) { t.skip(`Chromium not found at ${CHROMIUM}`); return; }
+  const tmp = mkdtempSync(path.join(os.tmpdir(), 'wora-research-ui-'));
+  let api;
+  let web;
+  let browser;
+  try {
+    api = start(process.execPath, [path.resolve(process.cwd(), '../api-server/node_modules/.bin/tsx'), 'src/scripts/preview-server.ts'], {
+      cwd: path.resolve(process.cwd(), '../api-server'),
+      env: {
+        ...process.env, PORT: '4115', WORA_OS_DB: ':memory:',
+        WORA_WORKSPACE: path.join(tmp, 'workspace'), NODE_ENV: 'development',
+      },
+    });
+    await waitForUrl('http://127.0.0.1:4115/health');
+    web = start(process.execPath, [path.resolve(process.cwd(), 'node_modules/.bin/vite'), '--port', '4181', '--strictPort'], {
+      cwd: process.cwd(),
+      env: { ...process.env, WORA_API_TARGET: 'http://127.0.0.1:4115' },
+    });
+    await waitForUrl('http://127.0.0.1:4181/');
+
+    browser = await chromium.launch({ executablePath: CHROMIUM, headless: true, args: ['--no-sandbox'] });
+    const page = await browser.newPage({ viewport: { width: 1440, height: 1050 } });
+    await page.goto('http://127.0.0.1:4181/#brief', { waitUntil: 'domcontentloaded' });
+    await page.getByRole('heading', { name: 'الموجز', exact: true }).waitFor({ timeout: 20_000 });
+
+    const objective = 'Research the latest EU AI regulation requirements';
+    await page.getByRole('textbox', { name: 'ماذا تريد أن ينجز WORA؟' }).fill(objective);
+    const modes = page.getByRole('group', { name: 'مستوى التجربة' });
+    await modes.getByRole('button', { name: 'موجّه', exact: true }).click();
+    await page.getByRole('button', { name: 'معاينة النهج', exact: true }).click();
+
+    const research = page.locator('.op-research');
+    await research.waitFor({ timeout: 25_000 });
+    assert.equal(await research.getAttribute('data-status'), 'unanswered');
+    await research.getByText('خطة البحث', { exact: true }).waitFor();
+    await research.getByText('أسئلة البحث', { exact: true }).waitFor();
+    await research.getByText(/لا يوجد مصدر متاح/).waitFor();
+    assert.ok(await research.locator('.op-research-block li').count() > 0, 'real research questions must be shown');
+    await page.getByText('مصادر البحث', { exact: true }).waitFor();
+    assert.equal(await page.locator('.op-mission-list li').count(), 0, 'preview must not create a mission');
+  } finally {
+    if (browser) await browser.close();
+    await stop(web);
+    await stop(api);
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});

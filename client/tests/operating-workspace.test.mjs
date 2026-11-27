@@ -66,7 +66,7 @@ test('operating workspace: phases, attention, activity and next action derive fr
 });
 
 test('operating workspace: components consume i18n and carry no hardcoded Arabic copy', () => {
-  for (const file of ['workspace/BriefZone.tsx', 'workspace/RunZone.tsx', 'workspace/LibraryZone.tsx', 'workspace/SystemZone.tsx', 'workspace/ApproachPreview.tsx', 'workspace/ClarificationPanel.tsx', 'components/ExperienceModeControl.tsx']) {
+  for (const file of ['workspace/BriefZone.tsx', 'workspace/RunZone.tsx', 'workspace/LibraryZone.tsx', 'workspace/SystemZone.tsx', 'workspace/ApproachPreview.tsx', 'workspace/ClarificationPanel.tsx', 'workspace/ResearchPanel.tsx', 'components/ExperienceModeControl.tsx']) {
     const source = read(file);
     ok(source.includes('useI18n'), `${file} must consume the i18n hook`);
     ok(!arabic.test(source), `${file} must not contain hardcoded Arabic copy`);

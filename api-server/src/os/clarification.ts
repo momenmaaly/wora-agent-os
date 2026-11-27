@@ -8,6 +8,7 @@
  */
 import type { ProblemProfile } from './problem.js';
 import type { ReasoningModel } from './reasoning-types.js';
+import type { ResearchPlan } from './research.js';
 
 export const CLARIFICATION_SCHEMA_VERSION = '1.0';
 
@@ -20,7 +21,8 @@ export type ClarificationCode =
   | 'problem_class'
   | 'capability_gap'
   | 'risk_approval'
-  | 'domain';
+  | 'domain'
+  | 'research_sources';
 
 export type ClarificationMateriality = 'critical' | 'high' | 'medium' | 'low';
 
@@ -65,6 +67,7 @@ export function buildClarificationPlan(input: {
   problem: ProblemProfile;
   reasoning?: ReasoningModel | null;
   plan?: PlanLike[];
+  research?: ResearchPlan | null;
   answers?: Record<string, string>;
   maxQuestions?: number;
 }): ClarificationPlan {
@@ -219,6 +222,18 @@ export function buildClarificationPlan(input: {
     }
   }
 
+  if (input.research?.needed && input.research.sources.length === 0) {
+    add({
+      id: 'research-sources',
+      code: 'research_sources',
+      prompt: 'Provide at least one authorized source URL or workspace evidence for this research question.',
+      rationale: 'The research planner found an external evidence need but no source. It did not search, invent a source, or claim access.',
+      materiality: 'high',
+      blocking: false,
+      fields: ['source URLs', 'workspace evidence'],
+      source: 'method-catalog',
+    });
+  }
   if (input.problem.features.riskLevel === 'high') {
     add({
       id: 'risk-approval',

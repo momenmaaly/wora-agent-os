@@ -21,6 +21,7 @@ import type {
 } from './reasoning-types.js';
 import { REASONING_SCHEMA_VERSION } from './reasoning-types.js';
 import { proposeReasoning, reasoningProviderStatus, type ReasoningProposal } from './reasoning-provider.js';
+import { researchSummary } from './research.js';
 
 const STOP = new Set(['the', 'and', 'for', 'with', 'that', 'this', 'from', 'have', 'has', 'are', 'was', 'were', 'not', 'but', 'you', 'our', 'their', 'its', 'into', 'about', 'after', 'before', 'when', 'where', 'which', 'while', 'because', 'could', 'would', 'should', 'must', 'can', 'may', 'من', 'في', 'على', 'إلى', 'عن', 'أن', 'هذا', 'هذه', 'التي', 'الذي', 'مع', 'أو', 'لا', 'ما', 'هو', 'هي']);
 
@@ -577,6 +578,7 @@ export function summarizeReasoning(model: ReasoningModel): ReasoningSummary {
     selectedMethod: model.methods.find((item) => item.selected)?.name ?? null,
     gapMethods: model.methods.filter((item) => !item.implemented && item.applies).map((item) => item.name),
     forecasting: model.problemStructure?.forecasting ? { intent: model.problemStructure.forecasting.intent, targetVariable: model.problemStructure.forecasting.targetVariable, horizonSteps: model.problemStructure.forecasting.horizon?.steps ?? null, observations: model.problemStructure.forecasting.observations.length, canExecute: model.problemStructure.forecasting.canExecute, missingInputs: model.problemStructure.forecasting.missingInputs, seriesMalformed: model.problemStructure.forecasting.seriesMalformed, conflictingRecords: model.problemStructure.forecasting.conflictingRecords } : null,
+    research: researchSummary(model.research),
     clarificationQuestion: model.clarificationQuestion, confidence: model.confidence, limitations: model.limitations,
   };
 }

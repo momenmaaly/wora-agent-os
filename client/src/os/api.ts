@@ -211,12 +211,14 @@ export interface ReasoningModel {
   confidence: { value: number; kind: string; note: string }; limitations: string[];
   changes: Array<{ version: number; kind: string; description: string; invalidatedAssumptionIds: string[]; replanRecommended: boolean; createdAt: string }>;
   baseProblem?: UnifiedProblem | null; problemStructure?: ProblemStructure | null;
+  research?: ResearchState;
   createdAt: string;
 }
 export interface ReasoningSummary {
   schemaVersion: string; mode: ReasoningMode; providerStatus: string; problemType: string; sufficientToProceed: boolean;
   claimCounts: Record<string, number>; hypothesisCount: number; rejectedHypothesisCount: number; causalEdgeCount: number;
   informationNeedCount: number; criticalInformationNeedCount: number; selectedMethod: string | null; gapMethods: string[];
+  research?: { needed: boolean; status: ResearchStatus; questionCount: number; sourceCount: number; findingCount: number; unansweredCount: number; conflictCount: number; questions: Array<{ id: string; question: string; materiality: string }>; sources: Array<{ kind: string; locator: string; tool: string }>; limitations: string[] } | null;
   clarificationQuestion: string | null; confidence: { value: number; kind: string; note: string }; limitations: string[];
 }
 
@@ -273,9 +275,81 @@ export interface ApproachTask {
   dependsOn: number[]; acceptance: string[]; detail: string;
 }
 
+export type ResearchStatus = 'not-needed' | 'planned' | 'partial' | 'answered' | 'unanswered';
+
+export interface ResearchQuestion {
+  id: string;
+  question: string;
+  parentNeedId: string | null;
+  materiality: 'critical' | 'high' | 'medium' | 'low';
+  rationale: string;
+  searchable: boolean;
+}
+
+export interface ResearchSource {
+  id: string;
+  kind: 'web' | 'memory' | 'tool';
+  locator: string;
+  tool: string;
+  title: string;
+  questionIds: string[];
+  excerpt?: string;
+  retrievedAt?: string | null;
+}
+
+export interface ResearchPlan {
+  schemaVersion: string;
+  needed: boolean;
+  status: ResearchStatus;
+  objective: string;
+  questions: ResearchQuestion[];
+  sources: ResearchSource[];
+  reason: string;
+  limitations: string[];
+  maxSources: number;
+}
+
+export interface ResearchFinding {
+  id: string;
+  questionIds: string[];
+  sourceId: string | null;
+  tool: string;
+  url: string | null;
+  title: string | null;
+  retrievedAt: string;
+  status: number | null;
+  excerpt: string;
+  digest: string;
+  truncated: boolean;
+  stance: 'supports' | 'contradicts' | 'neutral' | 'unclear';
+  strength: 'strong' | 'moderate' | 'weak' | 'none';
+  note: string;
+}
+
+export interface ResearchSynthesis {
+  schemaVersion: string;
+  status: ResearchStatus;
+  questions: ResearchQuestion[];
+  findings: ResearchFinding[];
+  answeredQuestionIds: string[];
+  unansweredQuestionIds: string[];
+  conflicts: Array<{ questionId: string; findingIds: string[]; note: string }>;
+  weakEvidence: string[];
+  sourcesUsed: string[];
+  limitations: string[];
+  evidence: Array<{ id?: string; statement: string; kind: string; source: string; confidence?: number; observedAt?: string | null }>;
+}
+
+export interface ResearchState {
+  plan: ResearchPlan;
+  findings: ResearchFinding[];
+  synthesis: ResearchSynthesis;
+  updatedAt: string;
+}
+
 export interface ClarificationQuestion {
   id: string;
-  code: 'information' | 'clarification' | 'forecast_data' | 'optimization_data' | 'method_gap' | 'problem_class' | 'capability_gap' | 'risk_approval' | 'domain';
+  code: 'information' | 'clarification' | 'forecast_data' | 'optimization_data' | 'method_gap' | 'problem_class' | 'capability_gap' | 'risk_approval' | 'domain' | 'research_sources';
   prompt: string;
   rationale: string;
   materiality: 'critical' | 'high' | 'medium' | 'low';
@@ -305,6 +379,7 @@ export interface ApproachPreview {
     gaps: Array<{ taskIndex: number; taskTitle: string; capability: string; reason: string }>;
   };
   clarifications?: ClarificationPlan;
+  research?: ResearchPlan;
 }
 
 export interface FormalTask {
@@ -444,6 +519,8 @@ export const osApi = {
     request<ApproachPreview>('/capabilities/analyze', { method: 'POST', body: JSON.stringify({ objective, ...(track ? { track } : {}) }) }),
   clarifyProblem: (objective: string, track?: string, answers?: Record<string, string>) =>
     request<ClarificationPlan>('/problems/clarify', { method: 'POST', body: JSON.stringify({ objective, ...(track ? { track } : {}), ...(answers && Object.keys(answers).length ? { answers } : {}) }) }),
+  planResearch: (objective: string, track?: string, urls?: string[]) =>
+    request<ResearchPlan>('/problems/research', { method: 'POST', body: JSON.stringify({ objective, ...(track ? { track } : {}), ...(urls?.length ? { urls } : {}) }) }),
   launchMission: (objective: string, track?: string, clarifications?: ClarificationAnswer[]) =>
     request<MissionDetail>('/missions', {
       method: 'POST',

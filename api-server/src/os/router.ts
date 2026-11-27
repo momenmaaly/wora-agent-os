@@ -23,6 +23,7 @@ import { listTaskLeases, listTaskCheckpoints, getExecutionLimits, setExecutionLi
 import { understandProblem, getProblemProfile } from './problem.js';
 import { modelProblem } from './problem-model.js';
 import { buildClarificationPlan } from './clarification.js';
+import { extractUrls, planResearch } from './research.js';
 import { composeMissionPlan, getComposition } from './capability-composition.js';
 import { getMissionOutcome } from './outcome-verification.js';
 import { analyzeProblemReasoning, buildDeterministicReasoning, filterReasoningForActor } from './reasoning-engine.js';
@@ -302,8 +303,9 @@ export function createOsRouter(options: { production?: boolean } = {}): Router {
     const plan = buildPlan(body.objective, body.track, workspace(res));
     const requirements = requirementsForPlan(plan, workspace(res));
     const team = previewTeam(workspace(res), plan, problem);
-    const clarifications = buildClarificationPlan({ problem, reasoning, plan });
-    res.json({ problem, plan, requirements, team, clarifications });
+    const research = planResearch({ objective: body.objective, reasoning, problem: unified, urls: extractUrls(body.objective) });
+    const clarifications = buildClarificationPlan({ problem, reasoning, plan, research });
+    res.json({ problem, plan, requirements, team, clarifications, research });
   }));
 
   router.get('/capabilities/performance', asyncWrap((req, res) => {
@@ -856,7 +858,25 @@ function highRiskAgentCapabilities(permissions: readonly string[], tools: readon
       baseProblem: unified, actor: actor(res),
     });
     const plan = buildPlan(body.objective, body.track, workspace(res));
-    res.json(buildClarificationPlan({ problem: unified.baseProfile, reasoning, plan, answers: body.answers }));
+    const research = planResearch({ objective: body.objective, reasoning, problem: unified, urls: extractUrls(body.objective) });
+    res.json(buildClarificationPlan({ problem: unified.baseProfile, reasoning, plan, research, answers: body.answers }));
+  }));
+
+  router.post('/problems/research', asyncWrap((req, res) => {
+    if (!rateLimit(workspace(res), 60, req.path)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    const body = z.object({
+      objective: z.string().trim().min(3).max(4000), track: z.string().trim().min(1).max(40).optional(),
+      urls: z.array(z.string().url().max(2000)).max(5).optional(),
+    }).strict().parse(req.body ?? {});
+    const unified = modelProblem({ workspaceId: workspace(res), objective: body.objective, track: body.track, actor: actor(res) });
+    const reasoning = buildDeterministicReasoning({
+      workspaceId: workspace(res), objective: body.objective, track: body.track,
+      baseProblem: unified, actor: actor(res),
+    });
+    res.json(planResearch({
+      objective: body.objective, reasoning, problem: unified,
+      urls: body.urls ?? extractUrls(body.objective),
+    }));
   }));
 
   router.post('/problems/compose', asyncWrap((req, res) => {

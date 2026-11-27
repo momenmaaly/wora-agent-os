@@ -39,9 +39,10 @@ import { filterProblemForActor, modelProblem, saveProblemModel, getProblemModel 
 import { inferProblemStructure } from './problem-structure.js';
 import { evaluateSemanticCompatibility } from './semantic-contracts.js';
 import { verifyMissionOutcome, getMissionOutcome } from './outcome-verification.js';
-import { buildDeterministicReasoning, filterReasoningForActor, summarizeReasoning } from './reasoning-engine.js';
+import { buildDeterministicReasoning, filterReasoningForActor, summarizeReasoning, updateReasoningWithEvidence } from './reasoning-engine.js';
 import { saveReasoningModel, getReasoningModel, recordOutcomeReasoningEvidence } from './reasoning-store.js';
 import type { ClarificationAnswer } from './clarification.js';
+import { extractUrls, findingFromToolOutput, planResearch, synthesizeResearch } from './research.js';
 import { matchCapabilities } from '../extensions/capability-intelligence.js';
 import { persistTeamPlan, resolveTaskAgent, selectReplacement, recordAgentPerformance, getTeamPlan, listSelectionDecisions } from './selection.js';
 import { logger } from '../lib/logger.js';
@@ -131,10 +132,6 @@ function parseCreateAgentObjective(objective: string): { name: string; role: str
   const specialization = specByKeyword.find(([re]) => re.test(descriptor))?.[1] ?? 'generalist';
   const label = descriptor.replace(/\b\w/g, (c) => c.toUpperCase());
   return { name: `${label} Agent`, role: `Persistent ${descriptor} specialist created from an instruction: "${objective.slice(0, 200)}"`, specialization };
-}
-
-function extractUrls(objective: string): string[] {
-  return (objective.match(/https?:\/\/[^\s)"'\]]+/g) ?? []).slice(0, 3);
 }
 
 export function buildPlan(objective: string, track?: string, workspaceId = 'wora-preview', actor = 'system'): PlanTask[] {
@@ -542,6 +539,13 @@ export function createMission(input: {
     actor, scopes: input.memoryScopes, scopeIds: input.memoryScopeIds,
     evidence: clarificationEvidence,
   });
+  const researchPlan = planResearch({ objective: planningObjective, reasoning, problem: unified, urls: extractUrls(planningObjective) });
+  reasoning.research = {
+    plan: researchPlan,
+    findings: [],
+    synthesis: synthesizeResearch({ plan: researchPlan, findings: [] }),
+    updatedAt: nowIso(),
+  };
   unified.reasoning = summarizeReasoning(reasoning);
   const problem = unified.baseProfile;
   const plan = composed?.tasks ?? buildPlan(planningObjective, input.track, input.workspaceId, actor);
@@ -1121,6 +1125,41 @@ async function executeMissionInner(missionId: string, actor = 'orchestrator', op
           checkpoint: { tool: result.tool, ok: result.ok, reviewPassed, issues: review.issues },
         });
         maybeTestStage('after-completed-checkpoint');
+      }
+
+      // Research is fed back only from an actual retrieval tool output. Failed
+      // fetches are recorded as weak evidence and never become claims.
+      if (result.ok && (task.tool === 'web.fetch_read' || task.tool === 'browser.research')) {
+        try {
+          const current = getReasoningModel(mission.workspace_id, missionId);
+          if (current) {
+            const plan = current.research?.plan ?? planResearch({
+              objective: current.objective, reasoning: current, problem: current.baseProblem, urls: extractUrls(current.objective),
+            });
+            const finding = findingFromToolOutput({ taskId: task.id, runId, tool: task.tool, output: lastOutput, plan });
+            const findings = [...(current.research?.findings ?? [])];
+            if (finding && !findings.some((item) => item.id === finding.id)) {
+              findings.push(finding);
+              const synthesis = synthesizeResearch({ plan, findings });
+              const next = synthesis.evidence.length
+                ? updateReasoningWithEvidence(current, synthesis.evidence, agent.name).model
+                : current;
+              next.research = { plan, findings, synthesis, updatedAt: nowIso() };
+              saveReasoningModel({ ...next, missionId });
+              audit(db, {
+                workspaceId: mission.workspace_id, actor: agent.name, action: 'research.evidence', subject: task.id,
+                detail: {
+                  missionId, runId, tool: task.tool, url: finding.url, status: finding.status,
+                  digest: finding.digest.slice(0, 16), questionIds: finding.questionIds,
+                  synthesisStatus: synthesis.status, unanswered: synthesis.unansweredQuestionIds.length,
+                  conflicts: synthesis.conflicts.length,
+                },
+              });
+            }
+          }
+        } catch (err) {
+          logger.warn({ err, missionId, taskId: task.id }, 'research evidence could not be attached to the reasoning model');
+        }
       }
 
       recordAgentPerformance({

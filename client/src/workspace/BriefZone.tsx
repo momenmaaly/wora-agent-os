@@ -12,6 +12,7 @@ import { RuntimePanel } from '../components/RuntimePanel.js';
 import { useExperienceMode } from '../experience/mode.js';
 import { ApproachPreviewPanel } from './ApproachPreview.js';
 import { ClarificationPanel } from './ClarificationPanel.js';
+import { ResearchPanel } from './ResearchPanel.js';
 import { formatDate } from './model.js';
 
 export function BriefZone({ onNavigate }: { onNavigate: (page: PageId) => void }) {
@@ -182,6 +183,7 @@ export function BriefZone({ onNavigate }: { onNavigate: (page: PageId) => void }
         </div>
         {previewError && <p className="op-alert" role="alert">{previewError}</p>}
         {preview && mode !== 'simple' && <ApproachPreviewPanel preview={preview} advanced={mode === 'advanced'} />}
+        {preview?.research && mode !== 'simple' && <ResearchPanel plan={preview.research} />}
         {preview?.clarifications && mode !== 'simple' && <ClarificationPanel
           plan={preview.clarifications}
           answers={clarificationAnswers}

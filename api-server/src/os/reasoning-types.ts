@@ -8,6 +8,7 @@
  */
 import type { UnifiedProblem } from './problem-model.js';
 import type { ProblemStructure } from './problem-structure.js';
+import type { ResearchState, ResearchSummary } from './research.js';
 
 export const REASONING_SCHEMA_VERSION = '1.0';
 
@@ -172,6 +173,8 @@ export interface ReasoningModel {
   changes: ReasoningChange[];
   baseProblem: UnifiedProblem | null;
   problemStructure?: ProblemStructure;
+  /** Research plan, real findings and their synthesis; absent when no research was planned. */
+  research?: ResearchState;
   createdAt: string;
 }
 
@@ -190,6 +193,7 @@ export interface ReasoningSummary {
   selectedMethod: string | null;
   gapMethods: string[];
   forecasting?: { intent: boolean; targetVariable: string | null; horizonSteps: number | null; observations: number; canExecute: boolean; missingInputs: string[]; seriesMalformed: boolean; conflictingRecords: boolean } | null;
+  research?: ResearchSummary | null;
   clarificationQuestion: string | null;
   confidence: { value: number; kind: ConfidenceKind; note: string };
   limitations: string[];
