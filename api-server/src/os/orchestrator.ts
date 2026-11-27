@@ -41,6 +41,7 @@ import { evaluateSemanticCompatibility } from './semantic-contracts.js';
 import { verifyMissionOutcome, getMissionOutcome } from './outcome-verification.js';
 import { buildDeterministicReasoning, filterReasoningForActor, summarizeReasoning } from './reasoning-engine.js';
 import { saveReasoningModel, getReasoningModel, recordOutcomeReasoningEvidence } from './reasoning-store.js';
+import type { ClarificationAnswer } from './clarification.js';
 import { matchCapabilities } from '../extensions/capability-intelligence.js';
 import { persistTeamPlan, resolveTaskAgent, selectReplacement, recordAgentPerformance, getTeamPlan, listSelectionDecisions } from './selection.js';
 import { logger } from '../lib/logger.js';
@@ -506,15 +507,30 @@ export function buildPlan(objective: string, track?: string, workspaceId = 'wora
 export function createMission(input: {
   workspaceId: string; objective: string; actor?: string; track?: string; requestedBy?: string; correlationId?: string;
   memoryScopes?: MemoryScope[]; memoryScopeIds?: Partial<Record<MemoryScope, string[]>>;
+  clarifications?: ClarificationAnswer[];
 }): string {
   const objective = input.objective.trim().slice(0, 4000);
   if (!objective) throw new Error('Objective is required');
   const actor = input.actor ?? 'system';
+  const clarifications = (input.clarifications ?? [])
+    .map((entry) => ({ questionId: entry.questionId.trim().slice(0, 120), answer: entry.answer.trim().slice(0, 2000) }))
+    .filter((entry) => entry.questionId && entry.answer)
+    .slice(0, 12);
+  const planningObjective = clarifications.length
+    ? `${objective}\n\nClarifications supplied by the user:\n${clarifications.map((entry) => `- ${entry.questionId}: ${entry.answer}`).join('\n')}`
+    : objective;
+  const clarificationEvidence = clarifications.map((entry, index) => ({
+    id: `clarification-${index + 1}`,
+    statement: entry.answer,
+    kind: 'user-fact' as const,
+    source: `user:clarification:${entry.questionId}`,
+    confidence: 1,
+  }));
   ensureSeedAgents(input.workspaceId);
   const db = getOsDb();
   const missionId = newId('msn');
   const composed = input.track === 'composite' ? composeMissionPlan({
-    workspaceId: input.workspaceId, objective, track: input.track, actor,
+    workspaceId: input.workspaceId, objective: planningObjective, track: input.track, actor,
     scopes: input.memoryScopes, scopeIds: input.memoryScopeIds,
   }) : null;
   const unified = composed?.model ?? modelProblem({
@@ -522,12 +538,13 @@ export function createMission(input: {
     scopes: input.memoryScopes, scopeIds: input.memoryScopeIds,
   });
   const reasoning = buildDeterministicReasoning({
-    workspaceId: input.workspaceId, objective, track: input.track, baseProblem: unified,
+    workspaceId: input.workspaceId, objective: planningObjective, track: input.track, baseProblem: unified,
     actor, scopes: input.memoryScopes, scopeIds: input.memoryScopeIds,
+    evidence: clarificationEvidence,
   });
   unified.reasoning = summarizeReasoning(reasoning);
   const problem = unified.baseProfile;
-  const plan = composed?.tasks ?? buildPlan(objective, input.track, input.workspaceId, actor);
+  const plan = composed?.tasks ?? buildPlan(planningObjective, input.track, input.workspaceId, actor);
   const planComparison = comparePlans(plan, input.workspaceId, problem);
   const decision = compareSolutionStrategies(plan, input.workspaceId, problem);
   const ts = nowIso();
@@ -575,7 +592,7 @@ export function createMission(input: {
     db.exec('ROLLBACK');
     throw err;
   }
-  audit(db, { workspaceId: input.workspaceId, actor: input.actor ?? 'user', action: 'mission.create', subject: missionId, detail: { objective: objective.slice(0, 300), tasks: plan.length, domain: problem.domain, algorithmStatus: problem.algorithmSelection.status } });
+  audit(db, { workspaceId: input.workspaceId, actor: input.actor ?? 'user', action: 'mission.create', subject: missionId, detail: { objective: objective.slice(0, 300), tasks: plan.length, domain: problem.domain, algorithmStatus: problem.algorithmSelection.status, clarifications: clarifications.length } });
   return missionId;
 }
 

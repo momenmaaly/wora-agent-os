@@ -27,7 +27,7 @@ export interface MissionFeed {
   selectMission: (id: string) => void;
   refresh: () => Promise<void>;
   refreshDetail: () => Promise<void>;
-  launch: (objective: string, track?: string) => Promise<MissionDetail>;
+  launch: (objective: string, track?: string, clarifications?: Array<{ questionId: string; answer: string }>) => Promise<MissionDetail>;
 }
 
 /** Shared mission list/detail feed for workspace, workflow, log and artifact surfaces. */
@@ -93,8 +93,8 @@ export function useMissionFeed(): MissionFeed {
     return () => window.clearInterval(timer);
   }, [anyActive, refresh, refreshDetail]);
 
-  const launch = useCallback(async (objective: string, track?: string) => {
-    const created = await osApi.launchMission(objective, track);
+  const launch = useCallback(async (objective: string, track?: string, clarifications?: Array<{ questionId: string; answer: string }>) => {
+    const created = await osApi.launchMission(objective, track, clarifications);
     setSelectedId(created.id);
     setDetail(created);
     setError(null);

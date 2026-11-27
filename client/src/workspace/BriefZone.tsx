@@ -11,6 +11,7 @@ import { ExperienceModeControl } from '../components/ExperienceModeControl.js';
 import { RuntimePanel } from '../components/RuntimePanel.js';
 import { useExperienceMode } from '../experience/mode.js';
 import { ApproachPreviewPanel } from './ApproachPreview.js';
+import { ClarificationPanel } from './ClarificationPanel.js';
 import { formatDate } from './model.js';
 
 export function BriefZone({ onNavigate }: { onNavigate: (page: PageId) => void }) {
@@ -23,6 +24,7 @@ export function BriefZone({ onNavigate }: { onNavigate: (page: PageId) => void }
   const [launchError, setLaunchError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [preview, setPreview] = useState<ApproachPreview | null>(null);
+  const [clarificationAnswers, setClarificationAnswers] = useState<Record<string, string>>({});
   const [previewing, setPreviewing] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const previewRequest = useRef(0);
@@ -62,6 +64,7 @@ export function BriefZone({ onNavigate }: { onNavigate: (page: PageId) => void }
   useEffect(() => {
     previewRequest.current += 1;
     setPreview(null);
+    setClarificationAnswers({});
     setPreviewError(null);
     setPreviewing(false);
   }, [draft]);
@@ -102,8 +105,11 @@ export function BriefZone({ onNavigate }: { onNavigate: (page: PageId) => void }
     setLaunching(true);
     setLaunchError(null);
     setNotice(null);
+    const clarifications = (preview?.clarifications?.questions ?? [])
+      .map((question) => ({ questionId: question.id, answer: (clarificationAnswers[question.id] ?? '').trim() }))
+      .filter((entry) => entry.answer);
     try {
-      const mission = await feed.launch(objective, mode === 'advanced' && composite ? 'composite' : undefined);
+      const mission = await feed.launch(objective, mode === 'advanced' && composite ? 'composite' : undefined, clarifications);
       try { sessionStorage.setItem('wora:selectedMission', mission.id); } catch { /* private mode */ }
       setDraft('');
       setNotice(t('op.brief.launchSuccess'));
@@ -176,6 +182,11 @@ export function BriefZone({ onNavigate }: { onNavigate: (page: PageId) => void }
         </div>
         {previewError && <p className="op-alert" role="alert">{previewError}</p>}
         {preview && mode !== 'simple' && <ApproachPreviewPanel preview={preview} advanced={mode === 'advanced'} />}
+        {preview?.clarifications && mode !== 'simple' && <ClarificationPanel
+          plan={preview.clarifications}
+          answers={clarificationAnswers}
+          onChange={(questionId, value) => setClarificationAnswers((current) => ({ ...current, [questionId]: value }))}
+        />}
         {launchError && <p className="op-alert" role="alert">{launchError}</p>}
         {notice && <p className="op-notice" role="status">{notice}</p>}
       </section>

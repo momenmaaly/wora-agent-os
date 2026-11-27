@@ -115,3 +115,59 @@ test('experience modes: simple default, guided real preflight, advanced disclosu
     rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+test('experience modes: clarification answer reaches the real mission plan', { timeout: 180_000 }, async (t) => {
+  if (!existsSync(CHROMIUM)) { t.skip(`Chromium not found at ${CHROMIUM}`); return; }
+  const tmp = mkdtempSync(path.join(os.tmpdir(), 'wora-clarification-ui-'));
+  let api;
+  let web;
+  let browser;
+  try {
+    api = start(process.execPath, [path.resolve(process.cwd(), '../api-server/node_modules/.bin/tsx'), 'src/scripts/preview-server.ts'], {
+      cwd: path.resolve(process.cwd(), '../api-server'),
+      env: {
+        ...process.env, PORT: '4114', WORA_OS_DB: ':memory:',
+        WORA_WORKSPACE: path.join(tmp, 'workspace'), NODE_ENV: 'development',
+      },
+    });
+    await waitForUrl('http://127.0.0.1:4114/health');
+    web = start(process.execPath, [path.resolve(process.cwd(), 'node_modules/.bin/vite'), '--port', '4180', '--strictPort'], {
+      cwd: process.cwd(),
+      env: { ...process.env, WORA_API_TARGET: 'http://127.0.0.1:4114' },
+    });
+    await waitForUrl('http://127.0.0.1:4180/');
+
+    browser = await chromium.launch({ executablePath: CHROMIUM, headless: true, args: ['--no-sandbox'] });
+    const page = await browser.newPage({ viewport: { width: 1440, height: 1050 } });
+    await page.goto('http://127.0.0.1:4180/#brief', { waitUntil: 'domcontentloaded' });
+    await page.getByRole('heading', { name: 'الموجز', exact: true }).waitFor({ timeout: 20_000 });
+
+    const objective = 'Forecast monthly demand for the next 3 months';
+    await page.getByRole('textbox', { name: 'ماذا تريد أن ينجز WORA؟' }).fill(objective);
+    const modes = page.getByRole('group', { name: 'مستوى التجربة' });
+    await modes.getByRole('button', { name: 'موجّه', exact: true }).click();
+    await page.getByRole('button', { name: 'معاينة النهج', exact: true }).click();
+    const clarify = page.locator('.op-clarify');
+    await clarify.waitFor({ timeout: 25_000 });
+    await clarify.getByText('أسئلة تحسّن دقة النتيجة', { exact: true }).waitFor();
+    await clarify.getByText('بيانات التنبؤ', { exact: true }).waitFor();
+    assert.equal(await page.locator('.op-mission-list li').count(), 0, 'preview must not create a mission');
+
+    await clarify.locator('textarea').first().fill('series: 10, 12, 13, 15, 14, 16, 18, 19');
+    await page.getByRole('button', { name: 'إنشاء مهمة', exact: true }).click();
+    await page.getByRole('heading', { name: objective, exact: true }).waitFor({ timeout: 25_000 });
+    const detail = await page.evaluate(async () => {
+      const response = await fetch('/api/os/missions?limit=1');
+      const missions = await response.json();
+      const id = missions[0]?.id;
+      return id ? await (await fetch(`/api/os/missions/${id}`)).json() : null;
+    });
+    assert.ok(detail, 'mission detail is available');
+    assert.ok(detail.tasks.some((task) => task.tool === 'forecast.linear'), 'clarified series must select the real forecast tool');
+  } finally {
+    if (browser) await browser.close();
+    await stop(web);
+    await stop(api);
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});

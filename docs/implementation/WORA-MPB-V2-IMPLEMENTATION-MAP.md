@@ -73,9 +73,9 @@ No new backend registry, database table or parallel intelligence engine is intro
 ## 4. Verification for this slice
 
 - Client typecheck and production build pass (`tsc --noEmit`, API/deployment contract, Vite build).
-- Client suite on Node 24: 68 tests, 68 pass.
-- API suite on Node 24: 413 tests, 409 pass, 4 skipped (Docker/Mongo integrations when the environment is absent).
-- New Playwright journey `client/tests/experience-modes.test.mjs` exercises the real preview API, the no-mission guarantee, Advanced scientific disclosure, and Simple/Advanced Run context visibility.
+- Client suite on Node 24: 69 tests, 69 pass.
+- API suite on Node 24: 415 tests, 411 pass, 4 skipped (Docker/Mongo integrations when the environment is absent).
+- New Playwright journeys `client/tests/experience-modes.test.mjs` exercise the real preview API, the no-mission guarantee, Advanced scientific disclosure, Simple/Advanced Run context visibility, and clarification answers reaching the real forecast plan.
 - Existing production workspace and mobile RTL/LTR journeys still pass.
 
 ## 5. Deferred work

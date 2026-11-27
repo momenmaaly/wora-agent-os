@@ -273,6 +273,28 @@ export interface ApproachTask {
   dependsOn: number[]; acceptance: string[]; detail: string;
 }
 
+export interface ClarificationQuestion {
+  id: string;
+  code: 'information' | 'clarification' | 'forecast_data' | 'optimization_data' | 'method_gap' | 'problem_class' | 'capability_gap' | 'risk_approval' | 'domain';
+  prompt: string;
+  rationale: string;
+  materiality: 'critical' | 'high' | 'medium' | 'low';
+  blocking: boolean;
+  fields: string[];
+  source: 'reasoning' | 'planner' | 'method-catalog';
+}
+
+export interface ClarificationPlan {
+  schemaVersion: string;
+  questions: ClarificationQuestion[];
+  criticalCount: number;
+  requiresAnswers: boolean;
+  canProceed: boolean;
+  summary: string;
+}
+
+export interface ClarificationAnswer { questionId: string; answer: string }
+
 export interface ApproachPreview {
   problem: ProblemProfile;
   plan: ApproachTask[];
@@ -282,6 +304,7 @@ export interface ApproachPreview {
     team: Array<{ agentId: string; name: string; specialization: string; capabilities: string[]; confidence: number }>;
     gaps: Array<{ taskIndex: number; taskTitle: string; capability: string; reason: string }>;
   };
+  clarifications?: ClarificationPlan;
 }
 
 export interface FormalTask {
@@ -419,8 +442,13 @@ export const osApi = {
   understandProblem: (objective: string, track?: string) => request<ProblemProfile>('/problems/understand', { method: 'POST', body: JSON.stringify({ objective, ...(track ? { track } : {}) }) }),
   previewApproach: (objective: string, track?: string) =>
     request<ApproachPreview>('/capabilities/analyze', { method: 'POST', body: JSON.stringify({ objective, ...(track ? { track } : {}) }) }),
-  launchMission: (objective: string, track?: string) =>
-    request<MissionDetail>('/missions', { method: 'POST', body: JSON.stringify({ objective, ...(track ? { track } : {}) }) }),
+  clarifyProblem: (objective: string, track?: string, answers?: Record<string, string>) =>
+    request<ClarificationPlan>('/problems/clarify', { method: 'POST', body: JSON.stringify({ objective, ...(track ? { track } : {}), ...(answers && Object.keys(answers).length ? { answers } : {}) }) }),
+  launchMission: (objective: string, track?: string, clarifications?: ClarificationAnswer[]) =>
+    request<MissionDetail>('/missions', {
+      method: 'POST',
+      body: JSON.stringify({ objective, ...(track ? { track } : {}), ...(clarifications?.length ? { clarifications } : {}) }),
+    }),
   artifact: (id: string) => request<{ id: string; name: string; kind: string; content: string }>(`/artifacts/${encodeURIComponent(id)}`),
 
   employeeSchedule: (body: ScheduleRequest) =>

@@ -22,6 +22,7 @@ import { listVerifications, getVerification } from './verification.js';
 import { listTaskLeases, listTaskCheckpoints, getExecutionLimits, setExecutionLimits } from './task-queue.js';
 import { understandProblem, getProblemProfile } from './problem.js';
 import { modelProblem } from './problem-model.js';
+import { buildClarificationPlan } from './clarification.js';
 import { composeMissionPlan, getComposition } from './capability-composition.js';
 import { getMissionOutcome } from './outcome-verification.js';
 import { analyzeProblemReasoning, buildDeterministicReasoning, filterReasoningForActor } from './reasoning-engine.js';
@@ -292,11 +293,17 @@ export function createOsRouter(options: { production?: boolean } = {}): Router {
   router.post('/capabilities/analyze', asyncWrap((req, res) => {
     if (!rateLimit(workspace(res), 60, req.path)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
     const body = capabilityAnalysisSchema.parse(req.body ?? {});
-    const problem = understandProblem({ objective: body.objective, track: body.track });
+    const unified = modelProblem({ workspaceId: workspace(res), objective: body.objective, track: body.track, actor: actor(res) });
+    const reasoning = buildDeterministicReasoning({
+      workspaceId: workspace(res), objective: body.objective, track: body.track,
+      baseProblem: unified, actor: actor(res),
+    });
+    const problem = unified.baseProfile;
     const plan = buildPlan(body.objective, body.track, workspace(res));
     const requirements = requirementsForPlan(plan, workspace(res));
     const team = previewTeam(workspace(res), plan, problem);
-    res.json({ problem, plan, requirements, team });
+    const clarifications = buildClarificationPlan({ problem, reasoning, plan });
+    res.json({ problem, plan, requirements, team, clarifications });
   }));
 
   router.get('/capabilities/performance', asyncWrap((req, res) => {
@@ -504,6 +511,10 @@ function highRiskAgentCapabilities(permissions: readonly string[], tools: readon
     track: z.string().trim().min(1).max(40).optional(),
     memoryScopes: z.array(z.enum(MEMORY_SCOPES)).max(8).optional(),
     memoryScopeIds: z.record(z.string(), z.array(z.string().trim().min(1).max(120)).max(50)).optional(),
+    clarifications: z.array(z.object({
+      questionId: z.string().trim().min(1).max(120),
+      answer: z.string().trim().min(1).max(2000),
+    }).strict()).max(12).optional(),
     execute: z.boolean().default(true),
   }).strict();
 
@@ -514,6 +525,7 @@ function highRiskAgentCapabilities(permissions: readonly string[], tools: readon
       workspaceId: workspace(res), objective: body.objective, actor: actor(res), track: body.track,
       correlationId: correlation(res), memoryScopes: body.memoryScopes,
       memoryScopeIds: body.memoryScopeIds as Partial<Record<MemoryScope, string[]>> | undefined,
+      clarifications: body.clarifications,
     });
     // Execute asynchronously by default; execute:false leaves the mission for a
     // durable worker or an explicit POST /missions/:id/execute.
@@ -830,6 +842,21 @@ function highRiskAgentCapabilities(permissions: readonly string[], tools: readon
       workspaceId: workspace(res), objective: body.objective, track: body.track, actor: actor(res),
       scopes: body.memoryScopes, scopeIds: body.memoryScopeIds as Partial<Record<MemoryScope, string[]>> | undefined,
     }));
+  }));
+
+  router.post('/problems/clarify', asyncWrap((req, res) => {
+    if (!rateLimit(workspace(res), 60, req.path)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    const body = z.object({
+      objective: z.string().trim().min(3).max(4000), track: z.string().trim().min(1).max(40).optional(),
+      answers: z.record(z.string().trim().min(1).max(120), z.string().trim().min(1).max(2000)).optional(),
+    }).strict().parse(req.body ?? {});
+    const unified = modelProblem({ workspaceId: workspace(res), objective: body.objective, track: body.track, actor: actor(res) });
+    const reasoning = buildDeterministicReasoning({
+      workspaceId: workspace(res), objective: body.objective, track: body.track,
+      baseProblem: unified, actor: actor(res),
+    });
+    const plan = buildPlan(body.objective, body.track, workspace(res));
+    res.json(buildClarificationPlan({ problem: unified.baseProfile, reasoning, plan, answers: body.answers }));
   }));
 
   router.post('/problems/compose', asyncWrap((req, res) => {
