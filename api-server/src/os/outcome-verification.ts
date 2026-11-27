@@ -319,6 +319,15 @@ export function verifyMissionOutcome(workspaceId: string, missionId: string): Ou
       evidence: inputGapTasks.map((task) => task.detail).join(' | ').slice(0, 1_500),
     });
   }
+  const branchGapRows = db.prepare("SELECT payload, reason FROM os_decision_records WHERE workspace_id = ? AND mission_id = ? AND kind = 'adaptive-branch-gap'").all(workspaceId, missionId) as Array<{ payload?: string; reason?: string }>;
+  if (branchGapRows.length) {
+    partial = true;
+    add({
+      id: 'adaptive-branch-gap', kind: 'outcome', status: 'not_run',
+      description: 'At least one independent scientific branch has no executable method; supported branches were still executed',
+      evidence: branchGapRows.map((row) => row.reason ?? '').join(' | ').slice(0, 1_500),
+    });
+  }
   const compositionRow = db.prepare('SELECT gaps FROM os_capability_compositions WHERE mission_id = ?').get(missionId) as { gaps?: string } | undefined;
   const compositionGaps = compositionRow?.gaps ? parseJson<Array<{ message?: string; missing?: string[] }>>(compositionRow.gaps, []) : [];
   if (compositionGaps.length) {

@@ -49,6 +49,7 @@ export const SCIENTIFIC_TOOL_BY_KIND: Record<FormulationKind, string> = {
 export const ADVANCED_SCIENTIFIC_KINDS = new Set<FormulationKind>([
   'max_flow', 'min_cost_flow', 'bipartite_matching', 'tsp', 'vrp',
   'pareto_multi_objective', 'bayesian_inference', 'queue_simulation', 'scenario_comparison',
+  'multi_criteria_decision',
 ]);
 
 export function scientificKindForTool(toolId: string | null | undefined): FormulationKind | null {

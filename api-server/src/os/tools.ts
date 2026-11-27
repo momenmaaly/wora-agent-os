@@ -1425,6 +1425,8 @@ export async function runTool(id: string, rawInput: unknown, ctx: ToolContext): 
       return { ok: false, tool: id, error: 'This action requires a valid, payload-bound approval', code: 'APPROVAL_REQUIRED', durationMs: Date.now() - started };
     }
   }
+  const testDelay = process.env['NODE_ENV'] === 'test' ? Number(process.env['WORA_TEST_TOOL_DELAY_MS'] ?? 0) : 0;
+  if (Number.isFinite(testDelay) && testDelay > 0) await new Promise((resolve) => setTimeout(resolve, Math.min(testDelay, 5_000)));
   let timer: NodeJS.Timeout | undefined;
   const controller = new AbortController();
   const executionCtx: ToolContext = { ...ctx, signal: controller.signal };

@@ -51,7 +51,7 @@ function forbiddenPairs(input: Record<string, unknown>): Array<{ row: number; co
   });
 }
 
-function assignmentToLp(input: Record<string, unknown>): Record<string, unknown> | null {
+export function assignmentToLp(input: Record<string, unknown>): Record<string, unknown> | null {
   const matrix = finiteMatrix(input['costMatrix']);
   if (!matrix) return null;
   const rows = matrix.length;
@@ -72,7 +72,7 @@ function assignmentToLp(input: Record<string, unknown>): Record<string, unknown>
   return { sense: 'minimize', objective, constraints, binaryVars: variables.flat() };
 }
 
-function employeeScheduleToLp(input: Record<string, unknown>): Record<string, unknown> | null {
+export function employeeScheduleToLp(input: Record<string, unknown>): Record<string, unknown> | null {
   const employees = Array.isArray(input['employees']) ? input['employees'] as Array<Record<string, unknown>> : null;
   const shifts = Array.isArray(input['shifts']) ? input['shifts'] as Array<Record<string, unknown>> : null;
   if (!employees?.length || !shifts?.length) return null;
@@ -230,23 +230,26 @@ export function alternativeForTask(task: { tool: string | null; toolInput: Recor
   const target = getTool('or.solve_lp');
   if (!target) return null;
   if (!listAlgorithms().some((algorithm) => algorithm.toolId === 'or.solve_lp')) return null;
+  const model = task.toolInput['model'];
+  const input = model && typeof model === 'object' && !Array.isArray(model) ? model as Record<string, unknown> : task.toolInput;
   if (task.tool === 'or.solve_lp') {
-    const input = lpToAssignment(task.toolInput);
-    return input ? { tool: 'or.assignment', input, rationale: 'The LP is an exact binary assignment formulation with row/column equality constraints; it was converted back to the Hungarian method with the same forbidden pairs.' } : null;
+    const translated = lpToAssignment(input);
+    return translated ? { tool: 'or.assignment', input: translated, rationale: 'The LP is an exact binary assignment formulation with row/column equality constraints; it was converted back to the Hungarian method with the same forbidden pairs.' } : null;
   }
   if (task.tool === 'or.assignment') {
-    const input = assignmentToLp(task.toolInput);
-    return input ? { tool: 'or.solve_lp', input, rationale: 'Hungarian assignment was reformulated as an exact binary MIP with the same row/column constraints; side constraints are encoded as forbidden assignments.' } : null;
+    const translated = assignmentToLp(input);
+    return translated ? { tool: 'or.solve_lp', input: translated, rationale: 'Hungarian assignment was reformulated as an exact binary MIP with the same row/column constraints; side constraints are encoded as forbidden assignments.' } : null;
   }
   if (task.tool === 'or.employee_schedule') {
-    const input = employeeScheduleToLp(task.toolInput);
-    return input ? { tool: 'or.solve_lp', input, rationale: 'Employee scheduling was reformulated as an exact binary MIP with the same availability, workload and demand constraints; forbidden pairs are encoded explicitly.' } : null;
+    const translated = employeeScheduleToLp(input);
+    return translated ? { tool: 'or.solve_lp', input: translated, rationale: 'Employee scheduling was reformulated as an exact binary MIP with the same availability, workload and demand constraints; forbidden pairs are encoded explicitly.' } : null;
   }
   return null;
 }
 
 export function applyAdaptiveReplan(input: {
   workspaceId: string; missionId: string; taskId: string; reason: string; actor: string;
+  toolInput?: Record<string, unknown>;
 }): AdaptiveReplanResult {
   const db = getOsDb();
   const task = db.prepare('SELECT * FROM os_tasks WHERE workspace_id = ? AND mission_id = ? AND id = ?')
@@ -260,7 +263,7 @@ export function applyAdaptiveReplan(input: {
   if (previous.length >= 2) {
     return { applied: false, fromTool: task.tool, toTool: null, planVersion: null, reason: 'Adaptive replan limit reached', gap: 'adaptive_replan_limit' };
   }
-  const toolInput = openTaskToolInput<Record<string, unknown>>(input.workspaceId, task.id, task.tool_input, {});
+  const toolInput = input.toolInput ?? openTaskToolInput<Record<string, unknown>>(input.workspaceId, task.id, task.tool_input, {});
   const candidate = alternativeForTask({ tool: task.tool, toolInput });
   if (!candidate) {
     return { applied: false, fromTool: task.tool, toTool: null, planVersion: null, reason: 'No implemented equivalent alternative exists', gap: 'no_implemented_alternative' };

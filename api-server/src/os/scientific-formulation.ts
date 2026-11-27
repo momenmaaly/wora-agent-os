@@ -178,7 +178,7 @@ function formulateAssignment(raw: unknown): ScientificFormulation {
     formulation.missingInputs = ['a rectangular numeric cost matrix'];
     return finish(formulation, null);
   }
-  const model = { costMatrix: matrix, ...(Array.isArray(raw['rowLabels']) ? { rowLabels: raw['rowLabels'] } : {}), ...(Array.isArray(raw['colLabels']) ? { colLabels: raw['colLabels'] } : {}) };
+  const model = { costMatrix: matrix, ...(Array.isArray(raw['rowLabels']) ? { rowLabels: raw['rowLabels'] } : {}), ...(Array.isArray(raw['colLabels']) ? { colLabels: raw['colLabels'] } : {}), ...(Array.isArray(raw['forbidden']) ? { forbidden: raw['forbidden'] } : {}) };
   formulation.decisionVariables = Array.from({ length: matrix.length }, (_, row) => Array.from({ length: matrix[0]!.length }, (_, col) => `x_${row}_${col}`)).flat();
   formulation.inputData = ['rectangular cost matrix', 'optional row and column labels'];
   formulation.objective = 'minimize the sum of selected assignment costs';
@@ -204,7 +204,7 @@ function formulateSchedule(raw: unknown): ScientificFormulation {
   if (!employees.length) formulation.missingInputs.push('employees with availability and cost');
   if (!shifts.length) formulation.missingInputs.push('shifts with demand');
   if (formulation.missingInputs.length) return finish(formulation, null);
-  const model = { employees, shifts } as ScheduleInput;
+  const model = { employees, shifts, ...(Array.isArray(raw['forbidden']) ? { forbidden: raw['forbidden'] } : {}) } as ScheduleInput;
   formulation.decisionVariables = model.employees.flatMap((employee) => model.shifts.map((shift) => `x_${employee.id}_${shift.id}`));
   formulation.inputData = ['employee hourly cost', 'employee availability', 'employee max assignments', 'shift demand'];
   formulation.objective = 'minimize total labor cost';

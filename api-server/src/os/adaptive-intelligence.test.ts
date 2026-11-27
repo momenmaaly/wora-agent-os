@@ -68,13 +68,13 @@ const lp = 'Allocate a budget with a linear program. Test data: {"sense":"minimi
 const schedule = 'Schedule employees across shifts. Test data: {"employees":[{"id":"e1","name":"A","hourlyCost":10,"availability":["s1","s2"],"maxAssignments":1},{"id":"e2","name":"B","hourlyCost":12,"availability":["s1","s2"],"maxAssignments":1}],"shifts":[{"id":"s1","name":"S1","demand":1},{"id":"s2","name":"S2","demand":1}]}';
 const multi = `Update the probability that demand is high and compare three demand/cost scenarios. Test data: ${JSON.stringify({ type: 'beta_binomial', prior: { alpha: 2, beta: 2 }, successes: 7, trials: 10 })} ${JSON.stringify({ trials: 500, seed: 3, scenarios: [{ name: 'premium', items: [{ name: 'demand', optimistic: 80, likely: 60, pessimistic: 40 }] }, { name: 'balanced', items: [{ name: 'demand', optimistic: 70, likely: 55, pessimistic: 35 }] }] })}`;
 
-test('known problems — assignment compares Hungarian and LP and selects the executable method', () => {
+test('known problems — assignment compares Hungarian and an exact MIP translation and selects the stronger fit', () => {
   const { decision } = decisionFor(assignment);
   assert.equal(decision.scientificRequired, true);
   assert.equal(decision.structureKinds[0], 'assignment');
   assert.equal(decision.selected?.toolId, 'or.assignment');
   assert.ok(decision.candidates.some((candidate) => candidate.toolId === 'or.solve_lp'));
-  assert.ok(decision.candidates.some((candidate) => candidate.toolId === 'or.solve_lp' && !candidate.eligible));
+  assert.ok(decision.candidates.some((candidate) => candidate.toolId === 'or.solve_lp' && candidate.eligible));
   assert.match(decision.rationale, /Selected Hungarian Assignment/u);
   const plan = buildPlan(assignment, undefined, WS);
   assert.equal(plan[1]?.tool, 'or.assignment');

@@ -8,6 +8,9 @@
  */
 import { createHash } from 'node:crypto';
 import { SECRET_PATTERNS } from './secrets.js';
+import { verifyAssignmentSolution, verifyEmployeeSchedule, verifyLpSolution, type ScientificVerification } from './scientific-verification.js';
+import { verifyTsp, verifyVrp, type TspModel, type TspResult, type VrpModel, type VrpResult } from './routing.js';
+import type { AssignmentResult, LpModel, LpResult, ScheduleInput, ScheduleResult } from './ortools.js';
 
 export interface IndependentCheck {
   id: string;
@@ -122,6 +125,56 @@ function contractCheck(tool: string | null, output: unknown): IndependentCheck {
     : { id: 'output-contract', kind: 'api-contract', description: 'The tool output satisfies its documented contract', status: 'passed', evidence: tool ?? 'generic object contract' };
 }
 
+function modelOf(input: unknown): Record<string, unknown> | null {
+  if (!isRecord(input)) return null;
+  return isRecord(input['model']) ? input['model'] : input;
+}
+
+function verificationCheck(id: string, description: string, verification: ScientificVerification): IndependentCheck {
+  return {
+    id, kind: 'recomputation', description,
+    status: verification.passed ? 'passed' : 'failed',
+    evidence: verification.passed
+      ? `${verification.checks.length} independent check(s) passed`
+      : verification.failures.slice(0, 5).join('; ') || 'independent verification failed',
+  };
+}
+
+function recomputationChecks(tool: string | null, toolInput: unknown, output: unknown): IndependentCheck[] {
+  const model = modelOf(toolInput);
+  if (!model || !isRecord(output)) return [];
+  const checks: IndependentCheck[] = [];
+  try {
+    if (tool === 'or.assignment' && Array.isArray(model['costMatrix']) && Array.isArray(output['assignments'])) {
+      checks.push(verificationCheck('recompute-assignment', 'Assignment indices, uniqueness and total cost are recomputed from the input matrix',
+        verifyAssignmentSolution(model['costMatrix'] as number[][], output as unknown as AssignmentResult)));
+    }
+    if (tool === 'or.employee_schedule' && Array.isArray(model['employees']) && Array.isArray(model['shifts']) && Array.isArray(output['assignments'])) {
+      checks.push(verificationCheck('recompute-schedule', 'Demand, availability, workload and labor cost are recomputed from the input roster',
+        verifyEmployeeSchedule({ employees: model['employees'], shifts: model['shifts'] } as ScheduleInput, output as unknown as ScheduleResult)));
+    }
+    if (tool === 'or.solve_lp' && Array.isArray(model['objective']) && Array.isArray(model['constraints']) && isRecord(output['variables'])) {
+      checks.push(verificationCheck('recompute-lp', 'Objective value, constraints, bounds and integrality are recomputed from the input model',
+        verifyLpSolution(model as unknown as LpModel, output as unknown as LpResult)));
+    }
+    if (tool === 'routing.tsp' && (Array.isArray(model['points']) || Array.isArray(model['distanceMatrix'])) && Array.isArray(output['tour'])) {
+      checks.push(verificationCheck('recompute-tsp', 'Tour coverage and distance are recomputed from the input points or matrix',
+        verifyTsp(model as unknown as TspModel, output as unknown as TspResult)));
+    }
+    if (tool === 'routing.vrp' && Array.isArray(model['depots']) && Array.isArray(model['customers']) && Array.isArray(model['vehicles']) && Array.isArray(output['routes'])) {
+      checks.push(verificationCheck('recompute-vrp', 'Customer coverage, capacity, route distance and approximation label are recomputed from the input model',
+        verifyVrp(model as unknown as VrpModel, output as unknown as VrpResult)));
+    }
+  } catch (error) {
+    checks.push({
+      id: 'recompute-error', kind: 'recomputation',
+      description: 'The independent verifier can recompute the result from the input',
+      status: 'failed', evidence: error instanceof Error ? error.message : 'recomputation failed',
+    });
+  }
+  return checks;
+}
+
 function propertyChecks(tool: string | null, output: unknown): IndependentCheck[] {
   if (!isRecord(output)) return [];
   const checks: IndependentCheck[] = [];
@@ -191,6 +244,7 @@ export function verifyIndependently(input: {
     evidence: input.toolOk ? (hasContent(input.output) ? 'Output contains content.' : 'Output was empty.') : 'Tool did not succeed.',
   });
   checks.push(...propertyChecks(input.tool, input.output));
+  checks.push(...recomputationChecks(input.tool, input.toolInput, input.output));
 
   const leaked: string[] = [];
   const scan = [...strings(input.output), ...strings(input.evidence)];

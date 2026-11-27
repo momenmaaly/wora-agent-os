@@ -31,7 +31,7 @@ import { openTaskToolInput, sealTaskToolInput } from '../security/task-fields.js
 import { collectCandidateLessons } from './lessons.js';
 import { comparePlans, savePlanVersion, listPlanVersions, verifyPlanExecution, replanMission } from './planning.js';
 import { compareSolutionStrategies, saveDecisionRecord, listDecisionRecords, assessReplan } from './decision.js';
-import { applyAdaptiveReplan, alternativeForTask, planAdaptation } from './adaptive-replan.js';
+import { applyAdaptiveReplan, alternativeForTask, planAdaptation, assignmentToLp, employeeScheduleToLp } from './adaptive-replan.js';
 import { composeMissionPlan, saveComposition, getComposition } from './capability-composition.js';
 import { cleanupMissionSessions } from '../runtime/cloud.js';
 import { closeBrowserSession, listBrowserSessions } from '../runtime/browser.js';
@@ -195,16 +195,26 @@ function scientificAcceptance(kind: FormulationKind): string[] {
   }
 }
 
+function translatedModelForKind(kind: FormulationKind, model: Record<string, unknown> | null): Record<string, unknown> | null {
+  if (!model) return null;
+  if (kind === 'linear_programming') {
+    const shape = structuredScientificKind(model);
+    if (shape === 'assignment') return assignmentToLp(model);
+    if (shape === 'employee_scheduling') return employeeScheduleToLp(model);
+  }
+  return model;
+}
+
 function multiScientificPlan(text: string, blocks: Record<string, unknown>[], workspaceId: string, adaptive?: AdaptiveMethodDecision): PlanTask[] | null {
   const profile = understandProblem({ objective: text });
   const decision = adaptive ?? selectAdaptiveMethod({ workspaceId, objective: text, profile, blocks });
   if (decision.branches.length < 2) return null;
   const selectedBranches = decision.branches.filter((branch) => branch.selected && modelForScientificKind(branch.selected.kind, blocks[branch.index] ?? null) !== null);
-  if (selectedBranches.length < 2) return null;
+  if (selectedBranches.length < 1) return null;
   const tasks: PlanTask[] = [];
   for (const branch of selectedBranches) {
     const selected = branch.selected!;
-    const model = modelForScientificKind(selected.kind, blocks[branch.index] ?? null);
+    const model = modelForScientificKind(selected.kind, translatedModelForKind(selected.kind, blocks[branch.index] ?? null));
     if (model === null) continue;
     const planned = scientificPlan(text, selected.kind, model);
     if (!planned) continue;
@@ -219,7 +229,7 @@ function multiScientificPlan(text: string, blocks: Record<string, unknown>[], wo
     planned[1]!.detail = `${planned[1]!.detail} Selected automatically; no user algorithm selection was required. Independent branches may execute in parallel when worker capacity allows.`;
     tasks.push(...planned);
   }
-  return tasks.length >= 4 ? tasks : null;
+  return tasks.length >= 2 ? tasks : null;
 }
 
 function automaticScientificPlan(text: string, structured: Record<string, unknown> | null, blocks: Record<string, unknown>[] = [], workspaceId = 'wora-preview', adaptive?: AdaptiveMethodDecision): PlanTask[] | null {
@@ -236,13 +246,14 @@ function automaticScientificPlan(text: string, structured: Record<string, unknow
     return [gap];
   }
   const selectedKind = selected?.kind ?? scientificKindForTool(profile.scientific.method?.toolId ?? null);
-  const shapeKind = structuredScientificKind(structured);
+  const effectiveModel = selectedKind === 'linear_programming' ? translatedModelForKind('linear_programming', structured) : structured;
+  const shapeKind = structuredScientificKind(effectiveModel);
   const kind = selectedKind ?? shapeKind;
   if (!kind) return null;
   // Preserve the established sample/playbook paths for legacy optimization
   // objectives that do not embed a real model. Advanced methods never invent data.
   if (!structured && !ADVANCED_SCIENTIFIC_KINDS.has(kind)) return null;
-  const model = modelForScientificKind(kind, structured);
+  const model = modelForScientificKind(kind, effectiveModel);
   if (model === null) {
     const missing = selected?.requiredInputs ?? profile.scientific.method?.requiredInputs ?? [];
     const research = decision.research ?? researchUnresolvedMethod({ objective: text, profile, excludeExisting: true });
@@ -829,6 +840,21 @@ export function createMission(input: {
       workspaceId: input.workspaceId, missionId, kind: 'adaptive-method-comparison',
       comparison: adaptive, reason: adaptive.rationale, actor: input.actor ?? 'user',
     });
+    const branchGaps = adaptive.branches.filter((branch) => !branch.selected && (branch.candidates.length > 0 || branch.research));
+    if (branchGaps.length) {
+      saveDecisionRecord({
+        workspaceId: input.workspaceId, missionId, kind: 'adaptive-branch-gap',
+        comparison: {
+          branches: branchGaps.map((branch) => ({
+            index: branch.index, shapeKind: branch.shapeKind, rationale: branch.rationale,
+            missingInformation: branch.missingInformation, research: branch.research,
+          })),
+          selectedBranches: adaptive.branches.filter((branch) => branch.selected).map((branch) => ({ index: branch.index, tool: branch.selected?.toolId, kind: branch.selected?.kind })),
+        },
+        reason: `${branchGaps.length} independent branch(es) have no executable method; supported branches continue and the gap is reported rather than silently discarded.`,
+        actor: input.actor ?? 'user',
+      });
+    }
     if (adaptive.research && adaptive.research.status !== 'not-needed') {
       saveDecisionRecord({
         workspaceId: input.workspaceId, missionId, kind: 'method-research',
@@ -1574,7 +1600,7 @@ async function executeMissionInner(missionId: string, actor = 'orchestrator', op
           const transition = applyAdaptiveReplan({
             workspaceId: mission.workspace_id, missionId, taskId: task.id,
             reason: `method ${task.tool ?? 'none'} failed: ${lastIssues.join('; ').slice(0, 300)}`,
-            actor: 'orchestrator',
+            actor: 'orchestrator', toolInput,
           });
           if (transition.applied) {
             const fresh = db.prepare('SELECT tool, tool_input FROM os_tasks WHERE id = ?').get(task.id) as { tool: string | null; tool_input: string };

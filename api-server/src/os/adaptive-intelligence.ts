@@ -19,6 +19,7 @@ import {
   scientificToolForKind, structuredScientificKind,
 } from './scientific-routing.js';
 import { researchUnresolvedMethod, type MethodResearch } from './method-research.js';
+import { assignmentToLp, employeeScheduleToLp } from './adaptive-replan.js';
 
 export const ADAPTIVE_INTELLIGENCE_SCHEMA_VERSION = '1.0';
 
@@ -227,6 +228,8 @@ function candidateFor(input: {
   profile: ProblemProfile;
   objective: string;
   workspaceId: string;
+  provenAlternative?: boolean;
+  extraReason?: string;
 }): MethodCandidate {
   const toolId = scientificToolForKind(input.kind);
   const algorithm = algorithmFor(input.kind);
@@ -253,25 +256,28 @@ function candidateFor(input: {
   ) * 1000) / 1000;
   const toolAvailable = Boolean(tool && algorithm);
   const unsupported = unsupportedRequirement(input.kind, input.objective);
-  const executablePlan = toolAvailable && !unsupported && (hasBlock ? formulation.executable : Boolean(selectedMatch) && !advanced);
+  const historyRejected = input.provenAlternative === true && history.failed > 0 && history.verified === 0;
+  const executablePlan = toolAvailable && !unsupported && !historyRejected && (hasBlock ? formulation.executable : Boolean(selectedMatch) && !advanced);
   const eligible = executablePlan;
   const rejectionReason = !toolAvailable ? `The ${toolId} tool or its tested catalog entry is unavailable.`
     : unsupported ? unsupported
-      : hasBlock && !formulation.executable ? `Missing required inputs: ${(formulation.missingInputs.length ? formulation.missingInputs : ['a valid structured model']).join('; ')}.`
-        : !hasBlock && advanced ? 'This method requires a complete structured model; no sample data is invented.'
-          : !hasBlock && !selectedMatch ? 'The objective does not provide enough structure to execute this method.'
-            : null;
+      : historyRejected ? `Workspace history: ${history.failed} failed and 0 verified outcomes for this method; a proven equivalent translation exists.`
+        : hasBlock && !formulation.executable ? `Missing required inputs: ${(formulation.missingInputs.length ? formulation.missingInputs : ['a valid structured model']).join('; ')}.`
+          : !hasBlock && advanced ? 'This method requires a complete structured model; no sample data is invented.'
+            : !hasBlock && !selectedMatch ? 'The objective does not provide enough structure to execute this method.'
+              : null;
   const reasons = [
     input.shapeKind === input.kind ? `The supplied model has the exact ${kindLabel(input.kind)} shape.` : input.shapeKind && compatible(input.shapeKind, input.kind) ? `Compatible formulation of the supplied ${kindLabel(input.shapeKind)} model.` : '',
     input.selectedKind === input.kind ? 'The deterministic problem profile selected this class.' : '',
     text >= 0.7 ? 'The objective contains strong domain signals for this class.' : '',
     formulation.executable ? 'The formulation is executable with the supplied inputs.' : '',
-    history.attempts >= 2 ? `Workspace history: ${history.verified}/${history.attempts} verified outcomes.` : '',
+    input.extraReason ?? '',
+    history.failed > 0 && history.verified === 0 ? `Workspace history: ${history.failed} failed and 0 verified outcomes.` : history.attempts >= 2 ? `Workspace history: ${history.verified}/${history.attempts} verified outcomes.` : '',
   ].filter(Boolean);
   return {
     toolId, algorithmId: algorithm?.id ?? 'unknown', kind: input.kind, name: algorithm?.name ?? kindLabel(input.kind),
     eligible, executablePlan, score, structureFit, inputFit, dataQuality, verificationFit, textFit: text, historyFit, costFit,
-    history, reasons: reasons.slice(0, 4), rejectionReason,
+    history, reasons: reasons.slice(0, 5), rejectionReason,
     requiredInputs: formulation.missingInputs.length ? formulation.missingInputs : [...(algorithm?.inputs ?? [])],
     verification: formulation.verification.length ? formulation.verification : [...(algorithm?.verification ?? [])],
     guarantee: algorithm?.guarantee ?? 'No tested guarantee is available.', limitations: [...(algorithm?.limitations ?? [])].slice(0, 4),
@@ -292,10 +298,30 @@ function decideBranch(input: {
     ...(selectedKind ? [selectedKind, ...alternativeKinds(selectedKind)] : []),
     ...featureKinds(input.profile, input.objective),
   ]);
-  const candidates = kinds.map((kind) => candidateFor({
+  const translations: Array<{ source: FormulationKind; kind: FormulationKind; block: Record<string, unknown>; reason: string }> = [];
+  if (input.block && shapeKind === 'assignment') {
+    const translated = assignmentToLp(input.block);
+    if (translated) translations.push({ source: 'assignment', kind: 'linear_programming', block: translated, reason: 'An exact binary MIP translation preserves the assignment constraints and supports side constraints.' });
+  }
+  if (input.block && shapeKind === 'employee_scheduling') {
+    const translated = employeeScheduleToLp(input.block);
+    if (translated) translations.push({ source: 'employee_scheduling', kind: 'linear_programming', block: translated, reason: 'An exact binary MIP translation preserves availability, workload and demand constraints, including forbidden pairs.' });
+  }
+  const direct = kinds.map((kind) => candidateFor({
     kind, shapeKind, selectedKind, block: input.block, profile: input.profile,
     objective: input.objective, workspaceId: input.workspaceId,
-  })).sort((a, b) => Number(b.eligible) - Number(a.eligible) || b.score - a.score || a.toolId.localeCompare(b.toolId));
+    provenAlternative: translations.some((translation) => translation.source === kind),
+  }));
+  const translatedCandidates = translations.map((translation) => candidateFor({
+    kind: translation.kind, shapeKind, selectedKind, block: translation.block, profile: input.profile,
+    objective: input.objective, workspaceId: input.workspaceId, extraReason: translation.reason,
+  }));
+  const byTool = new Map<string, MethodCandidate>();
+  for (const candidate of [...translatedCandidates, ...direct]) {
+    const existing = byTool.get(candidate.toolId);
+    if (!existing || (candidate.eligible && !existing.eligible)) byTool.set(candidate.toolId, candidate);
+  }
+  const candidates = [...byTool.values()].sort((a, b) => Number(b.eligible) - Number(a.eligible) || b.score - a.score || a.toolId.localeCompare(b.toolId));
   let selected = candidates.find((candidate) => candidate.executablePlan) ?? null;
   if (!input.block && selected && selected.textFit < 0.3) {
     const strongerMissingMethod = candidates.find((candidate) => !candidate.eligible && ADVANCED_SCIENTIFIC_KINDS.has(candidate.kind) && candidate.textFit >= 0.6);
@@ -356,7 +382,7 @@ export function selectAdaptiveMethod(input: {
       'Method scores are explicit deterministic policy scores, not learned probabilities or guarantees.',
       'A method is executable only when its tool exists and its formulation has the supplied inputs.',
       'A different formulation is rejected unless an equivalent translation exists.',
-      'Workspace method history is used only after at least two verified or failed outcomes.',
+      'Workspace method history adjusts scores after at least two outcomes; a single failure can reject a method only when a proven equivalent translation exists.',
     ],
     missingInformation,
     research,

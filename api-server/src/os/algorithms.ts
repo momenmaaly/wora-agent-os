@@ -797,7 +797,7 @@ function detectProblem(input: AlgorithmSelectionInput): {
     keyword('assignment', 'assignment or matching', /cost matrix|assignment|matching|assign .* (task|job|worker)|توزيع|مطابقة/u) ??
     keyword('monte_carlo_simulation', 'simulation, risk or uncertainty', /monte carlo|simulat|scenario|risk|uncertainty|محاكاة/u) ??
     keyword('forecasting', 'forecasting or time series', /forecast|trend|time series|demand|تنبؤ/u) ??
-    keyword('multi_criteria_decision', 'weighted criteria or alternatives', /decision|criteria|alternative|vendor|weighted matrix|قرار/u) ??
+    keyword('multi_criteria_decision', 'weighted criteria or alternatives', /decision\s+(?:matrix|analysis)|multi[- ]?criteria|criteria|alternatives?|vendor|weighted\s+matrix|قرار/u) ??
     keyword('extractive_summarization', 'summarization', /summary|summarize|extract|ملخص/u) ??
     keyword('descriptive_statistics', 'descriptive statistics', /statistics|distribution|outlier|describe|إحصاء/u) ??
     keyword('integer_programming', 'integer optimization', /integer program|mixed-integer|mip|برمجة صحيحة/u) ??

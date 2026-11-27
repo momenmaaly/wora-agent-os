@@ -77,7 +77,7 @@ function deriveFeatures(text: string): ProblemFeatures {
   if (/simulat|risk|uncertain|monte carlo|محاكاة|مخاطر/i.test(text)) requires.push('simulation');
   if (/forecast|time series|trend|تنبؤ|سلسلة زمنية/i.test(text)) requires.push('forecasting');
   if (/statistic|describe|distribution|outlier|إحصاء/i.test(text)) requires.push('statistics');
-  if (/decision|criteria|alternative|vendor|weighted matrix|قرار|معايير/i.test(text)) requires.push('decision');
+  if (/decision\s+(?:matrix|analysis)|multi[- ]?criteria|criteria|alternatives?|vendor|weighted\s+matrix|قرار|معايير/i.test(text)) requires.push('decision');
   if (/shortest\s*path|dijkstra|a\*|graph\s+(?:route|path|network)|network\s+path|أقصر\s+مسار|مسار\s+الشبكة/i.test(text)) requires.push('graph');
   if (/max(?:imum)?\s*flow|min(?:imum)?\s*cost\s*flow|network\s*flow|bipartite|matching|تدفق/i.test(text)) requires.push('network_flow');
   if (/travel(?:l)?ing\s+sales|tsp\b|vehicle\s+rout(?:e|ing)s?|vrp\b|capacitated\s+routing|route\s+(?:optimi[sz]|planning)|routing\s+(?:problem|plan|network)|shortest\s+tour|delivery\s+routes?|توجيه\s*المركبات|جولة\s*البائع/i.test(text)) requires.push('routing');
