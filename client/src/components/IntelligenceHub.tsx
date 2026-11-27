@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  BarChart3, Boxes, BrainCircuit, CheckCircle2, CircleAlert, FlaskConical, GraduationCap, LoaderCircle, Play, Plus, Scale, ShieldAlert, Trash2, Wrench,
+  BarChart3, Boxes, BrainCircuit, CheckCircle2, CircleAlert, FlaskConical, GraduationCap, LoaderCircle, Play, Plus, Route, Scale, ShieldAlert, Trash2, Wrench,
 } from 'lucide-react';
 import {
   OsApiError, osApi,
   type BenchmarkRun, type DecisionResult, type Lesson, type LessonEvent, type MonteCarloResult, type ScheduleRequest, type ScheduleResult, type ToolInfo,
-  type TwinRecord, type TwinScenarioResult, type TwinDriverInput,
+  type TwinRecord, type TwinScenarioResult, type TwinDriverInput, type ShortestPathResult, type ScientificFormulationResult,
 } from '../os/api.js';
 
-type Tab = 'schedule' | 'montecarlo' | 'decision' | 'tools' | 'playbooks' | 'twins' | 'lessons' | 'benchmarks';
+type Tab = 'schedule' | 'graph' | 'montecarlo' | 'decision' | 'tools' | 'playbooks' | 'twins' | 'lessons' | 'benchmarks';
 
 type EditableEmployee = ScheduleRequest['employees'][number] & { name: string };
 
@@ -117,6 +117,42 @@ export function IntelligenceHub() {
       setError(err instanceof OsApiError ? err.message : 'تعذر تشغيل مصفوفة القرار.');
     } finally {
       setDecisionBusy(false);
+    }
+  };
+
+  /* ─── Shortest path / scientific formulation ─── */
+  const [graphEdges, setGraphEdges] = useState('[\n  { "from": "A", "to": "B", "weight": 4 },\n  { "from": "A", "to": "C", "weight": 1 },\n  { "from": "C", "to": "B", "weight": 2 },\n  { "from": "B", "to": "D", "weight": 1 },\n  { "from": "C", "to": "D", "weight": 8 }\n]');
+  const [graphStart, setGraphStart] = useState('A');
+  const [graphGoal, setGraphGoal] = useState('D');
+  const [graphAlgorithm, setGraphAlgorithm] = useState<'auto' | 'dijkstra' | 'a_star'>('dijkstra');
+  const [graphHeuristic, setGraphHeuristic] = useState('{}');
+  const [graphResult, setGraphResult] = useState<ShortestPathResult | null>(null);
+  const [graphFormulation, setGraphFormulation] = useState<ScientificFormulationResult | null>(null);
+  const [graphBusy, setGraphBusy] = useState(false);
+
+  const runGraph = async () => {
+    setGraphBusy(true);
+    setError(null);
+    setGraphResult(null);
+    setGraphFormulation(null);
+    try {
+      const edges = JSON.parse(graphEdges) as Array<{ from: string; to: string; weight: number }>;
+      const heuristic = JSON.parse(graphHeuristic || '{}') as Record<string, number>;
+      const body = {
+        edges, start: graphStart.trim(), goal: graphGoal.trim(), algorithm: graphAlgorithm,
+        ...(Object.keys(heuristic).length ? { heuristic } : {}),
+      };
+      const formulation = await osApi.formulateScientific({ kind: 'shortest_path', model: body });
+      setGraphFormulation(formulation);
+      if (!formulation.executable) {
+        setError(`البيانات غير مكتملة: ${formulation.missingInputs.join('؛ ')}`);
+        return;
+      }
+      setGraphResult(await osApi.shortestPath(body));
+    } catch (err) {
+      setError(err instanceof OsApiError ? err.message : 'تعذر تشغيل تحليل المسار.');
+    } finally {
+      setGraphBusy(false);
     }
   };
 
@@ -268,6 +304,7 @@ export function IntelligenceHub() {
 
   const tabs: Array<{ id: Tab; label: string; icon: typeof BrainCircuit }> = [
     { id: 'schedule', label: 'الجدولة التشغيلية', icon: BarChart3 },
+    { id: 'graph', label: 'المسار الأمثل', icon: Route },
     { id: 'montecarlo', label: 'مونتي كارلو', icon: FlaskConical },
     { id: 'decision', label: 'مصفوفة القرار', icon: Scale },
     { id: 'tools', label: 'سجل الأدوات', icon: Wrench },
@@ -282,7 +319,7 @@ export function IntelligenceHub() {
       <header className="os-page-head">
         <div>
           <h1><BrainCircuit size={20} aria-hidden="true" /> الذكاء التشغيلي</h1>
-          <p className="subtle">حلّالون حقيقيون يعملون محليًا: HiGHS (LP/MIP)، خوارزمية Hungarian، محاكاة PERT مُبذورة، مصفوفات قرار مع اختبار متانة.</p>
+          <p className="subtle">حلّالون حقيقيون يعملون محليًا: HiGHS (LP/MIP)، Dijkstra وA* مع تحقق مستقل، خوارزمية Hungarian، محاكاة PERT مُبذورة، مصفوفات قرار مع اختبار متانة.</p>
         </div>
         <div className="os-tabs" role="tablist">
           {tabs.map((t) => <button key={t.id} type="button" role="tab" aria-selected={tab === t.id} className={`os-tab${tab === t.id ? ' is-active' : ''}`} onClick={() => setTab(t.id)}><t.icon size={14} aria-hidden="true" /> {t.label}</button>)}
@@ -354,6 +391,68 @@ export function IntelligenceHub() {
               <h4>تحقق مستقل للقيود (لا يثق بالحلّال)</h4>
               <ul className="os-validation">{scheduleResult.validation.map((line) => <li key={line}><CheckCircle2 size={12} aria-hidden="true" />{line}</li>)}</ul>
               <details><summary className="os-lp-summary">نموذج LP المولّد (HiGHS)</summary><pre className="os-pre">{scheduleResult.lp}</pre></details>
+            </div>
+          )}
+        </div>
+      )}
+
+      {tab === 'graph' && (
+        <div className="os-graph">
+          <div className="os-schedule-head">
+            <div>
+              <h2>أقصر مسار مع صياغة صريحة وتحقق مستقل</h2>
+              <p className="subtle">أدخل رسمًا موزونًا صريحًا. يبني WORA الصياغة أولًا، ثم يشغّل Dijkstra أو A*. لا يُقبل وزن سالب، ونتيجة A* تُقارن بخط أساس Dijkstra مستقل قبل ادعاء الأمثلية.</p>
+            </div>
+            <button type="button" className="button primary" disabled={graphBusy} onClick={() => void runGraph()}>{graphBusy ? <LoaderCircle size={16} className="os-spin" aria-hidden="true" /> : <Play size={16} aria-hidden="true" />} صياغة وحل</button>
+          </div>
+          <div className="os-decision-grid">
+            <div className="os-table-wrap panel panel-pad">
+              <h3>الرسم الموزون (JSON)</h3>
+              <textarea className="os-graph-editor" dir="ltr" rows={10} value={graphEdges} onChange={(e) => setGraphEdges(e.target.value)} aria-label="حواف الرسم الموزون" spellCheck={false} />
+              <div className="os-mc-foot">
+                <label className="os-inline-field">البداية<input dir="auto" value={graphStart} onChange={(e) => setGraphStart(e.target.value)} aria-label="عقدة البداية" /></label>
+                <label className="os-inline-field">النهاية<input dir="auto" value={graphGoal} onChange={(e) => setGraphGoal(e.target.value)} aria-label="عقدة النهاية" /></label>
+                <label className="os-inline-field">الخوارزمية
+                  <select value={graphAlgorithm} onChange={(e) => setGraphAlgorithm(e.target.value as 'auto' | 'dijkstra' | 'a_star')} aria-label="الخوارزمية">
+                    <option value="dijkstra">Dijkstra</option>
+                    <option value="a_star">A*</option>
+                    <option value="auto">تلقائي</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+            <div className="os-table-wrap panel panel-pad">
+              <h3>الدليل الإرشادي (اختياري)</h3>
+              <textarea className="os-graph-editor" dir="ltr" rows={10} value={graphHeuristic} onChange={(e) => setGraphHeuristic(e.target.value)} aria-label="دالة الدليل الإرشادي" spellCheck={false} />
+              <p className="subtle os-disclaimer">A* يُتحقق دائمًا مقابل Dijkstra مستقل. دليل غير مقبول لا يُحوّل النتيجة إلى «أمثل».</p>
+            </div>
+          </div>
+          {graphFormulation && (
+            <div className="os-result panel panel-pad">
+              <div className="os-result-head">
+                {graphFormulation.executable ? <CheckCircle2 size={18} className="os-ok" aria-hidden="true" /> : <CircleAlert size={18} className="os-bad" aria-hidden="true" />}
+                <h3>الصياغة: {graphFormulation.problemClass} — {graphFormulation.executable ? 'قابلة للتنفيذ' : 'ناقصة'}</h3>
+              </div>
+              <p><strong>الهدف:</strong> {graphFormulation.objective}</p>
+              <p><strong>الحلّال:</strong> {graphFormulation.solver}</p>
+              <p><strong>المتغيرات:</strong> {graphFormulation.decisionVariables.join('، ')}</p>
+              <p><strong>القيود:</strong> {graphFormulation.constraints.join('؛ ')}</p>
+              <p className="subtle"><strong>البصمة:</strong> <span dir="ltr">{graphFormulation.digest.slice(0, 24)}…</span></p>
+              {graphFormulation.missingInputs.length > 0 && <ul className="os-validation">{graphFormulation.missingInputs.map((item) => <li key={item}><CircleAlert size={12} aria-hidden="true" />{item}</li>)}</ul>}
+            </div>
+          )}
+          {graphResult && (
+            <div className="os-result panel panel-pad">
+              <div className="os-result-head">
+                {graphResult.verification.passed ? <CheckCircle2 size={18} className="os-ok" aria-hidden="true" /> : <CircleAlert size={18} className="os-bad" aria-hidden="true" />}
+                <h3>{graphResult.status === 'optimal' ? `مسار أمثل — التكلفة ${graphResult.totalCost}` : graphResult.status === 'no_path' ? 'لا يوجد مسار' : 'النتيجة لم تُتحقق'}</h3>
+              </div>
+              <p><strong>المسار:</strong> <span dir="ltr">{graphResult.path.join(' → ') || '—'}</span></p>
+              <p><strong>الخوارزمية:</strong> {graphResult.algorithm}{graphResult.heuristicUsed ? ' (مع دليل إرشادي)' : ''} · <strong>العقد الموسّعة:</strong> {graphResult.expanded} · <strong>خط أساس Dijkstra:</strong> {String(graphResult.baselineCost ?? '—')}</p>
+              <h4>تحقق مستقل</h4>
+              <ul className="os-validation">{graphResult.verification.checks.map((check) => <li key={check.id}><span className={check.status === 'passed' ? 'os-ok' : 'os-bad'}>{check.status === 'passed' ? '✓' : '✕'}</span> {check.description} — <span dir="ltr">{check.evidence}</span></li>)}</ul>
+              {graphResult.verification.failures.length > 0 && <ul className="os-validation">{graphResult.verification.failures.map((failure) => <li key={failure}><ShieldAlert size={12} aria-hidden="true" />{failure}</li>)}</ul>}
+              <p className="subtle os-disclaimer">{graphResult.limitations.join(' ')}</p>
             </div>
           )}
         </div>

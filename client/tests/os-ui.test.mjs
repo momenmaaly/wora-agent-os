@@ -39,6 +39,13 @@ test('lesson lifecycle and benchmark UI call the real APIs', () => {
     assert.ok(ui.includes(call), `${call} is wired`);
   }
   assert.match(ui, /لا ترقية تلقائية|بلا ترقية تلقائية/);
+  for (const call of ['osApi.formulateScientific', 'osApi.shortestPath']) {
+    assert.ok(ui.includes(call), `${call} is wired`);
+  }
+  assert.match(ui, /graphFormulation/);
+  assert.match(ui, /verification\.checks/);
+  assert.match(ui, /Dijkstra/);
+  assert.match(ui, /A\*/);
 });
 
 test('execution limits UI persists through the admin API', () => {
@@ -51,7 +58,7 @@ test('execution limits UI persists through the admin API', () => {
 
 test('typed client exposes plan, lease, lesson and benchmark contracts', () => {
   const api = read('os/api.ts');
-  for (const token of ['interface PlanVersion', 'interface TaskLease', 'interface VerificationRecord', 'interface Lesson', 'interface BenchmarkRun', 'interface UnifiedProblem', 'interface CompositionRecord', 'missionPlans', 'replanMission', 'executionLimits', 'runBenchmarks', 'interface ReasoningModel', 'interface ProblemStructure', 'missionReasoning', 'addReasoningEvidence', 'reasonProblem']) {
+  for (const token of ['interface PlanVersion', 'interface TaskLease', 'interface VerificationRecord', 'interface Lesson', 'interface BenchmarkRun', 'interface UnifiedProblem', 'interface CompositionRecord', 'missionPlans', 'replanMission', 'executionLimits', 'runBenchmarks', 'interface ReasoningModel', 'interface ProblemStructure', 'missionReasoning', 'addReasoningEvidence', 'reasonProblem', 'interface ShortestPathResult', 'interface ScientificFormulationResult', 'shortestPath', 'formulateScientific']) {
     assert.ok(api.includes(token), `${token} is typed`);
   }
 });

@@ -431,6 +431,53 @@ export interface MonteCarloResult {
   disclaimer: string;
 }
 
+export interface GraphEdgeInput { from: string; to: string; weight: number; id?: string }
+export interface ShortestPathRequest {
+  nodes?: string[];
+  edges: GraphEdgeInput[];
+  start: string;
+  goal: string;
+  directed?: boolean;
+  heuristic?: Record<string, number>;
+  algorithm?: 'auto' | 'dijkstra' | 'a_star';
+}
+export interface ScientificVerificationCheck { id: string; description: string; status: 'passed' | 'failed'; evidence: string }
+export interface ScientificVerificationResult { passed: boolean; checks: ScientificVerificationCheck[]; failures: string[]; tolerance?: number }
+export interface ShortestPathResult {
+  schemaVersion: string;
+  status: 'optimal' | 'no_path' | 'not_verified';
+  algorithm: 'dijkstra' | 'a_star';
+  path: string[];
+  edgeIds: string[];
+  totalCost: number | null;
+  baselineCost: number | null;
+  expanded: number;
+  visited: string[];
+  heuristicUsed: boolean;
+  verification: ScientificVerificationResult;
+  limitations: string[];
+}
+export interface ScientificFormulationResult {
+  schemaVersion: string;
+  kind: string;
+  problemClass: string;
+  decisionVariables: string[];
+  inputData: string[];
+  objective: string;
+  constraints: string[];
+  assumptions: string[];
+  feasibilityConditions: string[];
+  uncertainty: string;
+  solver: string;
+  expectedOutputs: string[];
+  verification: string[];
+  missingInputs: string[];
+  executable: boolean;
+  model: unknown;
+  digest: string;
+  limitations: string[];
+}
+
 export interface DecisionResult {
   ranking: Array<{ name: string; score: number }>;
   winner: string;
@@ -534,6 +581,10 @@ export const osApi = {
     request<{ ok: boolean; output?: MonteCarloResult; error?: string }>('/simulate/monte-carlo', { method: 'POST', body: JSON.stringify(body) }),
   decisionMatrix: (body: { criteria: Array<{ id: string; label: string; weight: number }>; alternatives: Array<{ name: string; scores: Record<string, number> }> }) =>
     request<{ ok: boolean; output?: DecisionResult; error?: string }>('/decision/matrix', { method: 'POST', body: JSON.stringify(body) }),
+  shortestPath: (body: ShortestPathRequest) =>
+    request<ShortestPathResult>('/optimize/shortest-path', { method: 'POST', body: JSON.stringify(body) }),
+  formulateScientific: (body: { kind: 'linear_programming' | 'integer_programming' | 'shortest_path' | 'assignment' | 'employee_scheduling' | 'monte_carlo_simulation' | 'forecasting' | 'multi_criteria_decision'; model?: unknown; objective?: string }) =>
+    request<ScientificFormulationResult>('/science/formulate', { method: 'POST', body: JSON.stringify(body) }),
 
   organizations: () => request<Organization[]>('/organizations'),
   buildOrganization: (body: { objective: string; name?: string }) =>

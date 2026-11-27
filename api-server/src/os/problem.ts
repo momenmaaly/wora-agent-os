@@ -52,7 +52,7 @@ function domainOf(text: string): { domain: ProblemDomain; track: string | null; 
   if (/(inspect|diagnos|check|audit|scan)\b.{0,80}\b(computer|machine|device|laptop|pc|server|host|system)\b|حاسوب|فحص.*جهاز/i.test(text)) {
     return { domain: 'diagnostics', track: 'diagnostics', confidence: 0.8 };
   }
-  if (/optimi[sz]e|schedul|allocat|assignment|linear program|shift|employee|مخزون|جدولة|توزيع|تخصيص/i.test(text)) {
+  if (/optimi[sz]e|schedul|allocat|assignment|linear program|shift|employee|shortest\s*path|dijkstra|a\*|graph\s+(?:route|path|network)|أقصر\s+مسار|مسار\s+الشبكة|مخزون|جدولة|توزيع|تخصيص/i.test(text)) {
     return { domain: 'operations_research', track: 'optimization', confidence: 0.8 };
   }
   if (/forecast|time series|statistic|data pipeline|analytics|dataset|تنبؤ|بيانات/i.test(text)) {
@@ -78,6 +78,7 @@ function deriveFeatures(text: string): ProblemFeatures {
   if (/forecast|time series|trend|تنبؤ|سلسلة زمنية/i.test(text)) requires.push('forecasting');
   if (/statistic|describe|distribution|outlier|إحصاء/i.test(text)) requires.push('statistics');
   if (/decision|criteria|alternative|vendor|weighted matrix|قرار|معايير/i.test(text)) requires.push('decision');
+  if (/shortest\s*path|dijkstra|a\*|graph\s+(?:route|path|network)|network\s+path|أقصر\s+مسار|مسار\s+الشبكة/i.test(text)) requires.push('graph');
   if (/causal|counterfactual|confound|سببية/i.test(text)) requires.push('causal_analysis');
   if (/formal verif|model check|sat solver|smt|تحقق رسمي/i.test(text)) requires.push('formal_verification');
   const problemType = requires.includes('causal_analysis') ? 'causal_analysis'
@@ -98,6 +99,9 @@ function deriveFeatures(text: string): ProblemFeatures {
     constraintsCount: (text.match(/must|should|required|within|under|limit|constraint|يجب|خلال|قيد/gi) ?? []).length,
     variableCount: (text.match(/employee|shift|task|option|alternative|متغير|موظف|وردية/gi) ?? []).length,
     hasCostMatrix: /cost matrix|matrix|مصفوفة/i.test(text) && /cost|تكلفة/i.test(text),
+    hasGraph: /shortest\s*path|dijkstra|a\*|graph\s+(?:route|path|network)|network\s+path|أقصر\s+مسار|مسار\s+الشبكة/i.test(text),
+    graphEdges: (text.match(/\b(?:from|to|edge|node)\b/giu) ?? []).length,
+    negativeWeights: /negative\s+(?:weight|edge)|أوزان\s+سالبة/i.test(text),
     hasEmployees: /employee|staff|workforce|موظف/i.test(text),
     hasShifts: /shift|schedule|وردية|جدول/i.test(text),
     hasUncertainty: /uncertain|risk|monte carlo|simulat|مخاطر|محاكاة/i.test(text),

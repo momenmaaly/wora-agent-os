@@ -12,7 +12,7 @@
 import { listAlgorithms, selectAlgorithm, type AlgorithmSelection, type AlgorithmSelectionInput } from './algorithms.js';
 
 export const SCIENCE_SCHEMA_VERSION = '1.0';
-export const SCIENTIFIC_CATALOG_VERSION = '2026-11-24.1';
+export const SCIENTIFIC_CATALOG_VERSION = '2026-11-27.1';
 
 export type ImplementationStatus = 'implemented' | 'partial' | 'experimental' | 'documented' | 'not_implemented';
 
@@ -139,11 +139,13 @@ const DOMAINS: ScientificDomainSeed[] = [
   {
     id: 'operations_research',
     domain: 'Operations research and optimization',
-    problems: ['Resource allocation', 'Employee scheduling', 'Assignment and matching', 'Constrained planning'],
+    problems: ['Resource allocation', 'Employee scheduling', 'Assignment and matching', 'Shortest path and graph routing', 'Constrained planning'],
     methods: [
       method('assignment', 'Hungarian assignment', 'implemented', 'hungarian-assignment', 'or.assignment', 'Exact optimal assignment for linear costs.'),
       method('mip', 'Mixed-integer programming', 'implemented', 'highs-lp-mip', 'or.solve_lp', 'General linear/integer models.'),
       method('employee-mip', 'Employee scheduling MIP', 'implemented', 'highs-employee-scheduling', 'or.employee_schedule', 'Demand, availability and workload constraints.'),
+      method('dijkstra', 'Dijkstra shortest path', 'implemented', 'dijkstra-a-star', 'graph.shortest_path', 'Non-negative weighted graph search with independent path verification.'),
+      method('a-star', 'A* shortest path', 'implemented', 'dijkstra-a-star', 'graph.shortest_path', 'Heuristic search verified against an independent Dijkstra baseline.'),
       method('multi-objective', 'Multi-objective optimization', 'partial', null, null, 'Weighted decision matrix only; no Pareto solver.'),
       method('robust-optimization', 'Robust/stochastic optimization', 'not_implemented', null, null, 'Monte Carlo informs risk but does not solve a robust program.'),
       method('cp-sat', 'Constraint programming / CP-SAT', 'not_implemented', null, null, 'Not implemented.'),
@@ -297,6 +299,7 @@ const DOMAIN_BY_ID = new Map(DOMAINS.map((domain) => [domain.id, domain]));
 
 const KIND_DOMAIN: Record<string, ScientificDomainId> = {
   assignment: 'operations_research',
+  shortest_path: 'operations_research',
   employee_scheduling: 'operations_research',
   linear_programming: 'operations_research',
   integer_programming: 'operations_research',

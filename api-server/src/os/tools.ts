@@ -17,7 +17,9 @@ import { promisify } from 'node:util';
 import { getOsDb, audit, newId, nowIso } from './db.js';
 import { openWorkspaceFile, resolveInWorkspace, workspacePath } from './workspace.js';
 import { safeFetch } from '../lib/safe-fetch.js';
-import { solveAssignment, solveEmployeeSchedule, solveLp } from './ortools.js';
+import { solveAssignment, solveEmployeeSchedule, solveLp, type LpModel } from './ortools.js';
+import { solveShortestPath, type GraphModel } from './graph.js';
+import { formulateScientificProblem, type FormulationKind } from './scientific-formulation.js';
 import { PROBLEM_KINDS, selectAlgorithm, algorithmSelectionInputSchema } from './algorithms.js';
 import { classifyAction } from './actions.js';
 import { understandProblem } from './problem.js';
@@ -193,28 +195,36 @@ const workspaceReadTool: ToolDefinition = {
 };
 
 /* ─── or.* solvers ─────────────────────────────────────── */
-const assignmentSchema = z.object({
+const assignmentModelSchema = z.object({
   costMatrix: z.array(z.array(z.number().finite()).min(1)).min(1).max(200),
   rowLabels: z.array(z.string().max(120)).optional(),
   colLabels: z.array(z.string().max(120)).optional(),
 }).strict();
 
+const assignmentSchema = z.object({
+  model: assignmentModelSchema.optional(),
+  costMatrix: z.array(z.array(z.number().finite()).min(1)).min(1).max(200).optional(),
+  rowLabels: z.array(z.string().max(120)).optional(),
+  colLabels: z.array(z.string().max(120)).optional(),
+}).strict().refine((input) => Boolean(input.model || input.costMatrix), { message: 'Provide a model or costMatrix' });
+
 const assignmentTool: ToolDefinition = {
   id: 'or.assignment',
   name: 'Assignment Solver (Hungarian)',
   description: 'Solves balanced rectangular assignment problems to optimality with the Hungarian algorithm.',
-  inputSchema: { type: 'object', properties: { costMatrix: { type: 'array', items: { type: 'array', items: { type: 'number' } } }, rowLabels: { type: 'array', items: { type: 'string' } }, colLabels: { type: 'array', items: { type: 'string' } } }, required: ['costMatrix'], additionalProperties: false },
+  inputSchema: { type: 'object', properties: { model: { type: 'object' }, costMatrix: { type: 'array', items: { type: 'array', items: { type: 'number' } } }, rowLabels: { type: 'array', items: { type: 'string' } }, colLabels: { type: 'array', items: { type: 'string' } } }, additionalProperties: false },
   schema: assignmentSchema,
   permission: null,
   risk: 'low',
   environment: 'host',
   timeoutMs: 10_000,
   execute(input: z.infer<typeof assignmentSchema>) {
-    return solveAssignment(input.costMatrix, input.rowLabels, input.colLabels);
+    const resolved = input.model ?? { costMatrix: input.costMatrix!, rowLabels: input.rowLabels, colLabels: input.colLabels };
+    return solveAssignment(resolved.costMatrix, resolved.rowLabels, resolved.colLabels);
   },
 };
 
-const employeeSchema = z.object({
+const employeeModelSchema = z.object({
   employees: z.array(z.object({
     id: z.string().min(1).max(60),
     name: z.string().min(1).max(120),
@@ -229,22 +239,39 @@ const employeeSchema = z.object({
   })).min(1).max(100),
 }).strict();
 
+const employeeSchema = z.object({
+  model: employeeModelSchema.optional(),
+  employees: z.array(z.object({
+    id: z.string().min(1).max(60),
+    name: z.string().min(1).max(120),
+    hourlyCost: z.number().finite().min(0).max(100_000),
+    availability: z.array(z.string().min(1).max(60)).max(50),
+    maxAssignments: z.number().int().min(1).max(20).optional(),
+  })).min(1).max(500).optional(),
+  shifts: z.array(z.object({
+    id: z.string().min(1).max(60),
+    name: z.string().min(1).max(120),
+    demand: z.number().int().min(0).max(5000),
+  })).min(1).max(100).optional(),
+}).strict().refine((input) => Boolean(input.model || (input.employees && input.shifts)), { message: 'Provide a model or employees and shifts' });
+
 const employeeTool: ToolDefinition = {
   id: 'or.employee_schedule',
   name: 'Employee Shift Scheduler (HiGHS MIP)',
   description: 'Minimizes labor cost assigning employees to shifts under availability, demand and workload constraints. Returns the schedule, cost and an independent constraint validation.',
-  inputSchema: { type: 'object', properties: { employees: { type: 'array' }, shifts: { type: 'array' } }, required: ['employees', 'shifts'], additionalProperties: false },
+  inputSchema: { type: 'object', properties: { model: { type: 'object' }, employees: { type: 'array' }, shifts: { type: 'array' } }, additionalProperties: false },
   schema: employeeSchema,
   permission: null,
   risk: 'low',
   environment: 'host',
   timeoutMs: 20_000,
   async execute(input: z.infer<typeof employeeSchema>) {
-    return solveEmployeeSchedule(input);
+    const resolved = input.model ?? { employees: input.employees!, shifts: input.shifts! };
+    return solveEmployeeSchedule(resolved);
   },
 };
 
-const lpSchema = z.object({
+const lpModelSchema = z.object({
   sense: z.enum(['minimize', 'maximize']),
   objective: z.array(z.object({ var: z.string().min(1).max(60), coeff: z.number().finite() })).min(1),
   constraints: z.array(z.object({
@@ -258,18 +285,103 @@ const lpSchema = z.object({
   bounds: z.record(z.string(), z.object({ lower: z.number().finite().optional(), upper: z.number().finite().optional() })).optional(),
 }).strict();
 
+const lpSchema = z.object({
+  model: lpModelSchema.optional(),
+  sense: z.enum(['minimize', 'maximize']).optional(),
+  objective: z.array(z.object({ var: z.string().min(1).max(60), coeff: z.number().finite() })).min(1).optional(),
+  constraints: z.array(z.object({
+    name: z.string().max(60).optional(),
+    terms: z.array(z.object({ var: z.string().min(1).max(60), coeff: z.number().finite() })).min(1),
+    op: z.enum(['<=', '>=', '=']),
+    rhs: z.number().finite(),
+  })).min(1).optional(),
+  integerVars: z.array(z.string().min(1).max(60)).optional(),
+  binaryVars: z.array(z.string().min(1).max(60)).optional(),
+  bounds: z.record(z.string(), z.object({ lower: z.number().finite().optional(), upper: z.number().finite().optional() })).optional(),
+}).strict().refine((input) => Boolean(input.model || (input.sense && input.objective && input.constraints)), {
+  message: 'Provide a complete model or sense, objective and constraints',
+});
+
 const lpTool: ToolDefinition = {
   id: 'or.solve_lp',
   name: 'LP / MIP Solver (HiGHS)',
-  description: 'Solves linear and mixed-integer linear programs from a structured model (objective, constraints, bounds). HiGHS engine, runs locally.',
-  inputSchema: { type: 'object', properties: { sense: { enum: ['minimize', 'maximize'] }, objective: { type: 'array' }, constraints: { type: 'array' }, integerVars: { type: 'array', items: { type: 'string' } }, binaryVars: { type: 'array', items: { type: 'string' } } }, required: ['sense', 'objective', 'constraints'], additionalProperties: false },
+  description: 'Solves linear and mixed-integer linear programs from a structured model (objective, constraints, bounds). Returns an independent constraint/objective/bounds verification alongside the HiGHS result.',
+  inputSchema: { type: 'object', properties: { model: { type: 'object' }, sense: { enum: ['minimize', 'maximize'] }, objective: { type: 'array' }, constraints: { type: 'array' }, integerVars: { type: 'array', items: { type: 'string' } }, binaryVars: { type: 'array', items: { type: 'string' } } }, additionalProperties: false },
   schema: lpSchema,
   permission: null,
   risk: 'low',
   environment: 'host',
   timeoutMs: 20_000,
   async execute(input: z.infer<typeof lpSchema>) {
-    return solveLp(input);
+    const model: LpModel = input.model ?? {
+      sense: input.sense!, objective: input.objective!, constraints: input.constraints!,
+      ...(input.integerVars ? { integerVars: input.integerVars } : {}),
+      ...(input.binaryVars ? { binaryVars: input.binaryVars } : {}),
+      ...(input.bounds ? { bounds: input.bounds } : {}),
+    };
+    return solveLp(model);
+  },
+};
+
+const graphEdgeSchema = z.object({ from: z.string().min(1).max(120), to: z.string().min(1).max(120), weight: z.number().finite(), id: z.string().max(160).optional() }).strict();
+const graphSchema = z.object({
+  model: z.object({
+    nodes: z.array(z.string().min(1).max(120)).max(2_000).optional(),
+    edges: z.array(graphEdgeSchema).min(1).max(5_000),
+    start: z.string().min(1).max(120),
+    goal: z.string().min(1).max(120),
+    directed: z.boolean().optional(),
+    heuristic: z.record(z.string(), z.number().finite().min(0)).optional(),
+    algorithm: z.enum(['auto', 'dijkstra', 'a_star']).optional(),
+  }).strict().optional(),
+  nodes: z.array(z.string().min(1).max(120)).max(2_000).optional(),
+  edges: z.array(graphEdgeSchema).min(1).max(5_000).optional(),
+  start: z.string().min(1).max(120).optional(),
+  goal: z.string().min(1).max(120).optional(),
+  directed: z.boolean().optional(),
+  heuristic: z.record(z.string(), z.number().finite().min(0)).optional(),
+  algorithm: z.enum(['auto', 'dijkstra', 'a_star']).optional(),
+}).strict().refine((input) => Boolean(input.model || (input.edges && input.start && input.goal)), { message: 'Provide a complete model or edges, start and goal' });
+
+const shortestPathTool: ToolDefinition = {
+  id: 'graph.shortest_path',
+  name: 'Shortest Path (Dijkstra / A*)',
+  description: 'Finds a minimum-weight path in an explicit weighted graph using Dijkstra or A*. Rejects negative weights and verifies A* against an independent Dijkstra baseline.',
+  inputSchema: { type: 'object', properties: { model: { type: 'object' }, nodes: { type: 'array' }, edges: { type: 'array' }, start: { type: 'string' }, goal: { type: 'string' }, directed: { type: 'boolean' }, heuristic: { type: 'object' }, algorithm: { enum: ['auto', 'dijkstra', 'a_star'] } }, additionalProperties: false },
+  schema: graphSchema,
+  permission: null,
+  risk: 'low',
+  environment: 'host',
+  timeoutMs: 10_000,
+  execute(input: z.infer<typeof graphSchema>) {
+    const model: GraphModel = input.model ?? {
+      ...(input.nodes ? { nodes: input.nodes } : {}), edges: input.edges!, start: input.start!, goal: input.goal!,
+      ...(input.directed !== undefined ? { directed: input.directed } : {}),
+      ...(input.heuristic ? { heuristic: input.heuristic } : {}),
+      ...(input.algorithm ? { algorithm: input.algorithm } : {}),
+    };
+    return solveShortestPath(model);
+  },
+};
+
+const formulateSchema = z.object({
+  kind: z.enum(['linear_programming', 'integer_programming', 'shortest_path', 'assignment', 'employee_scheduling', 'monte_carlo_simulation', 'forecasting', 'multi_criteria_decision']),
+  model: z.unknown().optional(),
+  objective: z.string().max(4_000).optional(),
+}).strict();
+
+const formulateTool: ToolDefinition = {
+  id: 'meta.formulate_scientific_problem',
+  name: 'Scientific Problem Formulation',
+  description: 'Builds an explicit, inspectable formulation (variables, data, objective, constraints, assumptions, solver, outputs and verification) for a supported scientific problem. It does not invent missing numeric inputs.',
+  inputSchema: { type: 'object', properties: { kind: { enum: ['linear_programming', 'integer_programming', 'shortest_path', 'assignment', 'employee_scheduling', 'monte_carlo_simulation', 'forecasting', 'multi_criteria_decision'] }, model: { type: 'object' }, objective: { type: 'string' } }, required: ['kind'], additionalProperties: false },
+  schema: formulateSchema,
+  permission: null,
+  risk: 'low',
+  environment: 'host',
+  timeoutMs: 5_000,
+  execute(input: z.infer<typeof formulateSchema>) {
+    return formulateScientificProblem({ kind: input.kind as FormulationKind, model: input.model, objective: input.objective });
   },
 };
 
@@ -284,7 +396,7 @@ function mulberry32(seed: number) {
   };
 }
 
-const monteCarloSchema = z.object({
+const monteCarloModelSchema = z.object({
   trials: z.number().int().min(100).max(100_000).default(10_000),
   seed: z.number().int().default(42),
   items: z.array(z.object({
@@ -295,18 +407,31 @@ const monteCarloSchema = z.object({
   })).min(1).max(100),
 }).strict();
 
+const monteCarloSchema = z.object({
+  model: monteCarloModelSchema.optional(),
+  trials: z.number().int().min(100).max(100_000).optional(),
+  seed: z.number().int().optional(),
+  items: z.array(z.object({
+    name: z.string().min(1).max(120),
+    optimistic: z.number().finite(),
+    likely: z.number().finite(),
+    pessimistic: z.number().finite(),
+  })).min(1).max(100).optional(),
+}).strict().refine((input) => Boolean(input.model || input.items), { message: 'Provide a model or items' });
+
 const monteCarloTool: ToolDefinition = {
   id: 'sim.monte_carlo',
   name: 'Monte Carlo PERT Simulation',
   description: 'Estimates the distribution of a total (cost/duration/effort) from triangular PERT three-point estimates. Seeded and reproducible. Results are simulated estimates, not observed measurements.',
-  inputSchema: { type: 'object', properties: { trials: { type: 'number' }, seed: { type: 'number' }, items: { type: 'array' } }, required: ['items'], additionalProperties: false },
+  inputSchema: { type: 'object', properties: { model: { type: 'object' }, trials: { type: 'number' }, seed: { type: 'number' }, items: { type: 'array' } }, additionalProperties: false },
   schema: monteCarloSchema,
   permission: null,
   risk: 'low',
   environment: 'host',
   timeoutMs: 15_000,
   execute(input: z.infer<typeof monteCarloSchema>) {
-    const rand = mulberry32(input.seed);
+    const resolved = input.model ?? { trials: input.trials ?? 10_000, seed: input.seed ?? 42, items: input.items! };
+    const rand = mulberry32(resolved.seed);
     const triangular = (a: number, m: number, b: number) => {
       const lo = Math.min(a, b), hi = Math.max(a, b);
       const mode = Math.min(Math.max(m, lo), hi);
@@ -315,9 +440,9 @@ const monteCarloTool: ToolDefinition = {
       return u < fc ? lo + Math.sqrt(u * (hi - lo) * (mode - lo)) : hi - Math.sqrt((1 - u) * (hi - lo) * (hi - mode));
     };
     const totals: number[] = [];
-    for (let t = 0; t < input.trials; t++) {
+    for (let t = 0; t < resolved.trials; t++) {
       let sum = 0;
-      for (const item of input.items) sum += triangular(item.optimistic, item.likely, item.pessimistic);
+      for (const item of resolved.items) sum += triangular(item.optimistic, item.likely, item.pessimistic);
       totals.push(sum);
     }
     totals.sort((a, b) => a - b);
@@ -337,8 +462,8 @@ const monteCarloTool: ToolDefinition = {
     return {
       simulated: true,
       method: 'triangular PERT Monte Carlo',
-      trials: input.trials,
-      seed: input.seed,
+      trials: resolved.trials,
+      seed: resolved.seed,
       mean: round(mean),
       stddev: round(Math.sqrt(variance)),
       p10: round(q(0.1)),
@@ -353,23 +478,30 @@ const monteCarloTool: ToolDefinition = {
 };
 
 /* ─── forecast.linear ──────────────────────────────────── */
-const forecastSchema = z.object({
+const forecastModelSchema = z.object({
   series: z.array(z.number().finite()).min(8).max(10_000),
   steps: z.number().int().min(1).max(90).default(3),
 }).strict();
+
+const forecastSchema = z.object({
+  model: forecastModelSchema.optional(),
+  series: z.array(z.number().finite()).min(8).max(10_000).optional(),
+  steps: z.number().int().min(1).max(90).optional(),
+}).strict().refine((input) => Boolean(input.model || input.series), { message: 'Provide a model or series' });
 
 const forecastTool: ToolDefinition = {
   id: 'forecast.linear',
   name: 'Linear Trend Forecast with Backtest',
   description: 'Naive least-squares trend projection with an honest holdout backtest (last 20% of points predicted vs observed). Reports R², holdout MAE and residual-stddev bands. NOT a guarantee — a transparent baseline to beat, never presented as causal prediction.',
-  inputSchema: { type: 'object', properties: { series: { type: 'array', items: { type: 'number' } }, steps: { type: 'number', minimum: 1, maximum: 90 } }, required: ['series'], additionalProperties: false },
+  inputSchema: { type: 'object', properties: { model: { type: 'object' }, series: { type: 'array', items: { type: 'number' } }, steps: { type: 'number', minimum: 1, maximum: 90 } }, additionalProperties: false },
   schema: forecastSchema,
   permission: null,
   risk: 'low',
   environment: 'host',
   timeoutMs: 5_000,
   execute(input: z.infer<typeof forecastSchema>) {
-    const xs = [...input.series];
+    const resolved = input.model ?? { series: input.series!, steps: input.steps ?? 3 };
+    const xs = [...resolved.series];
     const n = xs.length;
     const xMean = (n - 1) / 2;
     const yMean = xs.reduce((a, b) => a + b, 0) / n;
@@ -396,7 +528,7 @@ const forecastTool: ToolDefinition = {
     const residuals = xs.map((v, i) => v - predict(i));
     const residualStddev = Math.sqrt(residuals.reduce((acc, v) => acc + v * v, 0) / n);
     const round = (v: number) => Math.round(v * 1000) / 1000;
-    const projections = Array.from({ length: input.steps }, (_, s) => {
+    const projections = Array.from({ length: resolved.steps }, (_, s) => {
       const i = n + s;
       const point = predict(i);
       return { step: s + 1, index: i, point: round(point), bandLow: round(point - residualStddev), bandHigh: round(point + residualStddev) };
@@ -464,44 +596,51 @@ const statsTool: ToolDefinition = {
 };
 
 /* ─── decision.weighted_matrix ─────────────────────────── */
-const decisionSchema = z.object({
+const decisionModelSchema = z.object({
   criteria: z.array(z.object({ id: z.string().min(1).max(60), label: z.string().min(1).max(120), weight: z.number().finite().positive() })).min(1).max(30),
   alternatives: z.array(z.object({ name: z.string().min(1).max(120), scores: z.record(z.string(), z.number().finite().min(0).max(10)) })).min(2).max(50),
 }).strict();
+
+const decisionSchema = z.object({
+  model: decisionModelSchema.optional(),
+  criteria: z.array(z.object({ id: z.string().min(1).max(60), label: z.string().min(1).max(120), weight: z.number().finite().positive() })).min(1).max(30).optional(),
+  alternatives: z.array(z.object({ name: z.string().min(1).max(120), scores: z.record(z.string(), z.number().finite().min(0).max(10)) })).min(2).max(50).optional(),
+}).strict().refine((input) => Boolean(input.model || (input.criteria && input.alternatives)), { message: 'Provide a model or criteria and alternatives' });
 
 const decisionTool: ToolDefinition = {
   id: 'decision.weighted_matrix',
   name: 'Weighted Decision Matrix',
   description: 'Scores alternatives against weighted criteria, ranks them and stress-tests the winner with ±25% weight perturbations.',
-  inputSchema: { type: 'object', properties: { criteria: { type: 'array' }, alternatives: { type: 'array' } }, required: ['criteria', 'alternatives'], additionalProperties: false },
+  inputSchema: { type: 'object', properties: { model: { type: 'object' }, criteria: { type: 'array' }, alternatives: { type: 'array' } }, additionalProperties: false },
   schema: decisionSchema,
   permission: null,
   risk: 'low',
   environment: 'host',
   timeoutMs: 5_000,
   execute(input: z.infer<typeof decisionSchema>) {
-    for (const alt of input.alternatives) {
-      for (const c of input.criteria) {
+    const resolved = input.model ?? { criteria: input.criteria!, alternatives: input.alternatives! };
+    for (const alt of resolved.alternatives) {
+      for (const c of resolved.criteria) {
         if (alt.scores[c.id] === undefined) throw new Error(`Alternative "${alt.name}" is missing a score for criterion "${c.id}"`);
       }
     }
-    const totalWeight = input.criteria.reduce((acc, c) => acc + c.weight, 0);
-    const score = (alt: (typeof input.alternatives)[number], weights: Map<string, number>) =>
-      input.criteria.reduce((acc, c) => acc + (weights.get(c.id) ?? c.weight / totalWeight) * (alt.scores[c.id] ?? 0), 0);
-    const normalized = new Map(input.criteria.map((c) => [c.id, c.weight / totalWeight]));
-    const ranked = [...input.alternatives]
+    const totalWeight = resolved.criteria.reduce((acc, c) => acc + c.weight, 0);
+    const score = (alt: (typeof resolved.alternatives)[number], weights: Map<string, number>) =>
+      resolved.criteria.reduce((acc, c) => acc + (weights.get(c.id) ?? c.weight / totalWeight) * (alt.scores[c.id] ?? 0), 0);
+    const normalized = new Map(resolved.criteria.map((c) => [c.id, c.weight / totalWeight]));
+    const ranked = [...resolved.alternatives]
       .map((alt) => ({ name: alt.name, score: Math.round(score(alt, normalized) * 1000) / 1000 }))
       .sort((a, b) => b.score - a.score);
     // Robustness: perturb each criterion weight ±25%, renormalize, check if the winner survives.
     let robust = true;
     const perturbations: string[] = [];
-    for (const c of input.criteria) {
+    for (const c of resolved.criteria) {
       for (const factor of [0.75, 1.25]) {
         const perturbed = new Map(normalized);
         perturbed.set(c.id, normalized.get(c.id)! * factor);
         const sum = [...perturbed.values()].reduce((a, b) => a + b, 0);
         for (const [k, v] of perturbed) perturbed.set(k, v / sum);
-        const perturbedRanking = [...input.alternatives].map((alt) => ({ name: alt.name, s: score(alt, perturbed) })).sort((a, b) => b.s - a.s);
+        const perturbedRanking = [...resolved.alternatives].map((alt) => ({ name: alt.name, s: score(alt, perturbed) })).sort((a, b) => b.s - a.s);
         if (perturbedRanking[0]!.name !== ranked[0]!.name) {
           robust = false;
           perturbations.push(`${Math.round((factor - 1) * 100)}% on "${c.id}" flips the winner to "${perturbedRanking[0]!.name}"`);
@@ -915,6 +1054,8 @@ const ALL_TOOLS: ToolDefinition[] = [
   assignmentTool,
   employeeTool,
   lpTool,
+  shortestPathTool,
+  formulateTool,
   monteCarloTool,
   statsTool,
   forecastTool,
@@ -939,7 +1080,7 @@ const toolMap = new Map(ALL_TOOLS.map((tool) => [tool.id, tool]));
 /** Tools with no external side effect may be safely retried after a crash. */
 const IDEMPOTENT_TOOL_IDS = new Set([
   'system.diagnostics', 'fs.workspace_list', 'fs.workspace_read',
-  'or.assignment', 'or.employee_schedule', 'or.solve_lp', 'sim.monte_carlo',
+  'or.assignment', 'or.employee_schedule', 'or.solve_lp', 'graph.shortest_path', 'meta.formulate_scientific_problem', 'sim.monte_carlo',
   'stats.describe', 'forecast.linear', 'decision.weighted_matrix', 'text.extract_summary',
   'web.fetch_read', 'security.scan', 'meta.select_algorithm', 'meta.select_scientific_method',
   'meta.understand_problem', 'meta.classify_action',

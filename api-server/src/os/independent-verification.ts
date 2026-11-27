@@ -68,6 +68,20 @@ function contractCheck(tool: string | null, output: unknown): IndependentCheck {
       if (!Array.isArray(output['assignments'])) failures.push('assignments must be an array');
       if (!finite(output['totalCost'])) failures.push('totalCost must be finite');
       break;
+    case 'or.solve_lp':
+      if (typeof output['status'] !== 'string') failures.push('status must be a string');
+      if (typeof output['variables'] !== 'object' || output['variables'] === null) failures.push('variables must be an object');
+      if (typeof output['verification'] !== 'object' || output['verification'] === null) failures.push('verification must be present');
+      break;
+    case 'graph.shortest_path':
+      if (!Array.isArray(output['path'])) failures.push('path must be an array');
+      if (output['totalCost'] !== null && !finite(output['totalCost'])) failures.push('totalCost must be finite or null');
+      if (typeof output['verification'] !== 'object' || output['verification'] === null) failures.push('verification must be present');
+      break;
+    case 'meta.formulate_scientific_problem':
+      if (typeof output['executable'] !== 'boolean') failures.push('executable must be boolean');
+      if (!Array.isArray(output['decisionVariables'])) failures.push('decisionVariables must be an array');
+      break;
     case 'sim.monte_carlo':
       if (!finite(output['mean']) || !finite(output['p10']) || !finite(output['p90'])) failures.push('mean/p10/p90 must be finite');
       break;
@@ -138,6 +152,21 @@ function propertyChecks(tool: string | null, output: unknown): IndependentCheck[
       id: 'property-forecast', kind: 'property', description: 'Forecast projections are ordered and bands contain the point estimate',
       status: projections.length > 0 && ordered ? 'passed' : 'failed', evidence: `${projections.length} projection(s)`,
     });
+  }
+  if (tool === 'or.solve_lp') {
+    const status = output['status'];
+    const verification = output['verification'] as { passed?: boolean } | undefined;
+    checks.push({ id: 'property-lp', kind: 'property', description: 'An optimal LP/MIP result passes independent constraint, objective and bound verification', status: status !== 'Optimal' || verification?.passed === true ? 'passed' : 'failed', evidence: `status=${String(status)}; verification=${String(verification?.passed)}` });
+  }
+  if (tool === 'graph.shortest_path') {
+    const status = output['status'];
+    const path = Array.isArray(output['path']) ? output['path'] : [];
+    const verification = output['verification'] as { passed?: boolean } | undefined;
+    const cost = output['totalCost'];
+    const valid = status === 'no_path'
+      ? path.length === 0 && cost === null
+      : status === 'optimal' && path.length >= 2 && finite(cost) && Number(cost) >= 0;
+    checks.push({ id: 'property-shortest-path', kind: 'property', description: 'A shortest-path result is consistent with its status and passes independent verification', status: valid && verification?.passed === true ? 'passed' : 'failed', evidence: `status=${String(status)}; path=${path.length}; cost=${String(cost)}; verification=${String(verification?.passed)}` });
   }
   if (tool === 'sim.monte_carlo') {
     const ordered = finite(output['p10']) && finite(output['p50']) && finite(output['p90']) && Number(output['p10']) <= Number(output['p50']) && Number(output['p50']) <= Number(output['p90']);

@@ -549,6 +549,24 @@ export const MIGRATIONS: Migration[] = [
       applyApprovalExpiryGuard(db);
     },
   },
+  {
+    version: 18,
+    name: 'scientific-graph-and-formulation-capabilities',
+    up(db) {
+      // Existing untouched OR seed agents need the new graph and formulation
+      // tools. A narrowed or customized allow-list is preserved.
+      const rows = db.prepare("SELECT id, tools FROM os_agents WHERE specialization = 'operations_research' AND source IN ('seed', 'catalog')").all() as Array<{ id: string; tools: string }>;
+      const update = db.prepare('UPDATE os_agents SET tools = ?, updated_at = ? WHERE id = ?');
+      const required = ['or.solve_lp', 'or.assignment', 'or.employee_schedule', 'sim.monte_carlo'];
+      const additions = ['graph.shortest_path', 'meta.formulate_scientific_problem', 'forecast.linear', 'decision.weighted_matrix'];
+      for (const row of rows) {
+        const tools = parseAgentArray(row.tools);
+        if (!tools || !required.every((tool) => tools.includes(tool))) continue;
+        const next = [...new Set([...tools, ...additions])];
+        if (next.length !== tools.length) update.run(JSON.stringify(next), nowIso(), row.id);
+      }
+    },
+  },
 ];
 
 const HISTORICAL_MIGRATION_NAMES: Record<number, string[]> = {

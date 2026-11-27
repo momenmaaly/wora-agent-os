@@ -67,6 +67,9 @@
 .os-acceptance li { display: flex; gap: 7px; align-items: flex-start; }
 .os-acceptance svg { margin-top: 2px; color: var(--mint); flex: 0 0 auto; }
 .os-pre { background: #10181d; color: #d7e2e6; border-radius: var(--control-radius); padding: 10px 12px; font-size: 11px; overflow: auto; max-height: 260px; margin: 0; direction: ltr; text-align: left; }
+.os-graph-editor { width: 100%; box-sizing: border-box; background: #10181d; color: #d7e2e6; border: 1px solid var(--border-subtle, #2b3a42); border-radius: var(--control-radius); padding: 10px 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; line-height: 1.5; resize: vertical; direction: ltr; text-align: left; }
+.os-graph-editor:focus-visible { outline: 2px solid var(--focus-ring, #5cc8ff); outline-offset: 2px; }
+.os-graph .os-result { margin-top: var(--space-3); }
 .os-run { border: 1px solid var(--line); border-radius: var(--control-radius); padding: 10px 12px; display: grid; gap: 8px; }
 .os-run-head { display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline; font-size: 12.5px; }
 .os-issues { list-style: none; margin: 0; padding: 0; color: var(--danger); font-size: 12px; display: grid; gap: 4px; }

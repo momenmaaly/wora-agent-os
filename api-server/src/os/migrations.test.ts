@@ -230,7 +230,7 @@ test('migration registry versions are unique and strictly ordered', () => {
 test('fresh databases record every versioned migration and both feature sets', () => {
   const db = getOsDb();
   const status = migrationStatus(db);
-  assert.equal(status.version, 17);
+  assert.equal(status.version, 18);
   assert.deepEqual(status.pending, []);
   assert.deepEqual(status.applied.map((migration) => migration.version), MIGRATIONS.map((migration) => migration.version));
   assert.equal(hasTable(db, 'os_runtime_sessions'), true);
@@ -264,7 +264,7 @@ test('realistic version 14 upgrade preserves data and protects default, additive
   db.prepare('INSERT INTO os_missions (id, workspace_id, objective, status, requested_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
     .run('msn-existing', 'ws-test', 'preserve me', 'planning', 'test', nowIso(), nowIso());
   const result = runVersionedMigrations(db, initializeBaselineSchema);
-  assert.deepEqual(result.applied, [15, 16, 17]);
+  assert.deepEqual(result.applied, [15, 16, 17, 18]);
   assert.equal((db.prepare('SELECT COUNT(*) AS c FROM os_missions WHERE id = ?').get('msn-existing') as { c: number }).c, 1);
   assertRuntimeSchema(db);
   const agent = (id: string) => JSON.parse(JSON.stringify(db.prepare('SELECT tools, permissions FROM os_agents WHERE id = ?').get(id))) as { tools: string; permissions: string };
@@ -295,8 +295,8 @@ test('historical version 15 approval migration upgrades to cloud runtime without
   applyMigration(db, MIGRATIONS.find((migration) => migration.version === 15)!);
   assert.equal(hasTrigger(db, 'os_approvals_pending_expiry_required'), true);
   const result = runVersionedMigrations(db, initializeBaselineSchema);
-  assert.deepEqual(result.applied, [16, 17]);
-  assert.equal(result.version, 17);
+  assert.deepEqual(result.applied, [16, 17, 18]);
+  assert.equal(result.version, 18);
   assertRuntimeSchema(db);
   const rows = db.prepare('SELECT id, status FROM os_approvals ORDER BY id').all() as Array<{ id: string; status: string }>;
   assert.deepEqual(rows.map((row) => row.status), ['expired', 'expired']);
@@ -310,8 +310,8 @@ test('historical version 15 cloud migration with real runtime data preserves eve
   const beforeEvents = db.prepare('SELECT id, workspace_id, session_id, kind, action, detail, created_at FROM os_runtime_events ORDER BY id').all();
   const beforeArtifacts = db.prepare('SELECT id, workspace_id, session_id, mission_id, name, kind, mime_type, size_bytes, storage_path, created_at FROM os_runtime_artifacts ORDER BY id').all();
   const result = runVersionedMigrations(db, initializeBaselineSchema);
-  assert.deepEqual(result.applied, [16, 17]);
-  assert.equal(result.version, 17);
+  assert.deepEqual(result.applied, [16, 17, 18]);
+  assert.equal(result.version, 18);
   assert.deepEqual(db.prepare('SELECT id, workspace_id, mission_id, task_id, kind, provider, status, workspace_dir, limits, metadata, created_by, error, expires_at, created_at, started_at, ended_at FROM os_runtime_sessions ORDER BY id').all(), beforeSessions);
   assert.deepEqual(db.prepare('SELECT id, workspace_id, session_id, kind, action, detail, created_at FROM os_runtime_events ORDER BY id').all(), beforeEvents);
   assert.deepEqual(db.prepare('SELECT id, workspace_id, session_id, mission_id, name, kind, mime_type, size_bytes, storage_path, created_at FROM os_runtime_artifacts ORDER BY id').all(), beforeArtifacts);
@@ -328,10 +328,11 @@ test('historical version 15 cloud migration with real runtime data preserves eve
   assert.throws(() => db.prepare('INSERT INTO os_approvals (id, workspace_id, action_summary, status, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?)')
     .run('approval-new-past', 'ws-test', 'fixture', 'pending', '2020-01-01T00:00:00.000Z', nowIso()), /valid future expires_at/u);
   const registry = db.prepare('SELECT version, name FROM os_schema_migrations ORDER BY version').all() as Array<{ version: number; name: string }>;
-  assert.equal(registry.length, 17);
+  assert.equal(registry.length, 18);
   assert.equal(registry.find((row) => row.version === 15)?.name, 'cloud-computer-browser-runtime');
   assert.equal(registry.find((row) => row.version === 16)?.name, 'cloud-computer-browser-runtime');
   assert.equal(registry.find((row) => row.version === 17)?.name, 'approval-expiry-reconciliation');
+  assert.equal(registry.find((row) => row.version === 18)?.name, 'scientific-graph-and-formulation-capabilities');
   assert.deepEqual(migrationStateIssues(db), []);
   const preservedCustom = JSON.parse((db.prepare('SELECT tools FROM os_agents WHERE id = ?').get('agent-seed-custom') as { tools: string }).tools) as string[];
   const preservedPermissions = JSON.parse((db.prepare('SELECT permissions FROM os_agents WHERE id = ?').get('agent-seed-custom') as { permissions: string }).permissions) as string[];
@@ -342,7 +343,7 @@ test('historical version 15 cloud migration with real runtime data preserves eve
   assert.deepEqual(JSON.parse((db.prepare('SELECT tools FROM os_agents WHERE id = ?').get('agent-user-custom') as { tools: string }).tools), ['user.tool']);
 });
 
-test('final version 17 is idempotent and preserves existing runtime data', () => {
+test('final version 18 is idempotent and preserves existing runtime data', () => {
   const db = getOsDb();
   db.prepare(`INSERT INTO os_runtime_sessions
     (id, workspace_id, provider, status, workspace_dir, created_by, expires_at, created_at)
@@ -351,15 +352,15 @@ test('final version 17 is idempotent and preserves existing runtime data', () =>
   const before = db.prepare('SELECT COUNT(*) AS c FROM os_runtime_sessions WHERE id = ?').get('rt-final') as { c: number };
   const result = runVersionedMigrations(db, initializeBaselineSchema);
   assert.deepEqual(result.applied, []);
-  assert.equal(result.version, 17);
+  assert.equal(result.version, 18);
   assert.deepEqual(db.prepare('SELECT COUNT(*) AS c FROM os_runtime_sessions WHERE id = ?').get('rt-final'), before);
   assert.deepEqual(migrationStateIssues(db), []);
 });
 
 test('contradictory migration states fail with actionable errors instead of skipping', () => {
   const ahead = realisticThrough14();
-  ahead.exec('PRAGMA user_version = 18');
-  assert.throws(() => runVersionedMigrations(ahead, initializeBaselineSchema), /only knows migrations through 17/u);
+  ahead.exec('PRAGMA user_version = 19');
+  assert.throws(() => runVersionedMigrations(ahead, initializeBaselineSchema), /only knows migrations through 18/u);
 
   const missing = realisticThrough14();
   missing.prepare('DELETE FROM os_schema_migrations WHERE version = ?').run(7);

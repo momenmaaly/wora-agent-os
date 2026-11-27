@@ -17,13 +17,14 @@ import { getOsDb, parseJson } from './db.js';
 import { getAiUsageSummary } from './usage.js';
 import { listPlaybooks, deletePlaybook } from './playbooks.js';
 import { listTools, runTool, getTool } from './tools.js';
-import { listAlgorithms, selectAlgorithm, PROBLEM_KINDS, algorithmSelectionInputSchema } from './algorithms.js';
+import { ALGORITHM_CATALOG_VERSION, listAlgorithms, selectAlgorithm, PROBLEM_KINDS, algorithmSelectionInputSchema } from './algorithms.js';
 import { listVerifications, getVerification } from './verification.js';
 import { listTaskLeases, listTaskCheckpoints, getExecutionLimits, setExecutionLimits } from './task-queue.js';
 import { understandProblem, getProblemProfile } from './problem.js';
 import { modelProblem } from './problem-model.js';
 import { buildClarificationPlan } from './clarification.js';
 import { extractUrls, planResearch } from './research.js';
+import { formulateScientificProblem } from './scientific-formulation.js';
 import { composeMissionPlan, getComposition } from './capability-composition.js';
 import { getMissionOutcome } from './outcome-verification.js';
 import { analyzeProblemReasoning, buildDeterministicReasoning, filterReasoningForActor } from './reasoning-engine.js';
@@ -324,7 +325,7 @@ export function createOsRouter(options: { production?: boolean } = {}): Router {
   }));
 
   router.get('/algorithms', asyncWrap((_req, res) => {
-    res.json({ catalogVersion: '2026-11-24.1', algorithms: listAlgorithms() });
+    res.json({ catalogVersion: ALGORITHM_CATALOG_VERSION, algorithms: listAlgorithms() });
   }));
 
   router.post('/algorithms/select', asyncWrap((req, res) => {
@@ -340,6 +341,16 @@ export function createOsRouter(options: { production?: boolean } = {}): Router {
     if (!rateLimit(workspace(res), 60, req.path)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
     const body = algorithmSelectionInputSchema.parse(req.body ?? {});
     res.json(selectScientificMethod(body));
+  }));
+
+  router.post('/science/formulate', asyncWrap((req, res) => {
+    if (!rateLimit(workspace(res), 60, req.path)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    const body = z.object({
+      kind: z.enum(['linear_programming', 'integer_programming', 'shortest_path', 'assignment', 'employee_scheduling', 'monte_carlo_simulation', 'forecasting', 'multi_criteria_decision']),
+      model: z.unknown().optional(),
+      objective: z.string().trim().max(4_000).optional(),
+    }).strict().parse(req.body ?? {});
+    res.json(formulateScientificProblem(body));
   }));
 
   router.post('/decisions/compare', asyncWrap((req, res) => {
@@ -1056,8 +1067,27 @@ function highRiskAgentCapabilities(permissions: readonly string[], tools: readon
       })).min(1),
       integerVars: z.array(z.string().min(1).max(60)).optional(),
       binaryVars: z.array(z.string().min(1).max(60)).optional(),
-    }).strict().parse(req.body ?? {});
-    res.json(await solveLp(body));
+      bounds: z.record(z.string(), z.object({ lower: z.number().finite().optional(), upper: z.number().finite().optional() })).optional(),
+      model: z.object({
+        sense: z.enum(['minimize', 'maximize']),
+        objective: z.array(z.object({ var: z.string().min(1).max(60), coeff: z.number().finite() })).min(1),
+        constraints: z.array(z.object({
+          name: z.string().max(60).optional(),
+          terms: z.array(z.object({ var: z.string().min(1).max(60), coeff: z.number().finite() })).min(1),
+          op: z.enum(['<=', '>=', '=']),
+          rhs: z.number().finite(),
+        })).min(1),
+        integerVars: z.array(z.string().min(1).max(60)).optional(),
+        binaryVars: z.array(z.string().min(1).max(60)).optional(),
+        bounds: z.record(z.string(), z.object({ lower: z.number().finite().optional(), upper: z.number().finite().optional() })).optional(),
+      }).strict().optional(),
+    }).strict().refine((value) => Boolean(value.model || (value.sense && value.objective && value.constraints)), { message: 'Provide a model or sense, objective and constraints' }).parse(req.body ?? {});
+    res.json(await solveLp(body.model ?? {
+      sense: body.sense!, objective: body.objective!, constraints: body.constraints!,
+      ...(body.integerVars ? { integerVars: body.integerVars } : {}),
+      ...(body.binaryVars ? { binaryVars: body.binaryVars } : {}),
+      ...(body.bounds ? { bounds: body.bounds } : {}),
+    }));
   }));
 
   router.post('/optimize/assignment', asyncWrap((req, res) => {
@@ -1068,6 +1098,22 @@ function highRiskAgentCapabilities(permissions: readonly string[], tools: readon
       colLabels: z.array(z.string().max(120)).optional(),
     }).strict().parse(req.body ?? {});
     res.json(solveAssignment(body.costMatrix, body.rowLabels, body.colLabels));
+  }));
+
+  router.post('/optimize/shortest-path', asyncWrap(async (req, res) => {
+    if (!rateLimit(workspace(res), 30, req.path)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    const body = z.object({
+      model: z.unknown().optional(),
+      nodes: z.array(z.string().min(1).max(120)).max(2_000).optional(),
+      edges: z.array(z.object({ from: z.string().min(1).max(120), to: z.string().min(1).max(120), weight: z.number().finite(), id: z.string().max(160).optional() }).strict()).min(1).max(5_000).optional(),
+      start: z.string().min(1).max(120).optional(),
+      goal: z.string().min(1).max(120).optional(),
+      directed: z.boolean().optional(),
+      heuristic: z.record(z.string(), z.number().finite().min(0)).optional(),
+      algorithm: z.enum(['auto', 'dijkstra', 'a_star']).optional(),
+    }).strict().parse(req.body ?? {});
+    const result = await runTool('graph.shortest_path', body, { workspaceId: workspace(res), actor: actor(res), permissions: new Set<string>() });
+    res.status(result.ok ? 200 : 422).json(result.ok ? result.output : { error: result.error });
   }));
 
   router.post('/simulate/monte-carlo', asyncWrap(async (req, res) => {

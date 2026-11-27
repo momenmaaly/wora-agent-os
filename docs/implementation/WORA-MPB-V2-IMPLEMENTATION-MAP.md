@@ -1,6 +1,6 @@
 # WORA MPB V2 — Implementation Map
 
-**Baseline:** `release/wora-v1` at `87c4399` (PR #14)
+**Baseline:** `release/wora-v1` at `460a0f5` (PR #14)
 **Scope:** audit against WORA-MPB-001 Parts 1–2; extend, do not rebuild.
 **Current slice:** Track B — Simple / Guided / Advanced experience, connected to the existing intelligence APIs.
 
@@ -12,11 +12,11 @@
 | Mission orchestration, plans, handoffs, review gates | `api-server/src/os/orchestrator.ts`, `planning.ts`, `multi-agent.test.ts` | implemented foundation |
 | Problem understanding and unified model | `api-server/src/os/problem.ts`, `problem-model.ts`, `problem-structure.ts` | implemented foundation |
 | Reasoning, hypotheses, evidence | `api-server/src/os/reasoning-engine.ts`, `reasoning-store.ts`, `reasoning-evaluation.ts` | implemented foundation; model assistance provider-dependent |
-| Algorithm and scientific method selection | `api-server/src/os/algorithms.ts`, `science.ts` | implemented catalogs and deterministic selection |
+| Algorithm and scientific method selection | `api-server/src/os/algorithms.ts`, `science.ts` | implemented catalogs and deterministic selection, including shortest path |
 | Decision comparison and replan assessment | `api-server/src/os/decision.ts`, `adaptive-replan.ts` | implemented foundation |
 | Capability composition and strategy synthesis | `api-server/src/os/capability-composition.ts`, `strategy-synthesis.ts` | implemented foundation |
-| OR solvers and assignment/scheduling | `api-server/src/os/ortools.ts`, `tools.ts` | LP, scheduling and assignment foundations |
-| Simulation and digital twins | `api-server/src/os/twins.ts`, `tools.ts` | limited/partial; no full digital-twin engine |
+| OR solvers and assignment/scheduling | `api-server/src/os/ortools.ts`, `graph.ts`, `scientific-verification.ts`, `tools.ts` | LP/MIP, Dijkstra/A*, assignment, scheduling and independent verification |
+| Simulation and digital twins | `api-server/src/os/twins.ts`, `tools.ts` | seeded PERT Monte Carlo and what-if twins; no discrete-event engine |
 | Memory, lessons and playbooks | `api-server/src/os/memory.ts`, `lessons.ts`, `playbooks.ts` | memory/lessons implemented; semantic graph incomplete |
 | Independent and outcome verification | `api-server/src/os/independent-verification.ts`, `outcome-verification.ts` | implemented foundation |
 | Governance, approvals, budgets, devices | `api-server/src/os/governance.ts` | implemented foundation; local runtime execution incomplete |
@@ -33,7 +33,7 @@
 | A — V1 closure | PR #14, CI green, deployment contract | deployment-host validation | unchanged |
 | B — Original experience | five primary zones, hidden legacy routes, AR/EN RTL | no Simple/Guided/Advanced mode; no preflight approach disclosure | **implementing** |
 | C — Universal Intelligence Core | problem model, reasoning, method selection, planning, replan | intelligence not visible before mission launch | **exposing real preflight analysis** |
-| D — Scientific Intelligence | algorithm/science catalogs, OR tools, twins, benchmarks | model construction remains structured/limited | next slice |
+| D — Scientific Intelligence | formulation, graph, LP/MIP, simulation, forecast, decision, independent verification | nonlinear/discrete-event engines absent | **implemented vertical slice** |
 | E — Autonomous organization | dynamic selection, teams, handoffs, worker | local runtime execution incomplete | later |
 | F — Learning/self-evolution | lessons, memory, benchmarks | knowledge graph and evolution sandbox absent | later |
 | G — Marketing/media | none | no brand/content/publishing engine | later |
@@ -74,7 +74,7 @@ No new backend registry, database table or parallel intelligence engine is intro
 
 - Client typecheck and production build pass (`tsc --noEmit`, API/deployment contract, Vite build).
 - Client suite on Node 24: 70 tests, 70 pass (including the research preflight journey).
-- API suite on Node 24: 424 tests, 420 pass, 4 skipped (Docker/Mongo integrations when the environment is absent).
+- API suite on Node 24: 443 tests, 439 pass, 4 skipped (Docker/Mongo integrations when the environment is absent).
 - New Playwright journeys `client/tests/experience-modes.test.mjs` exercise the real preview API, the no-mission guarantee, Advanced scientific disclosure, Simple/Advanced Run context visibility, and clarification answers reaching the real forecast plan.
 - Existing production workspace and mobile RTL/LTR journeys still pass.
 
@@ -88,7 +88,18 @@ The research layer is connected to the same mission lifecycle and reasoning mode
 - No source means `unanswered` plus a `research_sources` clarification; no search, fetch or fabricated source occurs during planning.
 - Research memory is not copied into the plan, preserving memory deletion semantics.
 
-## 6. Deferred work
+## 6. Scientific intelligence slice
+
+The formulation-first engine is documented in `WORA-V2-SCIENTIFIC-INTELLIGENCE-ENGINE.md`.
+
+- `scientific-formulation.ts` records variables, inputs, objective, constraints, assumptions, solver, expected outputs, verification and missing inputs before execution.
+- `graph.ts` implements Dijkstra and A*; A* is checked against an independent Dijkstra baseline.
+- `scientific-verification.ts` independently recomputes LP/MIP, assignment and scheduling results.
+- `buildPlan` connects formulation and execution with `inputBindings`; missing data becomes a recorded gap, never a sample model.
+- `/api/os/science/formulate` and `/api/os/optimize/shortest-path` expose the flow; the Intelligence Hub adds a real graph tab.
+- Migration 18 grants the new tools to untouched operations-research seed agents without overwriting narrowed allow-lists.
+
+## 7. Deferred work
 
 - OR model construction from natural-language formulations with inspectable constraints.
 - Semantic/knowledge graph and provenance-aware retrieval.

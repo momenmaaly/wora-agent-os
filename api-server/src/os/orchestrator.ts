@@ -43,6 +43,7 @@ import { buildDeterministicReasoning, filterReasoningForActor, summarizeReasonin
 import { saveReasoningModel, getReasoningModel, recordOutcomeReasoningEvidence } from './reasoning-store.js';
 import type { ClarificationAnswer } from './clarification.js';
 import { extractUrls, findingFromToolOutput, planResearch, synthesizeResearch } from './research.js';
+import { formulateScientificProblem, type FormulationKind } from './scientific-formulation.js';
 import { matchCapabilities } from '../extensions/capability-intelligence.js';
 import { persistTeamPlan, resolveTaskAgent, selectReplacement, recordAgentPerformance, getTeamPlan, listSelectionDecisions } from './selection.js';
 import { logger } from '../lib/logger.js';
@@ -132,6 +133,88 @@ function parseCreateAgentObjective(objective: string): { name: string; role: str
   const specialization = specByKeyword.find(([re]) => re.test(descriptor))?.[1] ?? 'generalist';
   const label = descriptor.replace(/\b\w/g, (c) => c.toUpperCase());
   return { name: `${label} Agent`, role: `Persistent ${descriptor} specialist created from an instruction: "${objective.slice(0, 200)}"`, specialization };
+}
+
+function extractStructuredJson(text: string): Record<string, unknown> | null {
+  const first = text.indexOf('{');
+  const last = text.lastIndexOf('}');
+  if (first < 0 || last <= first || last - first > 20_000) return null;
+  try {
+    const parsed = JSON.parse(text.slice(first, last + 1)) as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
+}
+
+function scientificGapTask(text: string, missing: string[], kind: string): PlanTask {
+  const gap = `SCIENTIFIC INPUT GAP — ${kind} cannot be formulated or executed. Missing: ${missing.join('; ') || 'supported structured input'}. No sample values were substituted.`;
+  return {
+    title: 'Report the scientific input gap honestly',
+    objective: text,
+    specialization: 'business_analyst',
+    tool: 'text.extract_summary',
+    toolInput: { text: `${gap} Supply the missing structured data or attach a real dataset; do not invent numeric values.`, sentences: 3 },
+    dependsOn: [],
+    acceptance: ['Missing scientific inputs are stated explicitly', 'No sample values are invented', 'No solver is executed without a formulation'],
+    detail: gap,
+  };
+}
+
+const SCIENTIFIC_TOOL: Record<FormulationKind, string> = {
+  linear_programming: 'or.solve_lp',
+  integer_programming: 'or.solve_lp',
+  shortest_path: 'graph.shortest_path',
+  assignment: 'or.assignment',
+  employee_scheduling: 'or.employee_schedule',
+  monte_carlo_simulation: 'sim.monte_carlo',
+  forecasting: 'forecast.linear',
+  multi_criteria_decision: 'decision.weighted_matrix',
+};
+
+function scientificAcceptance(kind: FormulationKind): string[] {
+  switch (kind) {
+    case 'shortest_path': return ['Path starts at start and ends at goal', 'Every path step is a real edge', 'A* is checked against an independent Dijkstra baseline', 'Negative weights are rejected'];
+    case 'monte_carlo_simulation': return ['Quantiles are ordered p10 ≤ p50 ≤ p90', 'Seed and trial count are recorded', 'Result is labelled simulated, not observed'];
+    case 'forecasting': return ['Only supplied observations are used', 'Holdout metrics and residual bands are reported', 'No causal or guaranteed prediction is claimed'];
+    case 'multi_criteria_decision': return ['Weights and scores are complete', 'Weighted scores are recomputed', 'Robustness under ±25% weight perturbation is reported'];
+    case 'assignment': return ['No row or column is assigned twice', 'Total cost is recomputed', 'Indices are inside the cost matrix'];
+    case 'employee_scheduling': return ['Demand is covered', 'Availability and workload caps are respected', 'Labor cost is recomputed'];
+    default: return ['Solver reports Optimal', 'Objective and every constraint are independently recomputed', 'Bounds and integrality are checked', 'Non-optimal statuses are surfaced, not hidden'];
+  }
+}
+
+function scientificPlan(text: string, kind: FormulationKind, model: unknown): PlanTask[] | null {
+  const formulation = formulateScientificProblem({ kind, model, objective: text });
+  if (!formulation.executable) return null;
+  const tool = SCIENTIFIC_TOOL[kind];
+  return [
+    {
+      title: 'Formulate the scientific problem explicitly',
+      objective: text,
+      specialization: 'operations_research',
+      tool: 'meta.formulate_scientific_problem',
+      toolInput: { kind, model, objective: text },
+      dependsOn: [],
+      acceptance: [
+        'Decision variables, input data, objective and constraints are explicit',
+        'Assumptions, solver and verification criteria are recorded',
+        'No missing numeric value is imputed',
+      ],
+      detail: `Formulation ${formulation.digest.slice(0, 16)} · ${formulation.problemClass} · solver=${formulation.solver}. Objective: ${formulation.objective}. Constraints: ${formulation.constraints.join('; ')}.`,
+    },
+    {
+      title: kind === 'shortest_path' ? 'Solve the shortest path and verify optimality' : 'Execute the formulated scientific method and verify the result',
+      objective: text,
+      specialization: 'operations_research',
+      tool,
+      toolInput: {},
+      inputBindings: [{ key: 'model', taskIndex: 0, path: ['model'] }],
+      dependsOn: [0],
+      acceptance: scientificAcceptance(kind),
+      detail: `Uses the formulation from task 0 (${formulation.digest.slice(0, 16)}). ${formulation.limitations.join(' ')}`,
+    },
+  ];
 }
 
 export function buildPlan(objective: string, track?: string, workspaceId = 'wora-preview', actor = 'system'): PlanTask[] {
@@ -253,6 +336,49 @@ export function buildPlan(objective: string, track?: string, workspaceId = 'wora
         detail: 'Honest scope note: checks the machine running the WORA runtime. Inspecting the end-user device requires the Local Device Agent (not connected).',
       },
     ];
+  }
+
+  // Structured scientific payloads are executed through the real formulation
+  // and solver tools. Missing values are reported, never replaced by samples.
+  const structured = extractStructuredJson(text);
+  const graphIntent = /shortest\s*path|dijkstra|a\*|graph\s+(?:route|path|network)|network\s+path|route\s+optim|أقصر\s+مسار|مسار\s+الشبكة/i.test(text);
+  if (graphIntent) {
+    const graphModel = structured && Array.isArray(structured['edges']) ? structured : null;
+    if (!graphModel) return [scientificGapTask(text, ['weighted edges', 'start node', 'goal node'], 'shortest path')];
+    const planned = scientificPlan(text, 'shortest_path', graphModel);
+    if (planned) return planned;
+    return [scientificGapTask(text, ['a valid non-negative weighted graph with start and goal'], 'shortest path')];
+  }
+  if (structured && Array.isArray(structured['objective']) && Array.isArray(structured['constraints']) && !structured['employees']) {
+    const kind: FormulationKind = structured['integerVars'] || structured['binaryVars'] ? 'integer_programming' : 'linear_programming';
+    const planned = scientificPlan(text, kind, structured);
+    if (planned) return planned;
+    return [scientificGapTask(text, ['a valid linear objective and constraint model'], kind.replaceAll('_', ' '))];
+  }
+  if (structured && Array.isArray(structured['employees']) && Array.isArray(structured['shifts'])) {
+    const planned = scientificPlan(text, 'employee_scheduling', structured);
+    if (planned) return planned;
+    return [scientificGapTask(text, ['valid employees and shifts'], 'employee scheduling')];
+  }
+  if (structured && Array.isArray(structured['costMatrix'])) {
+    const planned = scientificPlan(text, 'assignment', structured);
+    if (planned) return planned;
+    return [scientificGapTask(text, ['a rectangular numeric cost matrix'], 'assignment')];
+  }
+  if (structured && Array.isArray(structured['items']) && /simulat|monte carlo|risk|uncertain|محاكاة|مخاطر/i.test(text)) {
+    const planned = scientificPlan(text, 'monte_carlo_simulation', structured);
+    if (planned) return planned;
+    return [scientificGapTask(text, ['complete three-point estimates'], 'Monte Carlo simulation')];
+  }
+  if (structured && Array.isArray(structured['series']) && /forecast|project|predict|تنبؤ|توقع/i.test(text)) {
+    const planned = scientificPlan(text, 'forecasting', structured);
+    if (planned) return planned;
+    return [scientificGapTask(text, ['at least eight observations and a horizon'], 'forecast')];
+  }
+  if (structured && Array.isArray(structured['criteria']) && Array.isArray(structured['alternatives'])) {
+    const planned = scientificPlan(text, 'multi_criteria_decision', structured);
+    if (planned) return planned;
+    return [scientificGapTask(text, ['criteria, weights and complete alternative scores'], 'multi-criteria decision')];
   }
 
   // Journey 5 — optimization / scheduling / allocation
@@ -614,9 +740,33 @@ function reviewRun(task: TaskRow, toolOk: boolean, output: unknown, error: strin
   switch (task.tool) {
     case 'or.employee_schedule':
       if (toolOk && out['feasible'] !== true) issues.push('Optimization infeasible — demand cannot be met with the given roster/availability');
+      if (toolOk && (out['verification'] as { passed?: boolean } | undefined)?.passed !== true) issues.push('Independent schedule verification did not pass');
       break;
     case 'or.solve_lp':
       if (toolOk && out['status'] !== 'Optimal') issues.push(`Solver status: ${String(out['status'] ?? 'unknown')}`);
+      if (toolOk && (out['verification'] as { passed?: boolean } | undefined)?.passed !== true) issues.push('Independent LP/MIP verification did not pass');
+      break;
+    case 'or.assignment':
+      if (toolOk && (out['verification'] as { passed?: boolean } | undefined)?.passed !== true) issues.push('Independent assignment verification did not pass');
+      break;
+    case 'graph.shortest_path':
+      if (toolOk && out['status'] !== 'optimal') issues.push(`Shortest-path status: ${String(out['status'] ?? 'unknown')}`);
+      if (toolOk && (out['verification'] as { passed?: boolean } | undefined)?.passed !== true) issues.push('Independent shortest-path verification did not pass');
+      break;
+    case 'sim.monte_carlo':
+      if (toolOk && out['simulated'] !== true) issues.push('Simulation result is not labelled simulated');
+      if (toolOk && !(Number(out['p10']) <= Number(out['p50']) && Number(out['p50']) <= Number(out['p90']))) issues.push('Simulated quantiles are not ordered');
+      break;
+    case 'forecast.linear':
+      if (toolOk && !Array.isArray(out['projections'])) issues.push('Forecast returned no projections');
+      if (toolOk && !Number.isFinite(Number(out['holdoutMae']))) issues.push('Forecast did not report a holdout MAE');
+      break;
+    case 'decision.weighted_matrix':
+      if (toolOk && !Array.isArray(out['ranking'])) issues.push('Decision matrix returned no ranking');
+      if (toolOk && typeof out['robust'] !== 'boolean') issues.push('Decision matrix did not report robustness');
+      break;
+    case 'meta.formulate_scientific_problem':
+      if (toolOk && out['executable'] !== true) issues.push('Scientific formulation is not executable — required inputs are missing');
       break;
     case 'scaffold.webapp':
       if (toolOk && out['testPassed'] !== true) issues.push('Generated application did not pass its node:test suite');
@@ -1395,6 +1545,18 @@ function summarizeDeliverables(tool: string | null, output: unknown): string[] {
       return [`Optimal schedule found: total cost ${String(out['totalCost'] ?? 'n/a')} across ${Array.isArray(out['assignments']) ? out['assignments'].length : 0} assignments.`];
     case 'or.assignment':
       return [`Optimal assignment, total cost ${String(out['totalCost'] ?? 'n/a')}.`];
+    case 'or.solve_lp':
+      return [`LP/MIP ${String(out['status'] ?? 'unknown')}, objective ${String(out['objectiveValue'] ?? 'n/a')}; independent verification ${((out['verification'] as { passed?: boolean } | undefined)?.passed ? 'PASSED' : 'FAILED')}.`];
+    case 'graph.shortest_path':
+      return [`Shortest path ${String(out['status'] ?? 'unknown')}, cost ${String(out['totalCost'] ?? 'n/a')} via ${String((out['path'] as string[] | undefined)?.join(' → ') ?? 'n/a')}; independent verification ${((out['verification'] as { passed?: boolean } | undefined)?.passed ? 'PASSED' : 'FAILED')}.`];
+    case 'meta.formulate_scientific_problem':
+      return [`Scientific formulation ${String(out['kind'] ?? 'unknown')} (${String(out['solver'] ?? 'no solver')}), executable=${String(out['executable'])}.`];
+    case 'sim.monte_carlo':
+      return [`Simulated ${String(out['method'] ?? 'Monte Carlo')}: p50=${String(out['p50'] ?? 'n/a')}, p90=${String(out['p90'] ?? 'n/a')}, seed=${String(out['seed'] ?? 'n/a')}.`];
+    case 'forecast.linear':
+      return [`Forecast produced ${Array.isArray(out['projections']) ? out['projections'].length : 0} projection(s); holdout MAE=${String(out['holdoutMae'] ?? 'n/a')}.`];
+    case 'decision.weighted_matrix':
+      return [`Decision ranking winner=${String(out['winner'] ?? 'n/a')}; robust=${String(out['robust'])}.`];
     case 'system.diagnostics':
       return [`Host diagnostics report (${typeof out['verdict'] === 'string' ? out['verdict'] : 'collected'}).`];
     case 'org.build':

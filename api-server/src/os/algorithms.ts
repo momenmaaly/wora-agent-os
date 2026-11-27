@@ -13,10 +13,11 @@ import { z } from 'zod';
  * is unknown, the engine returns `needs_input` instead of fabricating a plan.
  */
 export const ALGORITHM_SCHEMA_VERSION = '1.0';
-export const ALGORITHM_CATALOG_VERSION = '2026-11-24.1';
+export const ALGORITHM_CATALOG_VERSION = '2026-11-27.1';
 
 export const PROBLEM_KINDS = [
   'assignment',
+  'shortest_path',
   'employee_scheduling',
   'linear_programming',
   'integer_programming',
@@ -46,6 +47,7 @@ export type ScientificRequirement =
   | 'reinforcement_learning'
   | 'deep_learning'
   | 'bayesian_inference'
+  | 'graph'
   | 'mcts';
 
 export interface ProblemFeatures {
@@ -62,6 +64,10 @@ export interface ProblemFeatures {
   stochastic?: boolean;
   availableTools?: string[];
   hasCostMatrix?: boolean;
+  hasGraph?: boolean;
+  graphNodes?: number;
+  graphEdges?: number;
+  negativeWeights?: boolean;
   matrixRows?: number;
   matrixCols?: number;
   hasEmployees?: boolean;
@@ -97,6 +103,10 @@ export const algorithmSelectionInputSchema = z.object({
     stochastic: z.boolean().optional(),
     availableTools: z.array(z.string().min(1).max(120)).max(500).optional(),
     hasCostMatrix: z.boolean().optional(),
+    hasGraph: z.boolean().optional(),
+    graphNodes: z.number().int().positive().max(2_000).optional(),
+    graphEdges: z.number().int().positive().max(5_000).optional(),
+    negativeWeights: z.boolean().optional(),
     matrixRows: z.number().int().positive().max(200).optional(),
     matrixCols: z.number().int().positive().max(200).optional(),
     hasEmployees: z.boolean().optional(),
@@ -244,6 +254,35 @@ const CATALOG: AlgorithmDefinition[] = [
       'A solver result is only as valid as the model supplied by the caller.',
     ],
     costClass: 'medium',
+    deterministic: true,
+    maturity: 'tested',
+  },
+  {
+    id: 'dijkstra-a-star',
+    domain: 'operations_research',
+    name: 'Dijkstra / A* Shortest Path',
+    version: '1.0.0',
+    toolId: 'graph.shortest_path',
+    problemKinds: ['shortest_path'],
+    scientificBasis: 'Dijkstra label-setting on non-negative weights, with optional A* heuristic search.',
+    preconditions: ['an explicit weighted graph', 'start and goal nodes', 'non-negative edge weights'],
+    failureConditions: ['negative weights are rejected', 'a missing path returns no_path, not a fabricated path'],
+    assumptions: ['edge weights are additive', 'the supplied graph is the intended model', 'an A* heuristic is optional'],
+    guarantee: 'A minimum-cost path when Dijkstra/A* succeeds; A* is checked against an independent Dijkstra baseline before optimality is claimed.',
+    complexity: 'O((V + E) log V) with a binary heap; inputs are capped at 2,000 nodes and 5,000 edges.',
+    inputs: ['nodes (optional)', 'edges with from/to/weight', 'start', 'goal', 'optional directed flag and heuristic'],
+    outputs: ['optimal path', 'path cost', 'expanded nodes', 'independent path/optimality verification'],
+    verification: [
+      'Confirm the path starts at start and ends at goal.',
+      'Confirm every consecutive pair is a real edge and recompute the cost.',
+      'For A*, compare the cost with an independent Dijkstra baseline.',
+      'Reject negative edge weights instead of silently using a different algorithm.',
+    ],
+    limitations: [
+      'No negative weights, time-dependent edges, multi-commodity flow or dynamic replanning.',
+      'Optimality is relative to the supplied graph, not proof that the graph is correct.',
+    ],
+    costClass: 'low',
     deterministic: true,
     maturity: 'tested',
   },
@@ -422,6 +461,7 @@ function structuredProblem(input: AlgorithmSelectionInput): {
     unsupported: label,
   });
   const requires = new Set(f.requires ?? []);
+  if (f.negativeWeights === true) return unsupported('negative-weight shortest paths');
   const unsupportedRequirement = [...requires].find((requirement) =>
     ['causal_analysis', 'formal_verification', 'reinforcement_learning', 'deep_learning', 'bayesian_inference', 'mcts', 'planning'].includes(requirement));
   if (unsupportedRequirement) {
@@ -440,6 +480,7 @@ function structuredProblem(input: AlgorithmSelectionInput): {
   const choose = (kind: ProblemKind, label: string) => ({
     kind, confidence: 0.9, rationale: [`Structured feature: ${label}.`], warnings: [],
   });
+  if (f.hasGraph === true || requires.has('graph')) return choose('shortest_path', 'explicit weighted graph');
   if (f.problemType === 'scheduling') return choose('employee_scheduling', 'scheduling');
   if (f.problemType === 'optimization' || f.problemType === 'allocation') {
     if (f.hasEmployees === true || f.hasShifts === true) return choose('employee_scheduling', 'scheduling constraints');
@@ -493,6 +534,7 @@ function detectProblem(input: AlgorithmSelectionInput): {
   const feature = (kind: ProblemKind, label: string) => ({
     kind, confidence: 0.9, rationale: [`Structured feature: ${label}.`], warnings: [],
   });
+  if (f.hasGraph === true) return feature('shortest_path', 'explicit weighted graph');
   if (f.hasEmployees === true || f.hasShifts === true) return feature('employee_scheduling', 'employees/shifts present');
   if (f.hasCostMatrix === true || (f.matrixRows !== undefined && f.matrixCols !== undefined)) return feature('assignment', 'cost matrix dimensions present');
   if (f.integerVariables === true) return feature('integer_programming', 'integer variables present');
@@ -505,6 +547,7 @@ function detectProblem(input: AlgorithmSelectionInput): {
     ? { kind, confidence: 0.65, rationale: [`Objective text mentions ${label}.`], warnings: ['Classification is keyword-based; supply structured features or an explicit kind for higher confidence.'] }
     : null;
   const detected =
+    keyword('shortest_path', 'shortest path or graph routing', /shortest\s*path|dijkstra|a\*|graph\s+(?:route|path|network)|network\s+path|route\s+optim|أقصر\s+مسار|مسار\s+الشبكة/u) ??
     keyword('employee_scheduling', 'employees, shifts or scheduling', /employee|shift|staff|workforce|roster|schedule|وردية|موظف|جدول/u) ??
     keyword('assignment', 'assignment or matching', /cost matrix|assignment|matching|assign .* (task|job|worker)|توزيع|مطابقة/u) ??
     keyword('monte_carlo_simulation', 'simulation, risk or uncertainty', /monte carlo|simulat|scenario|risk|uncertainty|محاكاة/u) ??
@@ -526,6 +569,8 @@ function detectProblem(input: AlgorithmSelectionInput): {
 
 function missingInformation(kind: DetectedProblemKind, features: ProblemFeatures): string[] {
   switch (kind) {
+    case 'shortest_path':
+      return ['weighted edges', 'start node', 'goal node'];
     case 'assignment':
       return features.hasCostMatrix || (features.matrixRows !== undefined && features.matrixCols !== undefined)
         ? []
@@ -575,6 +620,7 @@ function choiceFor(algorithmId: string, reason: string, suitability = 0.9): Algo
 function primaryFor(kind: ProblemKind, detectedBy: string): AlgorithmChoice | null {
   const map: Record<ProblemKind, string> = {
     assignment: 'hungarian-assignment',
+    shortest_path: 'dijkstra-a-star',
     employee_scheduling: 'highs-employee-scheduling',
     linear_programming: 'highs-lp-mip',
     integer_programming: 'highs-lp-mip',

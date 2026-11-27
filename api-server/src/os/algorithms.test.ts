@@ -50,7 +50,7 @@ after(() => {
 test('algorithm catalog only advertises real, resolvable tools', () => {
   const algorithms = listAlgorithms();
   assert.ok(algorithms.length >= 8);
-  assert.equal(ALGORITHM_CATALOG_VERSION, '2026-11-24.1');
+  assert.equal(ALGORITHM_CATALOG_VERSION, '2026-11-27.1');
   const ids = new Set<string>();
   for (const algorithm of algorithms) {
     assert.ok(!ids.has(algorithm.id), `duplicate algorithm id ${algorithm.id}`);
