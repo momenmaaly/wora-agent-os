@@ -87,7 +87,8 @@ export function ResearchProgramsPanel() {
       );
       const latest = await osApi.linkResearchMission(selected.id, workstreamId, selected.version, mission.id);
       setPrograms((current) => current.map((item) => item.id === latest.id ? latest : item));
-      setNotice(`اتنشأت مهمة فعلية ${mission.id} واتربطت بمسار البحث.`);
+      const execution = await osApi.executeMission(mission.id);
+      setNotice(`اتنشأت المهمة ${mission.id} وبدأ تنفيذها. الحالة الحالية: ${execution.status}.`);
     } catch (err) {
       setError(err instanceof OsApiError ? err.message : 'تعذر تشغيل مسار البحث.');
     } finally { setBusy(false); }
@@ -155,7 +156,7 @@ export function ResearchProgramsPanel() {
                 <p dir="auto" className="subtle">{stream.objective}</p>
                 <small className="subtle">{stream.missionIds.length} Missions مرتبطة · {stream.deliverables.length} مخرجات محددة</small>
                 <button type="button" className="button small primary" disabled={busy || selected.status === 'completed' || selected.status === 'cancelled'} onClick={() => void launchWorkstreamMission(stream.id)}>
-                  {busy ? <LoaderCircle size={14} className="os-spin" /> : <Play size={14} />} إنشاء Mission وتشغيلها
+                  {busy ? <LoaderCircle size={14} className="os-spin" /> : <Play size={14} />} إنشاء Mission وتنفيذها
                 </button>
               </article>
             ))}
