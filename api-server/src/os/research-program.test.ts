@@ -42,5 +42,5 @@ test('mission links are workspace-scoped and never create duplicate missions', (
   db.prepare("INSERT INTO os_missions (id, workspace_id, objective, status, created_at, updated_at) VALUES ('mission-a', ?, 'Existing mission', 'planning', datetime('now'), datetime('now'))").run(WS);
   const linked = linkMissionToWorkstream({ workspaceId: WS, programId: created.id, workstreamId: withStream.workstreams[0]!.id, missionId: 'mission-a', expectedVersion: 2 });
   assert.deepEqual(linked.workstreams[0]!.missionIds, ['mission-a']);
-  assert.throws(() => linkMissionToWorkstream({ workspaceId: WS, programId: created.id, workstreamId: withStream.workstreams[0]!.id, missionId: 'mission-a', expectedVersion: 3, workspaceId: 'other-workspace' }), /not found/);
+  assert.throws(() => linkMissionToWorkstream({ workspaceId: 'other-workspace', programId: created.id, workstreamId: withStream.workstreams[0]!.id, missionId: 'mission-a', expectedVersion: 3 }), /not found/);
 });
