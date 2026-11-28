@@ -557,6 +557,20 @@ export interface MigrationStatus {
 export interface MetricsSnapshot { counters: Record<string, number>; gauges: Record<string, number>; histograms?: Record<string, unknown> }
 
 /* ─── Endpoints ─────────────────────────────────────────── */
+
+export type ResearchProgramStatus = 'draft' | 'active' | 'paused' | 'completed' | 'cancelled';
+export interface ResearchWorkstream {
+  id: string; title: string; objective: string; specialization: string;
+  dependsOn: string[]; missionIds: string[];
+  status: 'planned' | 'active' | 'blocked' | 'completed';
+  deliverables: string[]; createdAt: string; updatedAt: string;
+}
+export interface ResearchProgram {
+  schemaVersion: '1.0'; id: string; workspaceId: string; title: string; objective: string;
+  successCriteria: string[]; status: ResearchProgramStatus; workstreams: ResearchWorkstream[];
+  version: number; createdAt: string; updatedAt: string;
+}
+
 export const osApi = {
   state: () => request<OsState>('/state'),
   runtimeStatus: () => request<RuntimeStatus>('/runtime/status'),
@@ -573,6 +587,17 @@ export const osApi = {
   updateAgent: (id: string, body: Partial<Pick<Agent, 'status' | 'name' | 'role' | 'skills' | 'instructions'>>) =>
     request<Agent>(`/agents/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
   deleteAgent: (id: string) => request<void>(`/agents/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
+  researchPrograms: (limit = 50) => request<{ programs: ResearchProgram[] }>(`/research-programs?limit=${limit}`),
+  researchProgram: (id: string) => request<ResearchProgram>(`/research-programs/${encodeURIComponent(id)}`),
+  createResearchProgram: (body: { title: string; objective: string; successCriteria?: string[] }) =>
+    request<ResearchProgram>('/research-programs', { method: 'POST', body: JSON.stringify(body) }),
+  updateResearchProgram: (id: string, expectedVersion: number, patch: { title?: string; objective?: string; successCriteria?: string[]; status?: ResearchProgramStatus }) =>
+    request<ResearchProgram>(`/research-programs/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify({ expectedVersion, ...patch }) }),
+  addResearchWorkstream: (id: string, expectedVersion: number, workstream: { title: string; objective: string; specialization: string; dependsOn?: string[]; deliverables?: string[] }) =>
+    request<ResearchProgram>(`/research-programs/${encodeURIComponent(id)}/workstreams`, { method: 'POST', body: JSON.stringify({ expectedVersion, workstream }) }),
+  linkResearchMission: (id: string, workstreamId: string, expectedVersion: number, missionId: string) =>
+    request<ResearchProgram>(`/research-programs/${encodeURIComponent(id)}/workstreams/${encodeURIComponent(workstreamId)}/missions`, { method: 'POST', body: JSON.stringify({ expectedVersion, missionId }) }),
 
   missions: () => request<MissionSummary[]>('/missions'),
   mission: (id: string) => request<MissionDetail>(`/missions/${encodeURIComponent(id)}`),

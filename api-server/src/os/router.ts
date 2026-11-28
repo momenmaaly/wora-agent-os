@@ -34,6 +34,7 @@ import { listPlanVersions, replanMission } from './planning.js';
 import { previewTeam, getTeamPlan, listSelectionDecisions, performanceReport, requirementsForPlan } from './selection.js';
 import { listLessons, getLesson, collectCandidateLessons, evaluateLesson, promoteLesson, rejectLesson, revokeLesson, recordLessonOutcome, listLessonEvents, recordLessonApplication, listLessonApplications } from './lessons.js';
 import { redactSecrets } from './secrets.js';
+import { createResearchProgram, getResearchProgram, listResearchPrograms, updateResearchProgram, addResearchWorkstream, linkMissionToWorkstream } from './research-program.js';
 import { runBenchmarkSuite, listBenchmarkRuns } from './benchmarks.js';
 import { listScientificDomains, scientificCatalogSummary, selectScientificMethod } from './science.js';
 import { compareSolutionStrategies, assessReplan, listDecisionRecords, saveDecisionRecord } from './decision.js';
@@ -1562,6 +1563,85 @@ function highRiskAgentCapabilities(permissions: readonly string[], tools: readon
       res.status(removeWorkspaceRole(workspace(res), param(req, 'userId'), actor(res)) ? 204 : 404).end();
     } catch (err) {
       res.status(403).json({ error: err instanceof Error ? err.message : 'تعذر إزالة الدور' });
+    }
+  }));
+
+  /* ─── WORA Personal: durable research programs ─── */
+  const researchProgramCreateSchema = z.object({
+    title: z.string().trim().min(1).max(4000),
+    objective: z.string().trim().min(1).max(4000),
+    successCriteria: z.array(z.string().trim().min(1).max(4000)).max(30).optional(),
+  }).strict();
+
+  router.get('/research-programs', asyncWrap((req, res) => {
+    const rawLimit = typeof req.query['limit'] === 'string' ? Number(req.query['limit']) : 50;
+    if (!Number.isInteger(rawLimit) || rawLimit < 1 || rawLimit > 100) {
+      res.status(400).json({ error: 'limit must be an integer between 1 and 100' }); return;
+    }
+    res.json({ programs: listResearchPrograms(workspace(res), rawLimit) });
+  }));
+
+  router.post('/research-programs', asyncWrap((req, res) => {
+    if (!rateLimit(workspace(res), 20, req.path)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    const body = researchProgramCreateSchema.parse(req.body ?? {});
+    res.status(201).json(createResearchProgram({ ...body, workspaceId: workspace(res), actor: actor(res) }));
+  }));
+
+  router.get('/research-programs/:id', asyncWrap((req, res) => {
+    const program = getResearchProgram(workspace(res), param(req, 'id'));
+    if (!program) { res.status(404).json({ error: 'Research program not found' }); return; }
+    res.json(program);
+  }));
+
+  router.patch('/research-programs/:id', asyncWrap((req, res) => {
+    if (!rateLimit(workspace(res), 30, req.path)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    const body = z.object({
+      expectedVersion: z.number().int().positive(),
+      title: z.string().trim().min(1).max(4000).optional(),
+      objective: z.string().trim().min(1).max(4000).optional(),
+      successCriteria: z.array(z.string().trim().min(1).max(4000)).max(30).optional(),
+      status: z.enum(['draft', 'active', 'paused', 'completed', 'cancelled']).optional(),
+    }).strict().refine((value) => Object.keys(value).some((key) => key !== 'expectedVersion'), { message: 'At least one field to update is required' }).parse(req.body ?? {});
+    try {
+      const { expectedVersion, ...patch } = body;
+      res.json(updateResearchProgram({ workspaceId: workspace(res), programId: param(req, 'id'), expectedVersion, patch, actor: actor(res) }));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Research program update failed';
+      res.status(message === 'Research program not found' ? 404 : message.includes('version conflict') ? 409 : 400).json({ error: message });
+    }
+  }));
+
+  router.post('/research-programs/:id/workstreams', asyncWrap((req, res) => {
+    if (!rateLimit(workspace(res), 30, req.path)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    const body = z.object({
+      expectedVersion: z.number().int().positive(),
+      workstream: z.object({
+        title: z.string().trim().min(1).max(4000),
+        objective: z.string().trim().min(1).max(4000),
+        specialization: z.string().trim().min(1).max(120),
+        dependsOn: z.array(z.string().min(1).max(120)).max(50).optional(),
+        deliverables: z.array(z.string().trim().min(1).max(4000)).max(30).optional(),
+      }).strict(),
+    }).strict().parse(req.body ?? {});
+    try {
+      res.status(201).json(addResearchWorkstream({ workspaceId: workspace(res), programId: param(req, 'id'), ...body, actor: actor(res) }));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Research workstream creation failed';
+      res.status(message === 'Research program not found' ? 404 : message.includes('version conflict') ? 409 : 400).json({ error: message });
+    }
+  }));
+
+  router.post('/research-programs/:id/workstreams/:workstreamId/missions', asyncWrap((req, res) => {
+    if (!rateLimit(workspace(res), 30, req.path)) { res.status(429).json({ error: 'Rate limit exceeded' }); return; }
+    const body = z.object({
+      expectedVersion: z.number().int().positive(),
+      missionId: z.string().trim().min(1).max(120),
+    }).strict().parse(req.body ?? {});
+    try {
+      res.json(linkMissionToWorkstream({ workspaceId: workspace(res), programId: param(req, 'id'), workstreamId: param(req, 'workstreamId'), ...body, actor: actor(res) }));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Mission link failed';
+      res.status(message.includes('not found') ? 404 : message.includes('version conflict') ? 409 : 400).json({ error: message });
     }
   }));
 
