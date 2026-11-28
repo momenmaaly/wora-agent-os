@@ -8,7 +8,7 @@ import {
   type TwinRecord, type TwinScenarioResult, type TwinDriverInput, type ShortestPathResult, type ScientificFormulationResult, type AdvancedProblemKind, type AdvancedSolverResult,
 } from '../os/api.js';
 
-type Tab = 'schedule' | 'graph' | 'advanced' | 'montecarlo' | 'decision' | 'tools' | 'playbooks' | 'twins' | 'lessons' | 'benchmarks';
+type Tab = 'schedule' | 'graph' | 'advanced' | 'montecarlo' | 'decision' | 'tools' | 'playbooks' | 'twins' | 'lessons' | 'benchmarks' | 'research';
 
 type EditableEmployee = ScheduleRequest['employees'][number] & { name: string };
 
@@ -402,6 +402,7 @@ export function IntelligenceHub() {
     { id: 'twins', label: 'التوائم الرقمية', icon: Boxes },
     { id: 'lessons', label: 'الدروس', icon: GraduationCap },
     { id: 'benchmarks', label: 'المقاييس', icon: BarChart3 },
+    { id: 'research', label: 'WORA Personal R&D', icon: BrainCircuit },
   ];
 
   return (
@@ -898,6 +899,8 @@ export function IntelligenceHub() {
           </div>
         </div>
       )}
+
+      {tab === 'research' && <ResearchProgramsPanel />}
 
       {tab === 'benchmarks' && (
         <div className="os-benchmarks">
