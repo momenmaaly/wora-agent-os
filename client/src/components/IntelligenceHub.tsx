@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   BarChart3, Boxes, BrainCircuit, CheckCircle2, CircleAlert, FlaskConical, GraduationCap, LoaderCircle, Network, Play, Plus, Route, Scale, ShieldAlert, Trash2, Wrench,
 } from 'lucide-react';
+import { ResearchProgramsPanel } from './ResearchProgramsPanel.js';
 import {
   OsApiError, osApi,
   type BenchmarkRun, type DecisionResult, type Lesson, type LessonEvent, type MonteCarloResult, type ScheduleRequest, type ScheduleResult, type ToolInfo,
