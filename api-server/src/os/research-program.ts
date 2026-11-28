@@ -39,6 +39,18 @@ export interface ResearchProgram {
 }
 
 const MAX_TEXT = 4000;
+
+const STATUS_TRANSITIONS: Record<ResearchProgramStatus, readonly ResearchProgramStatus[]> = {
+  draft: ['draft', 'active', 'cancelled'],
+  active: ['active', 'paused', 'completed', 'cancelled'],
+  paused: ['paused', 'active', 'completed', 'cancelled'],
+  completed: ['completed'],
+  cancelled: ['cancelled'],
+};
+
+function canTransitionStatus(from: ResearchProgramStatus, to: ResearchProgramStatus): boolean {
+  return STATUS_TRANSITIONS[from].includes(to);
+}
 const clean = (value: unknown, label: string): string => {
   if (typeof value !== 'string' || !value.trim()) throw new Error(`${label} is required`);
   const result = value.trim();
@@ -57,14 +69,28 @@ function latestProgram(workspaceId: string, programId: string): ResearchProgram 
 }
 
 function persist(program: ResearchProgram, actor: string): ResearchProgram {
-  const stored = redactSecrets(program).value;
   const db = getOsDb();
-  db.prepare(`INSERT INTO os_artifacts (id, mission_id, workspace_id, name, kind, content, created_at)
-    VALUES (?, NULL, ?, ?, 'research-program', ?, ?)`)
-    .run(newId('rpg'), program.workspaceId, `program:${program.id}:v${program.version}`, JSON.stringify(stored), nowIso());
-  audit(db, { workspaceId: program.workspaceId, actor, action: 'research.program.version.created',
-    subject: program.id, detail: { version: program.version, status: program.status, workstreams: program.workstreams.length } });
-  return stored;
+  const stored = redactSecrets(program).value;
+  // Serialize writers. A read-then-insert check without a write lock can allow
+  // two callers with the same expectedVersion to both append version N+1.
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const current = latestProgram(program.workspaceId, program.id);
+    const currentVersion = current?.version ?? 0;
+    if (currentVersion !== program.version - 1) {
+      throw new Error(`Research program version conflict: expected ${program.version - 1}, current ${currentVersion}`);
+    }
+    db.prepare(`INSERT INTO os_artifacts (id, mission_id, workspace_id, name, kind, content, created_at)
+      VALUES (?, NULL, ?, ?, 'research-program', ?, ?)`)
+      .run(newId('rpg'), program.workspaceId, `program:${program.id}:v${program.version}`, JSON.stringify(stored), nowIso());
+    audit(db, { workspaceId: program.workspaceId, actor, action: 'research.program.version.created',
+      subject: program.id, detail: { version: program.version, status: program.status, workstreams: program.workstreams.length } });
+    db.exec('COMMIT');
+    return stored;
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
 }
 
 export function createResearchProgram(input: {
@@ -87,9 +113,11 @@ export function getResearchProgram(workspaceId: string, programId: string): Rese
 
 export function listResearchPrograms(workspaceId: string, limit = 50): ResearchProgram[] {
   const bounded = Math.min(Math.max(Math.trunc(limit) || 50, 1), 100);
+  // Read the complete append-only history before collapsing versions. A fixed
+  // multiplier can silently omit older programs that have many revisions.
   const rows = getOsDb().prepare(`SELECT content FROM os_artifacts
     WHERE workspace_id = ? AND mission_id IS NULL AND kind = 'research-program'
-    ORDER BY created_at DESC LIMIT ?`).all(workspaceId, bounded * 10) as Array<{ content: string }>;
+    ORDER BY created_at DESC`).all(workspaceId) as Array<{ content: string }>;
   const latest = new Map<string, ResearchProgram>();
   for (const row of rows) {
     const item = parseJson<ResearchProgram | null>(row.content, null);
@@ -105,6 +133,9 @@ export function updateResearchProgram(input: {
   const current = latestProgram(input.workspaceId, input.programId);
   if (!current) throw new Error('Research program not found');
   if (current.version !== input.expectedVersion) throw new Error(`Research program version conflict: expected ${input.expectedVersion}, current ${current.version}`);
+  if (input.patch.status !== undefined && !canTransitionStatus(current.status, input.patch.status)) {
+    throw new Error(`Invalid research program status transition: ${current.status} -> ${input.patch.status}`);
+  }
   const next: ResearchProgram = {
     ...current,
     ...(input.patch.title !== undefined ? { title: clean(input.patch.title, 'title') } : {}),
