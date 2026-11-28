@@ -49,12 +49,11 @@ const unique = (values: string[]): string[] => [...new Set(values.map((v) => v.t
 
 function latestProgram(workspaceId: string, programId: string): ResearchProgram | null {
   const rows = getOsDb().prepare(`SELECT content FROM os_artifacts
-    WHERE workspace_id = ? AND mission_id IS NULL AND kind = 'research-program'
-      AND name LIKE ? ORDER BY created_at DESC LIMIT 1`)
-    .get(workspaceId, `program:${programId}:v%`) as { content?: string } | undefined;
-  if (!rows?.content) return null;
-  const parsed = parseJson<ResearchProgram | null>(rows.content, null);
-  return parsed?.schemaVersion === '1.0' && parsed.workspaceId === workspaceId && parsed.id === programId ? parsed : null;
+    WHERE workspace_id = ? AND mission_id IS NULL AND kind = 'research-program' AND name LIKE ?`)
+    .all(workspaceId, `program:${programId}:v%`) as Array<{ content: string }>;
+  const versions = rows.map((row) => parseJson<ResearchProgram | null>(row.content, null))
+    .filter((item): item is ResearchProgram => Boolean(item && item.schemaVersion === '1.0' && item.workspaceId === workspaceId && item.id === programId));
+  return versions.sort((left, right) => right.version - left.version)[0] ?? null;
 }
 
 function persist(program: ResearchProgram, actor: string): ResearchProgram {
@@ -94,7 +93,7 @@ export function listResearchPrograms(workspaceId: string, limit = 50): ResearchP
   const latest = new Map<string, ResearchProgram>();
   for (const row of rows) {
     const item = parseJson<ResearchProgram | null>(row.content, null);
-    if (item?.schemaVersion === '1.0' && item.workspaceId === workspaceId && !latest.has(item.id)) latest.set(item.id, item);
+    if (item?.schemaVersion === '1.0' && item.workspaceId === workspaceId && (latest.get(item.id)?.version ?? 0) < item.version) latest.set(item.id, item);
   }
   return [...latest.values()].slice(0, bounded);
 }
