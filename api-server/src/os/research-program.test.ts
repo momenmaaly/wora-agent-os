@@ -44,3 +44,26 @@ test('mission links are workspace-scoped and never create duplicate missions', (
   assert.deepEqual(linked.workstreams[0]!.missionIds, ['mission-a']);
   assert.throws(() => linkMissionToWorkstream({ workspaceId: 'other-workspace', programId: created.id, workstreamId: withStream.workstreams[0]!.id, missionId: 'mission-a', expectedVersion: 3 }), /not found/);
 });
+
+test('program lifecycle rejects reopening terminal programs', () => {
+  const created = createResearchProgram({ workspaceId: WS, title: 'Lifecycle', objective: 'Validate status transitions' });
+  const active = updateResearchProgram({ workspaceId: WS, programId: created.id, expectedVersion: 1, patch: { status: 'active' } });
+  const completed = updateResearchProgram({ workspaceId: WS, programId: created.id, expectedVersion: active.version, patch: { status: 'completed' } });
+  assert.equal(completed.status, 'completed');
+  assert.throws(
+    () => updateResearchProgram({ workspaceId: WS, programId: created.id, expectedVersion: completed.version, patch: { status: 'active' } }),
+    /Invalid research program status transition/,
+  );
+});
+
+test('append-only version writes reject a stale concurrent append', () => {
+  const created = createResearchProgram({ workspaceId: WS, title: 'Concurrency', objective: 'Serialize writes' });
+  const first = updateResearchProgram({ workspaceId: WS, programId: created.id, expectedVersion: 1, patch: { title: 'Winner' } });
+  assert.equal(first.version, 2);
+  // Simulate a caller that constructed a next version from an outdated snapshot.
+  assert.throws(
+    () => updateResearchProgram({ workspaceId: WS, programId: created.id, expectedVersion: 1, patch: { title: 'Stale writer' } }),
+    /version conflict/,
+  );
+  assert.equal(getResearchProgram(WS, created.id)?.title, 'Winner');
+});
